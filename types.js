@@ -1,0 +1,25 @@
+export var ActionType;
+(function (ActionType) {
+    ActionType["PASE_CORTO_DEFENSIVO_LOGRADO"] = "Pase Corto Defensivo Logrado";
+    ActionType["PASE_CORTO_DEFENSIVO_NO_LOGRADO"] = "Pase Corto Defensivo No Logrado";
+    ActionType["PASE_LARGO_DEFENSIVO_LOGRADO"] = "Pase Largo Defensivo Logrado";
+    ActionType["PASE_LARGO_DEFENSIVO_NO_LOGRADO"] = "Pase Largo Defensivo No Logrado";
+    ActionType["PASE_CORTO_OFENSIVO_LOGRADO"] = "Pase Corto Ofensivo Logrado";
+    ActionType["PASE_CORTO_OFENSIVO_NO_LOGRADO"] = "Pase Corto Ofensivo No Logrado";
+    ActionType["PASE_LARGO_OFENSIVO_LOGRADO"] = "Pase Largo Ofensivo Logrado";
+    ActionType["PASE_LARGO_OFENSIVO_NO_LOGRADO"] = "Pase Largo Ofensivo No Logrado";
+    ActionType["UNO_A_UNO_DEFENSIVO_LOGRADO"] = "1 a 1 Defensivo Logrado";
+    ActionType["UNO_A_UNO_DEFENSIVO_NO_LOGRADO"] = "1 a 1 Defensivo No Logrado";
+    ActionType["UNO_A_UNO_OFENSIVO_LOGRADO"] = "1 a 1 Ofensivo Logrado";
+    ActionType["UNO_A_UNO_OFENSIVO_NO_LOGRADO"] = "1 a 1 Ofensivo No Logrado";
+    ActionType["AEREO_OFENSIVO_GANADO"] = "Aereo Ofensivo Ganado";
+    ActionType["AEREO_OFENSIVO_PERDIDO"] = "Aereo Ofensivo Perdido";
+    ActionType["AEREO_DEFENSIVO_GANADO"] = "Aereo Defensivo Ganado";
+    ActionType["AEREO_DEFENSIVO_PERDIDO"] = "Aereo Defensivo Perdido";
+    ActionType["TIRO_A_PORTERIA_REALIZADO"] = "Tiro a Porteria Realizado";
+    ActionType["GOL_A_FAVOR"] = "Gol a Favor";
+    ActionType["TIRO_A_PORTERIA_RECIBIDO"] = "Tiro a Porteria Recibido";
+    ActionType["ATAJADA_REALIZADA"] = "Atajada Realizada";
+    ActionType["GOL_RECIBIDO"] = "Gol Recibido";
+    ActionType["TIRO_DE_ESQUINA"] = "Tiro de esquina";
+})(ActionType || (ActionType = {}));

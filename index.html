@@ -1,0 +1,38 @@
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tablero de Análisis de Fútbol</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      background-color: #0a192f;
+      color: #e6f1ff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    }
+    /* Aquí solo CSS, nada de <form> ni <script> */
+    .recharts-tooltip-cursor { fill: rgba(255, 255, 255, 0.1); }
+    /* resto de tu CSS... */
+  </style>
+  <script type="importmap">
+    { "imports": { ... } }
+  </script>
+  <link rel="stylesheet" href="/index.css">
+</head>
+
+<body>
+  <div id="root"></div>
+
+  <!-- Aquí va tu formulario HTML -->
+  <form id="formulario-usuarios" style="margin: 20px; padding: 10px; background-color: #112240; border-radius: 8px;">
+    <h2 style="margin-bottom: 10px;">Registrar Usuario</h2>
+    <input type="text" name="nombre" placeholder="Nombre" required style="margin-bottom: 5px; padding: 5px; width: 200px;" />
+    <input type="email" name="email" placeholder="Correo" required style="margin-bottom: 5px; padding: 5px; width: 200px;" />
+    <button type="submit" style="padding: 5px 10px; background-color: #00c6ff; color: #0a192f; border: none; border-radius: 4px;">Guardar</button>
+  </form>
+
+  <!-- Scripts -->
+  <script type="module" src="/index.js"></script>
+  <script type="module" src="/index.tsx"></script>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

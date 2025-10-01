@@ -1,0 +1,5 @@
+{
+  "name": "Tablero de Análisis de Fútbol",
+  "description": "Plataforma de analíticas avanzadas para entrenadores de fútbol infantil para etiquetar, analizar y visualizar estadísticas de partidos desde videos. Usa IA para generar información táctica a partir de jugadas etiquetadas.",
+  "requestFramePermissions": []
+}
