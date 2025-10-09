@@ -2,18 +2,8 @@ import { GoogleGenAI, Type } from "@google/genai";
 import type { AISuggestion, Tag } from '../types';
 import { METRICS } from '../constants';
 
-// IMPORTANT: This service requires a Gemini API Key provided via an environment variable.
-// FIX: In Vite projects, environment variables exposed to the client must be accessed via `import.meta.env`.
-// FIX: Corrected TypeScript error "Property 'env' does not exist on type 'ImportMeta'".
-const apiKey = (import.meta as any)?.env?.VITE_API_KEY;
-
-if (!apiKey) {
-    // FIX: Updated warning to refer to the correct environment variable name for Vite.
-    console.warn('Gemini API Key not found. AI features will not work. Please provide it in your environment variables as VITE_API_KEY.');
-}
-
-// Initialize with a check for apiKey to prevent crashing if it's missing.
-const ai = apiKey ? new GoogleGenAI({ apiKey }) : null;
+// FIX: Per coding guidelines, API key must be sourced from process.env.API_KEY and the client must be initialized directly.
+const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
 
 
 const getPrompt = (existingTags: Tag[] = []) => `You are an expert soccer analyst. Analyze the following sequence of frames from a soccer match.
@@ -37,11 +27,8 @@ export const analyzeVideoFrames = async (
     base64Frames: { data: string; mimeType: string }[],
     existingTags: Tag[]
 ): Promise<AISuggestion[]> => {
-    if (!ai) {
-        alert("Gemini API Key not configured. AI analysis is disabled.");
-        return [];
-    }
-
+    // FIX: Removed conditional check for `ai` instance as it's now initialized directly at the module level, per guidelines.
+    // The try-catch block will handle any API errors, including those from a missing/invalid key.
     try {
         const imageParts = base64Frames.map(frame => ({
             inlineData: {
@@ -72,6 +59,7 @@ export const analyzeVideoFrames = async (
             }
         });
 
+        // FIX: The text property directly contains the JSON string, per guidelines.
         const jsonString = response.text.trim();
         const suggestions: AISuggestion[] = JSON.parse(jsonString);
         return suggestions;

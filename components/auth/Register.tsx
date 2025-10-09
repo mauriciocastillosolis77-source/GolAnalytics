@@ -1,39 +1,43 @@
-// FIX: Implement the Login component.
+// FIX: Implement the Register component.
 import React, { useState } from 'react';
 import { supabase } from '../../services/supabaseClient';
 import { Spinner } from '../ui/Spinner';
 
-const Login: React.FC = () => {
+const Register: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
 
-  const handleLogin = async (e: React.FormEvent) => {
+  const handleRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setMessage(null);
     setLoading(true);
 
-    const { error } = await supabase.auth.signInWithPassword({
+    const { error } = await supabase.auth.signUp({
       email,
       password,
     });
 
     if (error) {
       setError(error.message);
+    } else {
+      setMessage('¡Registro exitoso! Por favor, revisa tu email para confirmar tu cuenta.');
     }
     setLoading(false);
   };
 
   return (
-    <form onSubmit={handleLogin} className="space-y-6">
+    <form onSubmit={handleRegister} className="space-y-6">
       <div>
-        <label htmlFor="email" className="block text-sm font-medium text-gray-300">
+        <label htmlFor="email-register" className="block text-sm font-medium text-gray-300">
           Email
         </label>
         <div className="mt-1">
           <input
-            id="email"
+            id="email-register"
             name="email"
             type="email"
             autoComplete="email"
@@ -46,15 +50,15 @@ const Login: React.FC = () => {
       </div>
 
       <div>
-        <label htmlFor="password" className="block text-sm font-medium text-gray-300">
+        <label htmlFor="password-register" className="block text-sm font-medium text-gray-300">
           Contraseña
         </label>
         <div className="mt-1">
           <input
-            id="password"
+            id="password-register"
             name="password"
             type="password"
-            autoComplete="current-password"
+            autoComplete="new-password"
             required
             value={password}
             onChange={(e) => setPassword(e.target.value)}
@@ -64,6 +68,7 @@ const Login: React.FC = () => {
       </div>
 
       {error && <p className="text-sm text-red-400">{error}</p>}
+      {message && <p className="text-sm text-green-400">{message}</p>}
 
       <div>
         <button
@@ -71,11 +76,11 @@ const Login: React.FC = () => {
           disabled={loading}
           className="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-cyan-600 hover:bg-cyan-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-cyan-500 disabled:opacity-50"
         >
-          {loading ? <Spinner /> : 'Iniciar Sesión'}
+          {loading ? <Spinner /> : 'Registrarse'}
         </button>
       </div>
     </form>
   );
 };
 
-export default Login;
+export default Register;

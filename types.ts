@@ -1,30 +1,13 @@
-import type { User } from '@supabase/supabase-js';
-
-export enum UserRole {
-  ADMIN = 'admin',
-  AUXILIAR = 'auxiliar'
-}
-
-export interface Profile {
-  id: string;
-  rol: UserRole;
-  full_name?: string; // Mejora: Añadido para mostrar el nombre del usuario.
-  email?: string;     // Mejora: Añadido para referencia y gestión.
-  created_at: string;
-}
-
+// FIX: Define interfaces for data models used throughout the application.
 export interface Match {
   id: string;
-  // Estructura final y consistente en español
+  torneo: string;
+  nombre_equipo: string;
+  categoria: string;
   fecha: string;
   rival: string;
-  torneo: string;
-  categoria: string;
   jornada: number;
-  nombre_equipo: string; // Columna para "Mi equipo"
-  is_finalized: boolean;
-  created_at: string;
-  coach_uid: string;
+  created_at?: string;
 }
 
 export interface Player {
@@ -32,15 +15,17 @@ export interface Player {
   nombre: string;
   numero: number;
   posicion: string;
+  created_at?: string;
 }
 
 export interface Tag {
-  id?: string;
+  id: string | number; // Can be a temporary string ID before saving
   match_id: string;
   player_id: string;
-  timestamp: number; // in seconds
   accion: string;
-  resultado: string; // 'logrado' o 'fallado'
+  resultado: string;
+  timestamp: number; // in seconds
+  created_at?: string;
 }
 
 export interface AISuggestion {
@@ -49,10 +34,9 @@ export interface AISuggestion {
   description: string;
 }
 
-export interface AuthContextType {
-    user: User | null;
-    profile: Profile | null;
-    loading: boolean;
-    login: (email: string, pass: string) => Promise<any>;
-    logout: () => Promise<any>;
+export interface Profile {
+  id: string;
+  rol: 'admin' | 'auxiliar';
+  username?: string;
+  avatar_url?: string;
 }

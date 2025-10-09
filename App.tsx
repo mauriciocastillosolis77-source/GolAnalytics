@@ -25,7 +25,6 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode; allowedRoles?: strin
     return <Navigate to="/login" replace />;
   }
   
-  // Corregido: 'profile.role' a 'profile.rol'
   if (allowedRoles && profile && !allowedRoles.includes(profile.rol)) {
      return <Navigate to="/dashboard" replace />;
   }
@@ -50,8 +49,7 @@ const AppRoutes: React.FC = () => {
               <Route 
                 path="tagger" 
                 element={
-                  // The role check is temporarily removed to allow access for review
-                  <ProtectedRoute>
+                  <ProtectedRoute allowedRoles={[ROLES.ADMIN]}>
                     <VideoTaggerPage />
                   </ProtectedRoute>
                 } 

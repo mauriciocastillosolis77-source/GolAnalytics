@@ -62,16 +62,17 @@ const Sidebar: React.FC<SidebarProps> = ({ sidebarOpen, setSidebarOpen }) => {
               <span className="ml-3">Tablero</span>
             </NavLink>
 
-            {/* The role check is temporarily removed to allow access for review */}
-            <NavLink 
-              to="/tagger" 
-              className={({ isActive }) => 
-                `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive && 'bg-cyan-600 text-white'}`
-              }
-            >
-              <TaggerIcon />
-              <span className="ml-3">Etiquetador</span>
-            </NavLink>
+            {profile?.rol === ROLES.ADMIN && (
+              <NavLink 
+                to="/tagger" 
+                className={({ isActive }) => 
+                  `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive && 'bg-cyan-600 text-white'}`
+                }
+              >
+                <TaggerIcon />
+                <span className="ml-3">Etiquetador</span>
+              </NavLink>
+            )}
         </nav>
 
         <div className="mt-auto text-center text-xs text-gray-500">
