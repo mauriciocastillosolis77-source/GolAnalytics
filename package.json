@@ -1,5 +1,5 @@
 {
-  "name": "tablero-de-análisis-de-fútbol",
+  "name": "golanalytics",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -9,14 +9,12 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@google/genai": "^1.20.0",
-    "file-saver": "^2.0.5",
-    "firebase": "^12.3.0",
-    "pako": "^2.1.0",
-    "react": "^19.1.1",
-    "react-dom": "^19.1.1",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^7.9.3",
+    "@supabase/supabase-js": "^2.74.0",
     "recharts": "^3.2.1",
-    "xlsx": "^0.18.5"
+    "@google/genai": "^1.22.0"
   },
   "devDependencies": {
     "@types/node": "^22.14.0",
