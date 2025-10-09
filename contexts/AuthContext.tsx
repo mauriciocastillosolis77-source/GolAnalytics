@@ -1,16 +1,7 @@
-// FIX: Implement AuthContext to manage user session and profile data.
 import React, { createContext, useState, useEffect, useContext, ReactNode } from 'react';
 import { supabase } from '../services/supabaseClient';
-import type { Session, User } from '@supabase/supabase-js';
-import type { Profile } from '../types';
-
-interface AuthContextType {
-  user: User | null;
-  session: Session | null;
-  profile: Profile | null;
-  loading: boolean;
-  logout: () => Promise<void>;
-}
+import type { Session, User, AuthError } from '@supabase/supabase-js';
+import type { Profile, AuthContextType } from '../types';
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -21,17 +12,63 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const getSession = async () => {
-        const { data: { session } } = await supabase.auth.getSession();
-        setSession(session);
-        setUser(session?.user ?? null);
+    const initializeAuth = async () => {
+      // 1. Get initial session
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      
+      if (sessionError) {
+        console.error("Error getting session:", sessionError);
         setLoading(false);
-    };
-    getSession();
-
-    const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, session) => {
+        return;
+      }
+      
       setSession(session);
-      setUser(session?.user ?? null);
+      const currentUser = session?.user ?? null;
+      setUser(currentUser);
+
+      // 2. If user exists, get their profile
+      if (currentUser) {
+        try {
+          const { data: profileData, error: profileError } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', currentUser.id)
+            .single();
+          if (profileError) throw profileError;
+          setProfile(profileData || null);
+        } catch (error) {
+           console.error("Error fetching initial profile:", error);
+           // If profile fails, log out the user to prevent inconsistent state
+           await supabase.auth.signOut();
+           setUser(null);
+           setSession(null);
+           setProfile(null);
+        }
+      }
+      
+      // 3. We are done loading initial data
+      setLoading(false);
+    };
+
+    initializeAuth();
+
+    // 4. Listen for future auth changes
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
+      setLoading(true);
+      setSession(newSession);
+      const newCurrentUser = newSession?.user ?? null;
+      setUser(newCurrentUser);
+
+      if (newCurrentUser) {
+         const { data: profileData } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', newCurrentUser.id)
+            .single();
+         setProfile(profileData || null);
+      } else {
+        setProfile(null);
+      }
       setLoading(false);
     });
 
@@ -40,42 +77,33 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     };
   }, []);
 
-  useEffect(() => {
-    if (user) {
-      const fetchProfile = async () => {
-        const { data, error } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', user.id)
-          .single();
-        
-        if (error) {
-          console.error('Error fetching profile:', error);
-        } else if (data) {
-          setProfile(data as Profile);
-        }
-      };
-      fetchProfile();
-    } else if (!user) {
-      setProfile(null);
-    }
-  }, [user]);
+  const signIn = async (email: string, password: string): Promise<{ error: AuthError | null }> => {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    return { error };
+  };
 
+  const signUp = async (email: string, password: string): Promise<{ error: AuthError | null }> => {
+    // Note: The profile is created automatically by the Supabase trigger.
+    const { error } = await supabase.auth.signUp({ email, password });
+    return { error };
+  };
 
   const logout = async () => {
     await supabase.auth.signOut();
-    setUser(null);
-    setProfile(null);
   };
 
-  const value = {
+  const value: AuthContextType = {
     user,
     session,
     profile,
     loading,
+    signIn,
+    signUp,
     logout,
   };
-
+  
+  // The Provider *always* renders its children. 
+  // The loading state is passed down for components to decide what to show.
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 

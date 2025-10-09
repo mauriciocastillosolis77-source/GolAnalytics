@@ -1,4 +1,5 @@
-// FIX: Define interfaces for data models used throughout the application.
+import type { Session, User, AuthError } from '@supabase/supabase-js';
+
 export interface Match {
   id: string;
   torneo: string;
@@ -19,17 +20,17 @@ export interface Player {
 }
 
 export interface Tag {
-  id: string | number; // Can be a temporary string ID before saving
+  id: string | number;
   match_id: string;
   player_id: string;
   accion: string;
   resultado: string;
-  timestamp: number; // in seconds
+  timestamp: number;
   created_at?: string;
 }
 
 export interface AISuggestion {
-  timestamp: string; // e.g., "01:25"
+  timestamp: string;
   action: string;
   description: string;
 }
@@ -39,4 +40,14 @@ export interface Profile {
   rol: 'admin' | 'auxiliar';
   username?: string;
   avatar_url?: string;
+}
+
+export interface AuthContextType {
+  user: User | null;
+  session: Session | null;
+  profile: Profile | null;
+  loading: boolean;
+  signIn: (email: string, password: string) => Promise<{ error: AuthError | null }>;
+  signUp: (email: string, password: string) => Promise<{ error: AuthError | null }>;
+  logout: () => Promise<void>;
 }

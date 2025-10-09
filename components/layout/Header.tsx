@@ -27,7 +27,6 @@ const Header: React.FC<HeaderProps> = ({ setSidebarOpen }) => {
                             <span>{user?.email}</span>
                              {profile && (
                                 <span className="ml-2 capitalize bg-cyan-900 text-cyan-300 text-xs font-medium px-2.5 py-0.5 rounded-full">
-                                    {/* Corregido: 'profile.role' a 'profile.rol' */}
                                     {profile.rol}
                                 </span>
                             )}

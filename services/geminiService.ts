@@ -2,9 +2,12 @@ import { GoogleGenAI, Type } from "@google/genai";
 import type { AISuggestion, Tag } from '../types';
 import { METRICS } from '../constants';
 
-// FIX: Per coding guidelines, API key must be sourced from process.env.API_KEY and the client must be initialized directly.
-const ai = new GoogleGenAI({apiKey: process.env.API_KEY});
+// CRITICAL FIX: In Vite, client-side environment variables must be accessed via `import.meta.env`
+// and must be prefixed with `VITE_`. Use optional chaining (?.) to prevent crashes if `env` is not defined.
+const apiKey = (import.meta as any)?.env?.VITE_API_KEY;
 
+// Initialize AI client only if the API key exists.
+const ai = apiKey ? new GoogleGenAI({apiKey: apiKey}) : null;
 
 const getPrompt = (existingTags: Tag[] = []) => `You are an expert soccer analyst. Analyze the following sequence of frames from a soccer match.
 The frames represent the last 15-20 seconds of play. Your task is to identify key plays and tag them according to a predefined list of metrics.
@@ -13,7 +16,7 @@ Metrics list:
 ${METRICS.join('\n')}
 
 Here are the tags that have already been created for this match. Do not suggest duplicates.
-${/* FIX: Use `t.accion` and `t.resultado` to construct the full action name, as `t.action` does not exist on the Tag type. */ existingTags.map(t => `- ${[t.accion, t.resultado].filter(Boolean).join(' ')} at ${t.timestamp.toFixed(2)}s`).join('\n')}
+${existingTags.map(t => `- ${[t.accion, t.resultado].filter(Boolean).join(' ')} at ${t.timestamp.toFixed(2)}s`).join('\n')}
 
 For each significant play you identify, provide the following information in a JSON object:
 - timestamp: The approximate minute and second of the play (e.g., "01:25").
@@ -27,8 +30,13 @@ export const analyzeVideoFrames = async (
     base64Frames: { data: string; mimeType: string }[],
     existingTags: Tag[]
 ): Promise<AISuggestion[]> => {
-    // FIX: Removed conditional check for `ai` instance as it's now initialized directly at the module level, per guidelines.
-    // The try-catch block will handle any API errors, including those from a missing/invalid key.
+    if (!ai) {
+        const message = "Gemini API key is not configured. Please check your VITE_API_KEY environment variable.";
+        console.error(message);
+        alert(message);
+        return [];
+    }
+    
     try {
         const imageParts = base64Frames.map(frame => ({
             inlineData: {
@@ -59,7 +67,6 @@ export const analyzeVideoFrames = async (
             }
         });
 
-        // FIX: The text property directly contains the JSON string, per guidelines.
         const jsonString = response.text.trim();
         const suggestions: AISuggestion[] = JSON.parse(jsonString);
         return suggestions;
