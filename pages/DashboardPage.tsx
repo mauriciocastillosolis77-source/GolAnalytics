@@ -109,8 +109,9 @@ const DashboardPage: React.FC = () => {
     const filteredMatches = useMemo(() => {
         return matches.filter(match => {
             if (filters.torneo !== 'all' && match.torneo !== filters.torneo) return false;
-            if (filters.jornada !== 'all' && match.jornada !== parseInt(filters.jornada)) return false;
+            if (filters.jornada !== 'all' && String(match.jornada) !== filters.jornada) return false;
             if (filters.equipo !== 'all' && match.nombre_equipo !== filters.equipo) return false;
+            if (filters.categoria !== 'all' && match.categoria !== filters.categoria) return false;
             return true;
         });
     }, [matches, filters]);
@@ -122,22 +123,19 @@ const DashboardPage: React.FC = () => {
             if (filters.matchId === 'all' && !matchIds.has(tag.match_id)) return false;
             if (filters.jugador !== 'all' && tag.player_id !== filters.jugador) return false;
             
-            const fullAction = `${tag.accion} ${tag.resultado}`.trim();
-
             if (filters.accion !== 'all' && tag.accion !== filters.accion) return false;
-            if (filters.categoria !== 'all' && !tag.accion.toLowerCase().includes(filters.categoria.toLowerCase())) return false;
             
             return true;
         });
     }, [tags, filteredMatches, filters]);
 
     const filterOptions = useMemo(() => {
-        const torneo = [...new Set(matches.map(m => m.torneo))];
-        const categoria = [...new Set(METRICS.map(m => m.split(' ')[0]))]; // Pase, 1, Aéreo, etc.
-        const jornada = [...new Set(matches.map(m => m.jornada))].sort((a, b) => (Number(a) || 0) - (Number(b) || 0));
-        const equipo = [...new Set(matches.map(m => m.nombre_equipo))];
+        const torneo = [...new Set(matches.map(m => m.torneo).filter(Boolean))];
+        const categoria = [...new Set(matches.map(m => m.categoria).filter(Boolean))];
+        const jornada = [...new Set(matches.map(m => m.jornada).filter(j => j !== null && j !== undefined))].sort((a, b) => (Number(a) || 0) - (Number(b) || 0));
+        const equipo = [...new Set(matches.map(m => m.nombre_equipo).filter(Boolean))];
         const jugador = players.sort((a,b) => a.nombre.localeCompare(b.nombre));
-        const accion = [...new Set(tags.map(t => t.accion))];
+        const accion = [...new Set(tags.map(t => t.accion).filter(Boolean))];
 
         return { torneo, categoria, jornada, equipo, jugador, accion };
     }, [matches, tags, players]);
@@ -268,7 +266,9 @@ const DashboardPage: React.FC = () => {
         filteredTags
             .filter(tag => tag.accion === 'Tiros a portería')
             .forEach(tag => {
-                shotsByPlayer[tag.player_id] = (shotsByPlayer[tag.player_id] || 0) + 1;
+                if (tag.player_id) {
+                    shotsByPlayer[tag.player_id] = (shotsByPlayer[tag.player_id] || 0) + 1;
+                }
             });
             
         return Object.entries(shotsByPlayer)
@@ -288,7 +288,9 @@ const DashboardPage: React.FC = () => {
         filteredTags
             .filter(tag => (tag.accion === 'Pase corto ofensivo' || tag.accion === 'Pase corto defensivo') && tag.resultado === 'logrado')
             .forEach(tag => {
-                counts[tag.player_id] = (counts[tag.player_id] || 0) + 1;
+                if (tag.player_id) {
+                    counts[tag.player_id] = (counts[tag.player_id] || 0) + 1;
+                }
             });
         
         return Object.entries(counts)
@@ -305,7 +307,9 @@ const DashboardPage: React.FC = () => {
         filteredTags
             .filter(tag => (tag.accion === 'Pase largo ofensivo' || tag.accion === 'Pase largo defensivo') && tag.resultado === 'logrado')
             .forEach(tag => {
-                counts[tag.player_id] = (counts[tag.player_id] || 0) + 1;
+                if (tag.player_id) {
+                    counts[tag.player_id] = (counts[tag.player_id] || 0) + 1;
+                }
             });
         
         return Object.entries(counts)
@@ -322,7 +326,9 @@ const DashboardPage: React.FC = () => {
         filteredTags
             .filter(tag => (tag.accion === '1 vs 1 ofensivo' || tag.accion === '1 vs 1 defensivo') && tag.resultado === 'logrado')
             .forEach(tag => {
-                counts[tag.player_id] = (counts[tag.player_id] || 0) + 1;
+                if (tag.player_id) {
+                    counts[tag.player_id] = (counts[tag.player_id] || 0) + 1;
+                }
             });
         
         return Object.entries(counts)
@@ -339,7 +345,9 @@ const DashboardPage: React.FC = () => {
         filteredTags
             .filter(tag => (tag.accion === 'Aéreo ofensivo' || tag.accion === 'Aéreo defensivo') && tag.resultado === 'logrado')
             .forEach(tag => {
-                counts[tag.player_id] = (counts[tag.player_id] || 0) + 1;
+                if (tag.player_id) {
+                    counts[tag.player_id] = (counts[tag.player_id] || 0) + 1;
+                }
             });
         
         return Object.entries(counts)
@@ -355,13 +363,14 @@ const DashboardPage: React.FC = () => {
     if (error) return <div className="text-center text-red-400 p-8">{error}</div>;
 
     return (
-        <div className="p-4 space-y-6">
+        <div className="p-4 space-y-6 bg-gray-900 text-white">
             {/* Filter Panel */}
             <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-4 bg-gray-800 p-4 rounded-lg">
                 {['torneo', 'categoria', 'jornada', 'equipo', 'jugador', 'accion'].map(key => (
                     <div key={key}>
-                        <label className="block text-xs font-medium text-gray-400 capitalize mb-1">{key}</label>
+                        <label htmlFor={key} className="block text-xs font-medium text-gray-400 capitalize mb-1">{key}</label>
                         <select 
+                            id={key}
                             value={filters[key as keyof Filters]} 
                             onChange={e => setFilters(prev => ({...prev, [key]: e.target.value}))}
                             className="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:ring-cyan-500 focus:border-cyan-500 text-sm"
@@ -376,7 +385,7 @@ const DashboardPage: React.FC = () => {
                 ))}
                  <div>
                     <label className="block text-xs font-medium text-gray-400 capitalize mb-1">&nbsp;</label>
-                    <button onClick={() => setFilters({ matchId: 'all', torneo: 'all', categoria: 'all', jornada: 'all', equipo: 'all', jugador: 'all', accion: 'all' })} className="w-full bg-gray-600 hover:bg-gray-500 text-white p-2 rounded text-sm">Limpiar Filtros</button>
+                    <button onClick={() => setFilters({ matchId: 'all', torneo: 'all', categoria: 'all', jornada: 'all', equipo: 'all', jugador: 'all', accion: 'all' })} className="w-full bg-gray-600 hover:bg-gray-500 text-white p-2 rounded text-sm transition-colors">Limpiar Filtros</button>
                  </div>
             </div>
 
@@ -431,8 +440,8 @@ const DashboardPage: React.FC = () => {
                                     <YAxis stroke="#9CA3AF" />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
                                     <Legend />
-                                    <Bar dataKey="Logrados" fill="#22C55E" />
-                                    <Bar dataKey="No Logrados" fill="#EF4444" />
+                                    <Bar dataKey="Logrados" stackId="a" fill="#22C55E" />
+                                    <Bar dataKey="No Logrados" stackId="a" fill="#EF4444" />
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
@@ -446,8 +455,8 @@ const DashboardPage: React.FC = () => {
                                     <YAxis stroke="#9CA3AF" />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
                                     <Legend />
-                                    <Bar dataKey="Logrados" fill="#22C55E" />
-                                    <Bar dataKey="No Logrados" fill="#EF4444" />
+                                    <Bar dataKey="Logrados" stackId="a" fill="#22C55E" />
+                                    <Bar dataKey="No Logrados" stackId="a" fill="#EF4444" />
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
@@ -460,8 +469,8 @@ const DashboardPage: React.FC = () => {
                                     <YAxis stroke="#9CA3AF" />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
                                     <Legend />
-                                    <Bar dataKey="Logrados" fill="#22C55E" />
-                                    <Bar dataKey="No Logrados" fill="#EF4444" />
+                                    <Bar dataKey="Logrados" stackId="a" fill="#22C55E" />
+                                    <Bar dataKey="No Logrados" stackId="a" fill="#EF4444" />
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
@@ -490,7 +499,7 @@ const DashboardPage: React.FC = () => {
                              <ResponsiveContainer width="100%" height="100%">
                                 <BarChart data={rendimientoDefensivoPorteria} layout="vertical" margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
                                     <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
-                                    <XAxis type="number" stroke="#9CA3AF" />
+                                    <XAxis type="number" stroke="#9CA3AF" allowDecimals={false} />
                                     <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={100} tick={{ fill: '#D1D5DB' }} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} cursor={{fill: 'rgba(107, 114, 128, 0.2)'}} />
                                     <Bar dataKey="value" barSize={35}>
@@ -527,7 +536,7 @@ const DashboardPage: React.FC = () => {
                             <ResponsiveContainer width="100%" height="100%">
                                 <BarChart data={pasesCortosLogradosData} layout="vertical" margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
                                      <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
-                                    <XAxis type="number" stroke="#9CA3AF" />
+                                    <XAxis type="number" stroke="#9CA3AF" allowDecimals={false}/>
                                     <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={80} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} cursor={{fill: 'rgba(107, 114, 128, 0.2)'}}/>
                                     <Bar dataKey="value" fill="#0EA5E9" name="Pases Cortos" />
@@ -539,7 +548,7 @@ const DashboardPage: React.FC = () => {
                             <ResponsiveContainer width="100%" height="100%">
                                 <BarChart data={pasesLargosLogradosData} layout="vertical" margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
                                      <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
-                                    <XAxis type="number" stroke="#9CA3AF" />
+                                    <XAxis type="number" stroke="#9CA3AF" allowDecimals={false} />
                                     <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={80} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} cursor={{fill: 'rgba(107, 114, 128, 0.2)'}}/>
                                     <Bar dataKey="value" fill="#22D3EE" name="Pases Largos" />
@@ -554,7 +563,7 @@ const DashboardPage: React.FC = () => {
                             <ResponsiveContainer width="100%" height="100%">
                                 <BarChart data={duelos1v1LogradosData} layout="vertical" margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
                                      <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
-                                    <XAxis type="number" stroke="#9CA3AF" />
+                                    <XAxis type="number" stroke="#9CA3AF" allowDecimals={false} />
                                     <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={80} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} cursor={{fill: 'rgba(107, 114, 128, 0.2)'}}/>
                                     <Bar dataKey="value" fill="#8B5CF6" name="1 vs 1" />
@@ -566,7 +575,7 @@ const DashboardPage: React.FC = () => {
                             <ResponsiveContainer width="100%" height="100%">
                                 <BarChart data={duelosAereosLogradosData} layout="vertical" margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
                                      <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
-                                    <XAxis type="number" stroke="#9CA3AF" />
+                                    <XAxis type="number" stroke="#9CA3AF" allowDecimals={false} />
                                     <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={80} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} cursor={{fill: 'rgba(107, 114, 128, 0.2)'}}/>
                                     <Bar dataKey="value" fill="#EC4899" name="Aéreos" />
