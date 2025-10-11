@@ -440,8 +440,8 @@ const DashboardPage: React.FC = () => {
                                     <YAxis stroke="#9CA3AF" />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
                                     <Legend />
-                                    <Bar dataKey="Logrados" stackId="a" fill="#22C55E" />
-                                    <Bar dataKey="No Logrados" stackId="a" fill="#EF4444" />
+                                    <Bar dataKey="Logrados" fill="#22C55E" />
+                                    <Bar dataKey="No Logrados" fill="#EF4444" />
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
@@ -455,8 +455,8 @@ const DashboardPage: React.FC = () => {
                                     <YAxis stroke="#9CA3AF" />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
                                     <Legend />
-                                    <Bar dataKey="Logrados" stackId="a" fill="#22C55E" />
-                                    <Bar dataKey="No Logrados" stackId="a" fill="#EF4444" />
+                                    <Bar dataKey="Logrados" fill="#22C55E" />
+                                    <Bar dataKey="No Logrados" fill="#EF4444" />
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
@@ -469,8 +469,8 @@ const DashboardPage: React.FC = () => {
                                     <YAxis stroke="#9CA3AF" />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
                                     <Legend />
-                                    <Bar dataKey="Logrados" stackId="a" fill="#22C55E" />
-                                    <Bar dataKey="No Logrados" stackId="a" fill="#EF4444" />
+                                    <Bar dataKey="Logrados" fill="#22C55E" />
+                                    <Bar dataKey="No Logrados" fill="#EF4444" />
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
