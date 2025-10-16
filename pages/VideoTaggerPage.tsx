@@ -73,7 +73,7 @@ const VideoTaggerPage: React.FC = () => {
             setIsLoading(true);
             const { data: tagsData } = await supabase.from('tags').select('*').eq('match_id', selectedMatchId).order('timestamp', { ascending: true });
             setTags(tagsData || []);
-            const { data: playersData } = await supabase.from('players').select('*').eq('match_id', selectedMatchId);
+            const { data: playersData } = await supabase.from('players').select('*');
             setPlayers(playersData || []);
             if (playersData && playersData.length > 0 && !selectedPlayerId) {
                 setSelectedPlayerId(playersData[0].id);
@@ -108,7 +108,7 @@ const VideoTaggerPage: React.FC = () => {
         }
     };
 
-    // Handler for uploading players via Excel file
+    // Handler for uploading players via Excel file (CORREGIDO: sin match_id)
     const handlePlayerFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -131,11 +131,11 @@ const VideoTaggerPage: React.FC = () => {
                     throw new Error(`El archivo debe contener las columnas: ${required.join(', ')}.`);
                 }
 
+                // CORREGIDO: Quitamos match_id
                 const parsedPlayers = rawData.slice(1).map(row => ({
                     nombre: String(row[headers.indexOf('nombre')] || '').trim(),
                     numero: Number(row[headers.indexOf('numero')]),
-                    posicion: String(row[headers.indexOf('posicion')] || '').trim(),
-                    match_id: selectedMatchId
+                    posicion: String(row[headers.indexOf('posicion')] || '').trim()
                 }));
 
                 // Validación básica para evitar nombres vacíos
@@ -150,7 +150,7 @@ const VideoTaggerPage: React.FC = () => {
                     setPlayerUploadMessage(`No se encontraron jugadores nuevos para cargar.`);
                 }
 
-                const { data: allPlayers } = await supabase.from('players').select('*').eq('match_id', selectedMatchId);
+                const { data: allPlayers } = await supabase.from('players').select('*');
                 setPlayers(allPlayers || []);
                 if (allPlayers && allPlayers.length > 0 && !selectedPlayerId) {
                     setSelectedPlayerId(allPlayers[0].id);
