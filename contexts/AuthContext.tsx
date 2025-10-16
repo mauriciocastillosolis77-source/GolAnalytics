@@ -18,10 +18,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setLoading(true);
       setAuthError(null);
 
-      // Timeout de 6 segundos para recuperación de sesión/perfil
+      // Timeout de 6 segundos solo para el arranque inicial
       timeout = setTimeout(() => {
         setLoading(false);
-        setAuthError('No se pudo recuperar la sesión. Recarga la página o inicia sesión nuevamente.');
+        if (!user) {
+          setAuthError('No se pudo recuperar la sesión. Recarga la página o inicia sesión nuevamente.');
+        }
       }, 6000);
 
       try {
@@ -48,11 +50,8 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             if (profileError) throw profileError;
             setProfile(profileData || null);
           } catch (error) {
-            setAuthError('No se pudo obtener el perfil de usuario. Intenta recargar o iniciar sesión nuevamente.');
-            await supabase.auth.signOut();
-            setUser(null);
-            setSession(null);
-            setProfile(null);
+            setAuthError('No se pudo obtener el perfil de usuario. Puedes navegar pero algunas funciones pueden estar limitadas.');
+            // NO forzar logout, solo mostrar advertencia.
           }
         } else {
           setProfile(null);
@@ -75,7 +74,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
       timeout = setTimeout(() => {
         setLoading(false);
-        setAuthError('No se pudo recuperar la sesión. Recarga la página o inicia sesión nuevamente.');
+        if (!user) {
+          setAuthError('No se pudo recuperar la sesión. Recarga la página o inicia sesión nuevamente.');
+        }
       }, 6000);
 
       const newCurrentUser = newSession?.user ?? null;
@@ -92,8 +93,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
           if (profileError) throw profileError;
           setProfile(profileData || null);
         } catch (error) {
-          setAuthError('No se pudo obtener el perfil de usuario. Intenta recargar o iniciar sesión nuevamente.');
-          setProfile(null);
+          setAuthError('No se pudo obtener el perfil de usuario. Puedes navegar pero algunas funciones pueden estar limitadas.');
         }
       } else {
         setProfile(null);
