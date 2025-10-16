@@ -25,9 +25,10 @@ const ProtectedRoute: React.FC<{ children: React.ReactNode; allowedRoles?: strin
 };
 
 const App: React.FC = () => {
-    const { user, loading, authError } = useAuth();
+    const { user, profile, loading, authError } = useAuth();
 
-    if (loading && !authError) {
+    // Solo loading inicial
+    if (loading && !user) {
         return (
             <div className="flex items-center justify-center h-screen bg-gray-900">
                 <Spinner />
@@ -35,7 +36,8 @@ const App: React.FC = () => {
         );
     }
 
-    if (authError) {
+    // Solo mostrar error global si no hay usuario
+    if (authError && !user) {
         return (
             <div className="flex flex-col items-center justify-center h-screen bg-gray-900">
                 <div className="bg-red-900 text-red-200 p-6 rounded shadow-lg text-center max-w-xl">
