@@ -18,6 +18,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setLoading(true);
       setAuthError(null);
 
+      // Timeout de 6 segundos para recuperación de sesión/perfil
       timeout = setTimeout(() => {
         setLoading(false);
         setAuthError('No se pudo recuperar la sesión. Recarga la página o inicia sesión nuevamente.');
@@ -67,6 +68,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     initializeAuth();
 
+    // Listener para futuros cambios de sesión
     const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
       setLoading(true);
       setAuthError(null);
