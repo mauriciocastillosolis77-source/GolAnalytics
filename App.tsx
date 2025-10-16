@@ -5,7 +5,7 @@ import DashboardPage from './pages/DashboardPage';
 import VideoTaggerPage from './pages/VideoTaggerPage';
 import NotFoundPage from './pages/NotFoundPage';
 import { useAuth } from './contexts/AuthContext';
-import Layout from './components/Layout';
+import Layout from './components/layout/Layout'; // Ruta corregida
 import ProtectedRoute from './components/ProtectedRoute';
 import Spinner from './components/ui/Spinner';
 import { ROLES } from './constants';
