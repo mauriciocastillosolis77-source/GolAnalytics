@@ -32,9 +32,6 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
     }
   }, [sidebarOpen]);
 
-  // Determina si es desktop o móvil (usando clases tailwind)
-  // En desktop (lg:), el menú SIEMPRE debe estar visible y navegable
-  // En móvil, alterna con sidebarOpen
   return (
     <>
       {/* Backdrop */}
@@ -51,8 +48,6 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
           ${sidebarOpen ? 'translate-x-0' : '-translate-x-64'}
           lg:static lg:translate-x-0 lg:z-auto
         `}
-        // ¡QUITAMOS pointer-events para que siempre sea navegable!
-        data-debug="SIDEBAR VISIBLE"
       >
         {/* Botón cerrar solo en móvil */}
         <button
@@ -70,16 +65,12 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
           <span className="ml-3 text-2xl font-bold text-white">GolAnalytics</span>
         </div>
 
-        {/* Texto de depuración, puedes quitarlo después */}
-        <div style={{ color: "yellow", marginBottom: 10, fontWeight: "bold" }}>SIDEBAR VISIBLE</div>
-
         <nav className="space-y-2">
           <NavLink
             to="/dashboard"
             className={({ isActive }) =>
               `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
             }
-            // Solo cerrar sidebar en móvil
             onClick={() => setSidebarOpen(false)}
           >
             <DashboardIcon />
