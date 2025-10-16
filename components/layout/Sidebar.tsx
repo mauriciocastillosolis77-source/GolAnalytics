@@ -4,7 +4,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { ROLES } from '../../constants';
 import { DashboardIcon, Logo, TaggerIcon } from '../ui/Icons';
 
-// Forzar a Tailwind a incluir las clases necesarias
+// Forzar a Tailwind a incluir las clases necesarias (para evitar purge)
 const _forceTailwindClasses = ["translate-x-0", "-translate-x-64"];
 
 const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) => void }> = ({ sidebarOpen, setSidebarOpen }) => {
@@ -19,8 +19,8 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
       if (!sidebarOpen || sidebar.current.contains(target as Node) || trigger.current.contains(target as Node)) return;
       setSidebarOpen(false);
     };
-    document.addEventListener('click', clickHandler);
-    return () => document.removeEventListener('click', clickHandler);
+    document.addEventListener('mousedown', clickHandler);
+    return () => document.removeEventListener('mousedown', clickHandler);
   }, [sidebarOpen, setSidebarOpen]);
 
   // Evita el scroll cuando el menú está abierto (móvil)
@@ -32,28 +32,29 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
     }
   }, [sidebarOpen]);
 
-  // Texto de depuración para ver si el sidebar está renderizado
-  const debugText = "SIDEBAR VISIBLE";
-
+  // Determina si es desktop o móvil (usando clases tailwind)
+  // En desktop (lg:), el menú SIEMPRE debe estar visible y navegable
+  // En móvil, alterna con sidebarOpen
   return (
     <>
       {/* Backdrop */}
       <div
-        className={`fixed inset-0 bg-gray-900 bg-opacity-40 z-50 lg:hidden transition-opacity duration-200 ${sidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+        className={`fixed inset-0 bg-gray-900 bg-opacity-40 z-40 lg:hidden transition-opacity duration-200 ${sidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         aria-hidden="true"
         onClick={() => setSidebarOpen(false)}
       />
 
-      {/* Sidebar */}
       <div
         ref={sidebar}
-        className={`fixed z-50 left-0 top-0 h-screen w-64 bg-gray-800 p-4 flex flex-col transition-transform duration-200 ease-in-out
-          ${sidebarOpen ? "translate-x-0" : "-translate-x-64"}
-          lg:static lg:translate-x-0 lg:z-auto`}
-        style={{ pointerEvents: sidebarOpen ? 'auto' : 'none' }}
-        data-debug={debugText}
+        className={`
+          fixed z-50 left-0 top-0 h-screen w-64 bg-gray-800 p-4 flex flex-col transition-transform duration-200 ease-in-out
+          ${sidebarOpen ? 'translate-x-0' : '-translate-x-64'}
+          lg:static lg:translate-x-0 lg:z-auto
+        `}
+        // ¡QUITAMOS pointer-events para que siempre sea navegable!
+        data-debug="SIDEBAR VISIBLE"
       >
-        {/* Botón de cerrar (solo móvil) */}
+        {/* Botón cerrar solo en móvil */}
         <button
           ref={trigger}
           className="lg:hidden text-gray-500 hover:text-gray-400 absolute top-0 right-0 mt-4 mr-4"
@@ -69,8 +70,8 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
           <span className="ml-3 text-2xl font-bold text-white">GolAnalytics</span>
         </div>
 
-        {/* Texto de depuración */}
-        <div style={{ color: "yellow", marginBottom: 10, fontWeight: "bold" }}>{debugText}</div>
+        {/* Texto de depuración, puedes quitarlo después */}
+        <div style={{ color: "yellow", marginBottom: 10, fontWeight: "bold" }}>SIDEBAR VISIBLE</div>
 
         <nav className="space-y-2">
           <NavLink
@@ -78,6 +79,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
             className={({ isActive }) =>
               `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
             }
+            // Solo cerrar sidebar en móvil
             onClick={() => setSidebarOpen(false)}
           >
             <DashboardIcon />
