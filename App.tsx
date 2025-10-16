@@ -1,16 +1,31 @@
 import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
+import { useAuth } from './contexts/AuthContext';
+import { ROLES } from './constants';
 import AuthPage from './pages/AuthPage';
 import DashboardPage from './pages/DashboardPage';
 import VideoTaggerPage from './pages/VideoTaggerPage';
 import NotFoundPage from './pages/NotFoundPage';
-import { useAuth } from './contexts/AuthContext';
 import Layout from './components/layout/Layout';
-import Spinner from './components/ui/Spinner';
-import { ROLES } from './constants';
+import { Spinner } from './components/ui/Spinner';
+
+// Definición local de ProtectedRoute (no importado externamente)
+const ProtectedRoute: React.FC<{ children: React.ReactNode; allowedRoles?: string[] }> = ({ children, allowedRoles }) => {
+  const { user, profile } = useAuth();
+
+  if (!user) {
+    return <Navigate to="/" replace />;
+  }
+  
+  if (allowedRoles && profile && !allowedRoles.includes(profile.rol)) {
+     return <Navigate to="/dashboard" replace />;
+  }
+
+  return <>{children}</>;
+};
 
 const App: React.FC = () => {
-    const { user, profile, loading, authError } = useAuth();
+    const { user, loading, authError } = useAuth();
 
     if (loading && !authError) {
         return (
@@ -40,13 +55,13 @@ const App: React.FC = () => {
     return (
         <Routes>
             <Route path="/" element={!user ? <AuthPage /> : <Navigate to="/dashboard" />} />
-            <Route path="/dashboard" element={user ? <Layout><DashboardPage /></Layout> : <Navigate to="/" />} />
+            <Route path="/dashboard" element={<ProtectedRoute><Layout><DashboardPage /></Layout></ProtectedRoute>} />
             <Route
                 path="/tagger"
                 element={
-                    user && profile?.rol === ROLES.ADMIN
-                        ? <Layout><VideoTaggerPage /></Layout>
-                        : <Navigate to="/dashboard" />
+                    <ProtectedRoute allowedRoles={[ROLES.ADMIN]}>
+                        <Layout><VideoTaggerPage /></Layout>
+                    </ProtectedRoute>
                 }
             />
             <Route path="*" element={<NotFoundPage />} />
