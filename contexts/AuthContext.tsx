@@ -13,19 +13,17 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
-    let timeout: NodeJS.Timeout;
+    let timeout: ReturnType<typeof setTimeout>;
     const initializeAuth = async () => {
       setLoading(true);
       setAuthError(null);
 
-      // Timeout de recuperación (6 segundos)
       timeout = setTimeout(() => {
         setLoading(false);
-        setAuthError('No se pudo recuperar la sesión. Verifica tu conexión o vuelve a iniciar sesión.');
+        setAuthError('No se pudo recuperar la sesión. Recarga la página o inicia sesión nuevamente.');
       }, 6000);
 
       try {
-        // 1. Get initial session
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
 
         if (sessionError) {
@@ -39,7 +37,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
         const currentUser = session?.user ?? null;
         setUser(currentUser);
 
-        // 2. If user exists, get their profile
         if (currentUser) {
           try {
             const { data: profileData, error: profileError } = await supabase
@@ -51,7 +48,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             setProfile(profileData || null);
           } catch (error) {
             setAuthError('No se pudo obtener el perfil de usuario. Intenta recargar o iniciar sesión nuevamente.');
-            // Si el perfil falla, cerrar sesión para evitar estado inconsistente
             await supabase.auth.signOut();
             setUser(null);
             setSession(null);
@@ -71,15 +67,13 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
 
     initializeAuth();
 
-    // 4. Listen for future auth changes
     const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
       setLoading(true);
       setAuthError(null);
 
-      // Timeout para cambios futuros (6 segundos)
       timeout = setTimeout(() => {
         setLoading(false);
-        setAuthError('No se pudo recuperar la sesión. Verifica tu conexión o vuelve a iniciar sesión.');
+        setAuthError('No se pudo recuperar la sesión. Recarga la página o inicia sesión nuevamente.');
       }, 6000);
 
       const newCurrentUser = newSession?.user ?? null;
@@ -124,7 +118,6 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const signUp = async (email: string, password: string): Promise<{ error: AuthError | null }> => {
     setLoading(true);
     setAuthError(null);
-    // Note: The profile is created automatically by the Supabase trigger.
     const { error } = await supabase.auth.signUp({ email, password });
     setLoading(false);
     if (error) setAuthError(error.message);
