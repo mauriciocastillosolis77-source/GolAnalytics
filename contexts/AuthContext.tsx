@@ -10,44 +10,63 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   useEffect(() => {
+    let timeout: NodeJS.Timeout;
     const initializeAuth = async () => {
-      // 1. Get initial session
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-      
-      if (sessionError) {
-        console.error("Error getting session:", sessionError);
-        setLoading(false);
-        return;
-      }
-      
-      setSession(session);
-      const currentUser = session?.user ?? null;
-      setUser(currentUser);
+      setLoading(true);
+      setAuthError(null);
 
-      // 2. If user exists, get their profile
-      if (currentUser) {
-        try {
-          const { data: profileData, error: profileError } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', currentUser.id)
-            .single();
-          if (profileError) throw profileError;
-          setProfile(profileData || null);
-        } catch (error) {
-           console.error("Error fetching initial profile:", error);
-           // If profile fails, log out the user to prevent inconsistent state
-           await supabase.auth.signOut();
-           setUser(null);
-           setSession(null);
-           setProfile(null);
+      // Timeout de recuperación (6 segundos)
+      timeout = setTimeout(() => {
+        setLoading(false);
+        setAuthError('No se pudo recuperar la sesión. Verifica tu conexión o vuelve a iniciar sesión.');
+      }, 6000);
+
+      try {
+        // 1. Get initial session
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+
+        if (sessionError) {
+          setLoading(false);
+          setAuthError('Error al obtener la sesión. Por favor, recarga la página o inicia sesión nuevamente.');
+          clearTimeout(timeout);
+          return;
         }
+
+        setSession(session);
+        const currentUser = session?.user ?? null;
+        setUser(currentUser);
+
+        // 2. If user exists, get their profile
+        if (currentUser) {
+          try {
+            const { data: profileData, error: profileError } = await supabase
+              .from('profiles')
+              .select('*')
+              .eq('id', currentUser.id)
+              .single();
+            if (profileError) throw profileError;
+            setProfile(profileData || null);
+          } catch (error) {
+            setAuthError('No se pudo obtener el perfil de usuario. Intenta recargar o iniciar sesión nuevamente.');
+            // Si el perfil falla, cerrar sesión para evitar estado inconsistente
+            await supabase.auth.signOut();
+            setUser(null);
+            setSession(null);
+            setProfile(null);
+          }
+        } else {
+          setProfile(null);
+        }
+        setLoading(false);
+        clearTimeout(timeout);
+      } catch (error: any) {
+        setLoading(false);
+        setAuthError('Error inesperado en la autenticación. Intenta recargar o iniciar sesión nuevamente.');
+        clearTimeout(timeout);
       }
-      
-      // 3. We are done loading initial data
-      setLoading(false);
     };
 
     initializeAuth();
@@ -55,44 +74,71 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     // 4. Listen for future auth changes
     const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
       setLoading(true);
-      setSession(newSession);
+      setAuthError(null);
+
+      // Timeout para cambios futuros (6 segundos)
+      timeout = setTimeout(() => {
+        setLoading(false);
+        setAuthError('No se pudo recuperar la sesión. Verifica tu conexión o vuelve a iniciar sesión.');
+      }, 6000);
+
       const newCurrentUser = newSession?.user ?? null;
+      setSession(newSession);
       setUser(newCurrentUser);
 
       if (newCurrentUser) {
-         const { data: profileData } = await supabase
+        try {
+          const { data: profileData, error: profileError } = await supabase
             .from('profiles')
             .select('*')
             .eq('id', newCurrentUser.id)
             .single();
-         setProfile(profileData || null);
+          if (profileError) throw profileError;
+          setProfile(profileData || null);
+        } catch (error) {
+          setAuthError('No se pudo obtener el perfil de usuario. Intenta recargar o iniciar sesión nuevamente.');
+          setProfile(null);
+        }
       } else {
         setProfile(null);
       }
       setLoading(false);
+      clearTimeout(timeout);
     });
 
     return () => {
       authListener.subscription.unsubscribe();
+      clearTimeout(timeout);
     };
   }, []);
 
   const signIn = async (email: string, password: string): Promise<{ error: AuthError | null }> => {
+    setLoading(true);
+    setAuthError(null);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setLoading(false);
+    if (error) setAuthError(error.message);
     return { error };
   };
 
   const signUp = async (email: string, password: string): Promise<{ error: AuthError | null }> => {
+    setLoading(true);
+    setAuthError(null);
     // Note: The profile is created automatically by the Supabase trigger.
     const { error } = await supabase.auth.signUp({ email, password });
+    setLoading(false);
+    if (error) setAuthError(error.message);
     return { error };
   };
 
   const logout = async () => {
+    setLoading(true);
+    setAuthError(null);
     await supabase.auth.signOut();
+    setLoading(false);
   };
 
-  const value: AuthContextType = {
+  const value: AuthContextType & { authError: string | null } = {
     user,
     session,
     profile,
@@ -100,10 +146,9 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     signIn,
     signUp,
     logout,
+    authError,
   };
-  
-  // The Provider *always* renders its children. 
-  // The loading state is passed down for components to decide what to show.
+
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 };
 
