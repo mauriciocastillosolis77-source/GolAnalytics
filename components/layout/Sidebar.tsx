@@ -33,7 +33,6 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
   }, [sidebarOpen]);
 
   // Texto de depuración para ver si el sidebar está renderizado
-  // Puedes eliminar esto después de la prueba
   const debugText = "SIDEBAR VISIBLE";
 
   return (
@@ -49,7 +48,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
       <div
         ref={sidebar}
         className={`fixed z-50 left-0 top-0 h-screen w-64 bg-gray-800 p-4 flex flex-col transition-transform duration-200 ease-in-out
-          ${sidebarOpen ? 'translate-x-0' : '-translate-x-64'}
+          ${sidebarOpen ? "translate-x-0" : "-translate-x-64"}
           lg:static lg:translate-x-0 lg:z-auto`}
         style={{ pointerEvents: sidebarOpen ? 'auto' : 'none' }}
         data-debug={debugText}
