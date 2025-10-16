@@ -5,13 +5,12 @@ import DashboardPage from './pages/DashboardPage';
 import VideoTaggerPage from './pages/VideoTaggerPage';
 import NotFoundPage from './pages/NotFoundPage';
 import { useAuth } from './contexts/AuthContext';
-import Layout from './components/layout/Layout'; // Ruta corregida
-import ProtectedRoute from './components/ProtectedRoute';
+import Layout from './components/layout/Layout';
 import Spinner from './components/ui/Spinner';
 import { ROLES } from './constants';
 
 const App: React.FC = () => {
-    const { user, loading, authError } = useAuth();
+    const { user, profile, loading, authError } = useAuth();
 
     if (loading && !authError) {
         return (
@@ -41,13 +40,13 @@ const App: React.FC = () => {
     return (
         <Routes>
             <Route path="/" element={!user ? <AuthPage /> : <Navigate to="/dashboard" />} />
-            <Route path="/dashboard" element={<ProtectedRoute><Layout><DashboardPage /></Layout></ProtectedRoute>} />
+            <Route path="/dashboard" element={user ? <Layout><DashboardPage /></Layout> : <Navigate to="/" />} />
             <Route
                 path="/tagger"
                 element={
-                    <ProtectedRoute allowedRoles={[ROLES.ADMIN]}>
-                        <Layout><VideoTaggerPage /></Layout>
-                    </ProtectedRoute>
+                    user && profile?.rol === ROLES.ADMIN
+                        ? <Layout><VideoTaggerPage /></Layout>
+                        : <Navigate to="/dashboard" />
                 }
             />
             <Route path="*" element={<NotFoundPage />} />
