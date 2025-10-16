@@ -1,17 +1,24 @@
-import React, { useState } from 'react';
+import React, { useState, ReactNode } from 'react';
 import Header from './Header';
 import Sidebar from './Sidebar';
 
-const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+interface LayoutProps {
+    children: ReactNode;
+}
+
+const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
-    <div className="flex h-screen bg-gray-900">
-      {/* Sidebar is rendered first, so it overlays the content in mobile */}
+    <div className="flex h-screen bg-gray-900 text-gray-100">
+      {/* Sidebar: siempre montado, maneja visibilidad con sidebarOpen */}
       <Sidebar sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
+      {/* Contenido principal */}
       <div className="flex flex-col flex-1 min-w-0">
         <Header setSidebarOpen={setSidebarOpen} />
-        <main className="flex-1 overflow-y-auto p-4">{children}</main>
+        <main className="flex-1 p-4 lg:p-6 overflow-y-auto">
+          {children}
+        </main>
       </div>
     </div>
   );
