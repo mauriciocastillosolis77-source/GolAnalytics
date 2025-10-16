@@ -11,10 +11,12 @@ const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   return (
     <div className="flex h-screen bg-gray-900 text-gray-100">
+      {/* Sidebar: siempre montado, maneja visibilidad con sidebarOpen */}
       <Sidebar sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
-      <div className="flex flex-col flex-1 overflow-y-auto">
+      {/* Contenido principal */}
+      <div className="flex flex-col flex-1 min-w-0">
         <Header setSidebarOpen={setSidebarOpen} />
-        <main className="flex-1 p-4 lg:p-6">
+        <main className="flex-1 p-4 lg:p-6 overflow-y-auto">
           {children}
         </main>
       </div>
