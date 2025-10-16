@@ -4,6 +4,9 @@ import { useAuth } from '../../contexts/AuthContext';
 import { ROLES } from '../../constants';
 import { DashboardIcon, Logo, TaggerIcon } from '../ui/Icons';
 
+// Forzar a Tailwind a incluir las clases necesarias
+const _forceTailwindClasses = ["translate-x-0", "-translate-x-64"];
+
 const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) => void }> = ({ sidebarOpen, setSidebarOpen }) => {
   const { profile } = useAuth();
   const trigger = useRef<HTMLButtonElement>(null);
@@ -29,21 +32,27 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
     }
   }, [sidebarOpen]);
 
+  // Texto de depuración para ver si el sidebar está renderizado
+  // Puedes eliminar esto después de la prueba
+  const debugText = "SIDEBAR VISIBLE";
+
   return (
     <>
-      {/* Fondo oscuro atrás del menú (solo móvil) */}
+      {/* Backdrop */}
       <div
         className={`fixed inset-0 bg-gray-900 bg-opacity-40 z-50 lg:hidden transition-opacity duration-200 ${sidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         aria-hidden="true"
         onClick={() => setSidebarOpen(false)}
       />
 
-      {/* Sidebar con z-50 para asegurar superposición */}
+      {/* Sidebar */}
       <div
         ref={sidebar}
         className={`fixed z-50 left-0 top-0 h-screen w-64 bg-gray-800 p-4 flex flex-col transition-transform duration-200 ease-in-out
           ${sidebarOpen ? 'translate-x-0' : '-translate-x-64'}
           lg:static lg:translate-x-0 lg:z-auto`}
+        style={{ pointerEvents: sidebarOpen ? 'auto' : 'none' }}
+        data-debug={debugText}
       >
         {/* Botón de cerrar (solo móvil) */}
         <button
@@ -60,6 +69,9 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
           <Logo className="h-10 w-10 text-cyan-400" />
           <span className="ml-3 text-2xl font-bold text-white">GolAnalytics</span>
         </div>
+
+        {/* Texto de depuración */}
+        <div style={{ color: "yellow", marginBottom: 10, fontWeight: "bold" }}>{debugText}</div>
 
         <nav className="space-y-2">
           <NavLink
