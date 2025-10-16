@@ -9,25 +9,42 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
   const trigger = useRef<HTMLButtonElement>(null);
   const sidebar = useRef<HTMLDivElement>(null);
 
+  // Click outside to close sidebar (mobile)
   useEffect(() => {
     const clickHandler = ({ target }: MouseEvent) => {
       if (!sidebar.current || !trigger.current) return;
+      // Only close if sidebar is open and click is outside sidebar/trigger
       if (!sidebarOpen || sidebar.current.contains(target as Node) || trigger.current.contains(target as Node)) return;
       setSidebarOpen(false);
     };
     document.addEventListener('click', clickHandler);
     return () => document.removeEventListener('click', clickHandler);
-  });
+  }, [sidebarOpen, setSidebarOpen]);
+
+  // Prevent scroll when sidebar is open (mobile)
+  useEffect(() => {
+    if (sidebarOpen) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+  }, [sidebarOpen]);
 
   return (
     <>
-      {/* Sidebar backdrop (mobile) */}
-      <div className={`fixed inset-0 bg-gray-900 bg-opacity-30 z-40 lg:hidden transition-opacity duration-200 ${sidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`} aria-hidden="true"></div>
-      
+      {/* Backdrop */}
+      <div
+        className={`fixed inset-0 bg-gray-900 bg-opacity-30 z-40 lg:hidden transition-opacity duration-200 ${sidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+        aria-hidden="true"
+        onClick={() => setSidebarOpen(false)}
+      />
+
       {/* Sidebar */}
       <div
         ref={sidebar}
-        className={`flex flex-col fixed z-40 left-0 top-0 lg:static lg:left-auto lg:top-auto transform h-screen overflow-y-scroll w-64 flex-shrink-0 bg-gray-800 p-4 transition-transform duration-200 ease-in-out ${sidebarOpen ? 'translate-x-0' : '-translate-x-64'} lg:translate-x-0`}
+        className={`fixed z-50 left-0 top-0 h-screen w-64 bg-gray-800 p-4 flex flex-col transition-transform duration-200 ease-in-out
+          ${sidebarOpen ? 'translate-x-0' : '-translate-x-64'}
+          lg:static lg:translate-x-0 lg:z-auto`}
       >
         {/* Close button (mobile) */}
         <button
@@ -44,24 +61,26 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
           <Logo className="h-10 w-10 text-cyan-400" />
           <span className="ml-3 text-2xl font-bold text-white">GolAnalytics</span>
         </div>
-        
+
         <nav className="space-y-2">
-          <NavLink 
-            to="/dashboard" 
-            className={({ isActive }) => 
+          <NavLink
+            to="/dashboard"
+            className={({ isActive }) =>
               `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive && 'bg-cyan-600 text-white'}`
             }
+            onClick={() => setSidebarOpen(false)}
           >
             <DashboardIcon />
             <span className="ml-3">Tablero</span>
           </NavLink>
 
           {profile?.rol === ROLES.ADMIN && (
-            <NavLink 
-              to="/tagger" 
-              className={({ isActive }) => 
+            <NavLink
+              to="/tagger"
+              className={({ isActive }) =>
                 `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive && 'bg-cyan-600 text-white'}`
               }
+              onClick={() => setSidebarOpen(false)}
             >
               <TaggerIcon />
               <span className="ml-3">Etiquetador</span>
