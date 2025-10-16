@@ -250,10 +250,12 @@ const VideoTaggerPage: React.FC = () => {
             if (!file) throw new Error("No hay video activo.");
             const videoBlob = await blobToBase64(file);
             const suggestions: AISuggestion[] = await analyzeVideoFrames(videoBlob);
-            setAiSuggestions(suggestions);
-            setIsSuggestionsModalOpen(true);
+
+            setAiSuggestions(suggestions || []);
+            setIsSuggestionsModalOpen(suggestions && suggestions.length > 0);
         } catch (err: any) {
             setSaveStatus({ message: "Error en el análisis asistido por IA.", type: 'error' });
+            setIsSuggestionsModalOpen(false);
         } finally {
             setIsAnalyzingAI(false);
         }
@@ -281,10 +283,18 @@ const VideoTaggerPage: React.FC = () => {
         };
         setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
+        if (aiSuggestions.length === 1) setIsSuggestionsModalOpen(false);
     };
 
     const handleRejectSuggestion = (suggestion: AISuggestion) => {
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
+        if (aiSuggestions.length === 1) setIsSuggestionsModalOpen(false);
+    };
+
+    // Handler for closing the IA modal
+    const handleCloseSuggestionsModal = () => {
+        setIsSuggestionsModalOpen(false);
+        setAiSuggestions([]);
     };
 
     // Render UI
@@ -443,7 +453,7 @@ const VideoTaggerPage: React.FC = () => {
             </div>
             <AISuggestionsModal
                 isOpen={isSuggestionsModalOpen}
-                onClose={() => setIsSuggestionsModalOpen(false)}
+                onClose={handleCloseSuggestionsModal}
                 suggestions={aiSuggestions}
                 onAccept={handleAcceptSuggestion}
                 onReject={handleRejectSuggestion}
