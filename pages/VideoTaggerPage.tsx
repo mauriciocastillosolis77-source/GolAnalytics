@@ -33,6 +33,7 @@ const VideoTaggerPage: React.FC = () => {
     const [teamUniformFile, setTeamUniformFile] = useState<File | null>(null);
     const [opponentUniformFile, setOpponentUniformFile] = useState<File | null>(null);
     const [activeVideoUrl, setActiveVideoUrl] = useState<string | null>(null);
+    const [currentVideoFile, setCurrentVideoFile] = useState<File | null>(null);
 
     // Section 3: Tagging
     const [players, setPlayers] = useState<Player[]>([]);
@@ -108,7 +109,7 @@ const VideoTaggerPage: React.FC = () => {
         }
     };
 
-    // Handler for uploading players via Excel file (CORREGIDO: sin match_id)
+    // Handler for uploading players via Excel file (sin match_id)
     const handlePlayerFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
@@ -165,8 +166,12 @@ const VideoTaggerPage: React.FC = () => {
 
     // Handler for selecting a video file
     const handleVideoSelect = (file: File) => {
-        if (activeVideoUrl) URL.revokeObjectURL(activeVideoUrl);
+        // Solo revoca la URL anterior si hay un video diferente
+        if (activeVideoUrl && currentVideoFile && file !== currentVideoFile) {
+            URL.revokeObjectURL(activeVideoUrl);
+        }
         setActiveVideoUrl(URL.createObjectURL(file));
+        setCurrentVideoFile(file);
     };
 
     const formatTime = (time: number) => new Date(time * 1000).toISOString().slice(14, 19);
@@ -337,6 +342,7 @@ const VideoTaggerPage: React.FC = () => {
                         onClick={() => {
                             if (!activeVideoUrl) return;
                             window.open(activeVideoUrl, '_blank');
+                            // NO revocamos la URL ni cambiamos el estado aquí
                         }}
                         disabled={!activeVideoUrl}
                         className="mt-4 w-full bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded"
