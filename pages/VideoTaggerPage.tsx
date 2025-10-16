@@ -243,28 +243,51 @@ const VideoTaggerPage: React.FC = () => {
 
     // Handler for AI-assisted analysis
     const handleAIAssistedAnalysis = async () => {
-        if (!activeVideoUrl || !selectedMatchId) return;
+        if (!videoRef.current || !canvasRef.current) return;
         setIsAnalyzingAI(true);
         try {
-            const file = currentVideoFile;
-            if (!file) throw new Error("No hay video activo.");
-            const videoBlob = await blobToBase64(file);
-            const suggestions: AISuggestion[] = await analyzeVideoFrames(videoBlob);
+            const video = videoRef.current;
+            const canvas = canvasRef.current;
+            const context = canvas.getContext('2d');
+            if (!context) return;
 
-            setAiSuggestions(suggestions || []);
-            setIsSuggestionsModalOpen(suggestions && suggestions.length > 0);
-        } catch (err: any) {
-            setSaveStatus({ message: "Error en el análisis asistido por IA.", type: 'error' });
-            setIsSuggestionsModalOpen(false);
+            const frames: { data: string; mimeType: string }[] = [];
+            const frameCount = 8, interval = 2, startTime = Math.max(0, video.currentTime - (frameCount * interval));
+            video.pause();
+
+            for (let i = 0; i < frameCount; i++) {
+                video.currentTime = startTime + i * interval;
+                await new Promise(r => setTimeout(r, 200));
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const blob: Blob | null = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.8));
+                if (blob) {
+                    const base64 = await blobToBase64(blob);
+                    if (base64) frames.push({ data: base64, mimeType: 'image/jpeg' });
+                }
+            }
+
+            if (frames.length > 0) {
+                const suggestions = await analyzeVideoFrames(frames, tags);
+                setAiSuggestions(suggestions);
+                setIsSuggestionsModalOpen(suggestions.length > 0); // Solo abrir si hay sugerencias
+                if (suggestions.length === 0) alert("La IA no encontró nuevas jugadas para sugerir.");
+            }
+        } catch (error) {
+            console.error("Error during AI analysis:", error);
+            alert("Ocurrió un error durante el análisis de IA.");
         } finally {
             setIsAnalyzingAI(false);
+            videoRef.current?.play();
         }
     };
 
-    // Handler for accepting AI suggestion (adds tag)
     const handleAcceptSuggestion = (suggestion: AISuggestion) => {
-        const { timestamp, action } = suggestion;
-        const fullAction = action;
+        const timeParts = suggestion.timestamp.split(':').map(Number);
+        const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
+
+        const fullAction = suggestion.action;
         if (!METRICS.includes(fullAction)) {
             handleRejectSuggestion(suggestion);
             return;
@@ -291,32 +314,40 @@ const VideoTaggerPage: React.FC = () => {
         if (aiSuggestions.length === 1) setIsSuggestionsModalOpen(false);
     };
 
-    // Handler for closing the IA modal
     const handleCloseSuggestionsModal = () => {
         setIsSuggestionsModalOpen(false);
-        setAiSuggestions([]);
+        setAiSuggestions([]); // Limpiar sugerencias al cerrar
     };
 
-    // Render UI
+    if (isLoading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
+
     return (
-        <div className="flex gap-4 h-full">
-            {/* Left Column: Video and tags */}
-            <div className="w-2/3 flex flex-col gap-4">
-                <div className="bg-gray-800 rounded-lg p-4">
-                    <h3 className="text-lg font-semibold mb-2 text-white">Video Partido</h3>
-                    <input type="file" accept="video/*" onChange={handleVideoFileChange} className="w-full text-sm file:mr-4 file:py-1 file:px-2 file:rounded-full file:border-0 file:font-semibold file:bg-gray-600 file:text-white hover:file:bg-gray-500" />
-                    {activeVideoUrl ? (
-                        <video
-                            ref={videoRef}
-                            src={activeVideoUrl}
-                            controls
-                            width="100%"
-                            className="mt-4 rounded-lg shadow-lg"
-                            onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
-                        ></video>
-                    ) : (
-                        <p className="text-gray-400">Seleccione un partido y cargue videos para empezar</p>
-                    )}
+        <div className="flex h-full gap-4 p-4">
+            <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
+            {isSuggestionsModalOpen && aiSuggestions.length > 0 && (
+                <AISuggestionsModal
+                    suggestions={aiSuggestions}
+                    onAccept={handleAcceptSuggestion}
+                    onReject={handleRejectSuggestion}
+                    onClose={handleCloseSuggestionsModal}
+                />
+            )}
+            {/* Left Column: Video and Tagged Plays */}
+            <div className="flex-1 flex flex-col gap-4">
+                <div className="bg-gray-800 rounded-lg p-4 flex flex-col">
+                    <div className="min-h-[300px] max-h-[350px] flex items-center justify-center bg-black rounded-md">
+                        {activeVideoUrl ? (
+                            <video
+                                ref={videoRef}
+                                src={activeVideoUrl}
+                                controls
+                                className="max-h-full w-full"
+                                onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
+                            ></video>
+                        ) : (
+                            <p className="text-gray-400">Seleccione un partido y cargue videos para empezar</p>
+                        )}
+                    </div>
                     <button
                         onClick={() => {
                             if (!activeVideoUrl) return;
@@ -362,7 +393,6 @@ const VideoTaggerPage: React.FC = () => {
                     </div>
                 </div>
             </div>
-
             {/* Right Column: Management Panels */}
             <div className="w-1/3 flex flex-col gap-4 overflow-y-auto pr-2">
                 {/* 1. Gestión del Partido */}
@@ -451,13 +481,6 @@ const VideoTaggerPage: React.FC = () => {
                     </button>
                 </div>
             </div>
-            <AISuggestionsModal
-                isOpen={isSuggestionsModalOpen}
-                onClose={handleCloseSuggestionsModal}
-                suggestions={aiSuggestions}
-                onAccept={handleAcceptSuggestion}
-                onReject={handleRejectSuggestion}
-            />
         </div>
     );
 };
