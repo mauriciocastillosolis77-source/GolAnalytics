@@ -9,11 +9,10 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
   const trigger = useRef<HTMLButtonElement>(null);
   const sidebar = useRef<HTMLDivElement>(null);
 
-  // Click outside to close sidebar (mobile)
+  // Cierra el menú si se hace clic fuera (solo móvil)
   useEffect(() => {
     const clickHandler = ({ target }: MouseEvent) => {
       if (!sidebar.current || !trigger.current) return;
-      // Only close if sidebar is open and click is outside sidebar/trigger
       if (!sidebarOpen || sidebar.current.contains(target as Node) || trigger.current.contains(target as Node)) return;
       setSidebarOpen(false);
     };
@@ -21,7 +20,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
     return () => document.removeEventListener('click', clickHandler);
   }, [sidebarOpen, setSidebarOpen]);
 
-  // Prevent scroll when sidebar is open (mobile)
+  // Evita el scroll cuando el menú está abierto (móvil)
   useEffect(() => {
     if (sidebarOpen) {
       document.body.style.overflow = 'hidden';
@@ -32,21 +31,21 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
 
   return (
     <>
-      {/* Backdrop */}
+      {/* Fondo oscuro atrás del menú (solo móvil) */}
       <div
-        className={`fixed inset-0 bg-gray-900 bg-opacity-30 z-40 lg:hidden transition-opacity duration-200 ${sidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+        className={`fixed inset-0 bg-gray-900 bg-opacity-40 z-50 lg:hidden transition-opacity duration-200 ${sidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         aria-hidden="true"
         onClick={() => setSidebarOpen(false)}
       />
 
-      {/* Sidebar */}
+      {/* Sidebar con z-50 para asegurar superposición */}
       <div
         ref={sidebar}
         className={`fixed z-50 left-0 top-0 h-screen w-64 bg-gray-800 p-4 flex flex-col transition-transform duration-200 ease-in-out
           ${sidebarOpen ? 'translate-x-0' : '-translate-x-64'}
           lg:static lg:translate-x-0 lg:z-auto`}
       >
-        {/* Close button (mobile) */}
+        {/* Botón de cerrar (solo móvil) */}
         <button
           ref={trigger}
           className="lg:hidden text-gray-500 hover:text-gray-400 absolute top-0 right-0 mt-4 mr-4"
@@ -66,7 +65,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
           <NavLink
             to="/dashboard"
             className={({ isActive }) =>
-              `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive && 'bg-cyan-600 text-white'}`
+              `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
             }
             onClick={() => setSidebarOpen(false)}
           >
@@ -78,7 +77,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
             <NavLink
               to="/tagger"
               className={({ isActive }) =>
-                `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive && 'bg-cyan-600 text-white'}`
+                `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
               }
               onClick={() => setSidebarOpen(false)}
             >
