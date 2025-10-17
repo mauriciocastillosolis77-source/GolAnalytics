@@ -1,22 +1,26 @@
-// Archivo de constantes centralizadas para GolAnalytics
-
-// Lista de métricas (acciones/jugadas) disponibles en el sistema.
-// Esta lista es utilizada por el etiquetador de video, dashboard, y sugerencias de IA.
 export const METRICS = [
-  "Pase corto ofensivo",
-  "Pase corto defensivo",
-  "Pase largo ofensivo",
-  "Pase largo defensivo",
-  "1 vs 1 ofensivo",
-  "1 vs 1 defensivo",
-  "Aéreo ofensivo",
-  "Aéreo defensivo",
+  "Pase corto defensivo logrado",
+  "Pase corto defensivo fallado",
+  "Pase corto ofensivo logrado",
+  "Pase corto ofensivo fallado",
+  "Pase largo defensivo logrado",
+  "Pase largo defensivo fallado",
+  "Pase largo ofensivo logrado",
+  "Pase largo ofensivo fallado",
+  "1 vs 1 defensivo logrado",
+  "1 vs 1 defensivo fallado",
+  "1 vs 1 ofensivo logrado",
+  "1 vs 1 ofensivo fallado",
+  "Aéreo defensivo logrado",
+  "Aéreo defensivo fallado",
+  "Aéreo ofensivo logrado",
+  "Aéreo ofensivo fallado",
   "Tiros a portería",
   "Goles a favor",
   "Atajadas",
   "Goles recibidos",
-  // Nuevas acciones para transición ofensiva y recuperación
   "Recuperación de balón",
+  // Nuevas métricas para transición ofensiva
   "Transición ofensiva lograda",
   "Transición ofensiva no lograda"
 ];
