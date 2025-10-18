@@ -575,7 +575,10 @@ const DashboardPage: React.FC = () => {
                                     <XAxis dataKey="name" stroke="#9CA3AF" />
                                     <YAxis stroke="#9CA3AF" allowDecimals={false} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    <Bar dataKey="value" fill="#0EA5E9" />
+                                    <Bar dataKey="value>
+                                      <Cell fill="#22C55E" /> {/* verde para Logradas */}
+                                      <Cell fill="#EF4444" /> {/* rojo para No logrados */}
+                                </Bar>
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
