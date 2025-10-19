@@ -181,8 +181,24 @@ const VideoTaggerPage: React.FC = () => {
         if (!selectedPlayerId || !videoRef.current) return;
 
         const actionParts = selectedAction.split(' ');
-        const resultado = actionParts.includes('logrado') ? 'logrado' : (actionParts.includes('fallado') ? 'fallado' : '');
-        const accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
+
+        // Lógica extendida para transición ofensiva y recuperación de balón
+        let resultado = '';
+        if (actionParts.includes('logrado')) resultado = 'logrado';
+        else if (actionParts.includes('fallado')) resultado = 'fallado';
+        else if (selectedAction === "Transición ofensiva lograda") resultado = 'logrado';
+        else if (selectedAction === "Transición ofensiva no lograda") resultado = 'no logrado';
+
+        let accion = selectedAction;
+        if (
+            selectedAction === "Transición ofensiva lograda" ||
+            selectedAction === "Transición ofensiva no lograda" ||
+            selectedAction === "Recuperación de balón"
+        ) {
+            accion = selectedAction;
+        } else {
+            accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
+        }
 
         const newTag: Tag = {
             id: `temp-${Date.now()}`,
@@ -287,8 +303,24 @@ const VideoTaggerPage: React.FC = () => {
             return;
         }
         const actionParts = fullAction.split(' ');
-        const resultado = actionParts.includes('logrado') ? 'logrado' : (actionParts.includes('fallado') ? 'fallado' : '');
-        const accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
+
+        // Lógica extendida para transición ofensiva y recuperación de balón
+        let resultado = '';
+        if (actionParts.includes('logrado')) resultado = 'logrado';
+        else if (actionParts.includes('fallado')) resultado = 'fallado';
+        else if (fullAction === "Transición ofensiva lograda") resultado = 'logrado';
+        else if (fullAction === "Transición ofensiva no lograda") resultado = 'no logrado';
+
+        let accion = fullAction;
+        if (
+            fullAction === "Transición ofensiva lograda" ||
+            fullAction === "Transición ofensiva no lograda" ||
+            fullAction === "Recuperación de balón"
+        ) {
+            accion = fullAction;
+        } else {
+            accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
+        }
 
         const newTag: Tag = {
             id: `temp-ai-${Date.now()}`,

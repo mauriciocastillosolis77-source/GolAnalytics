@@ -1,4 +1,3 @@
-
 export const METRICS = [
   "Pase corto defensivo logrado",
   "Pase corto defensivo fallado",
@@ -20,7 +19,10 @@ export const METRICS = [
   "Goles a favor",
   "Atajadas",
   "Goles recibidos",
-  "Recuperación de balón"
+  "Recuperación de balón",
+  // Nuevas métricas para transición ofensiva
+  "Transición ofensiva lograda",
+  "Transición ofensiva no lograda"
 ];
 
 export const ROLES = {

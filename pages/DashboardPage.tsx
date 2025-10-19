@@ -60,7 +60,6 @@ const CustomizedContent = (props: any) => {
     );
 };
 
-
 const DashboardPage: React.FC = () => {
     const [matches, setMatches] = useState<Match[]>([]);
     const [tags, setTags] = useState<Tag[]>([]);
@@ -122,9 +121,7 @@ const DashboardPage: React.FC = () => {
             if (filters.matchId !== 'all' && tag.match_id !== filters.matchId) return false;
             if (filters.matchId === 'all' && !matchIds.has(tag.match_id)) return false;
             if (filters.jugador !== 'all' && tag.player_id !== filters.jugador) return false;
-            
             if (filters.accion !== 'all' && tag.accion !== filters.accion) return false;
-            
             return true;
         });
     }, [tags, filteredMatches, filters]);
@@ -359,6 +356,62 @@ const DashboardPage: React.FC = () => {
             .slice(0, 10);
     }, [filteredTags, players]);
 
+    // === NUEVAS GRAFICAS ===
+
+    // 1. Transiciones ofensivas logradas/no logradas (General)
+    const transicionesOfensivasData = useMemo(() => {
+        const logradas = filteredTags.filter(
+            t => t.accion === 'Transición ofensiva lograda'
+        ).length;
+        const noLogradas = filteredTags.filter(
+            t => t.accion === 'Transición ofensiva no lograda'
+        ).length;
+        return [
+            { name: 'Logradas', value: logradas },
+            { name: 'No logradas', value: noLogradas }
+        ];
+    }, [filteredTags]);
+
+    // 2. Recuperación de balón por jornada (General)
+    const recuperacionBalonPorJornada = useMemo(() => {
+        const dataByJornada: { [jornada: string]: number } = {};
+        filteredTags.forEach(tag => {
+            if (tag.accion === 'Recuperación de balón') {
+                const match = matches.find(m => m.id === tag.match_id);
+                if (!match || !match.jornada) return;
+                const jornada = String(match.jornada);
+                if (!dataByJornada[jornada]) dataByJornada[jornada] = 0;
+                dataByJornada[jornada]++;
+            }
+        });
+        return Object.entries(dataByJornada)
+            .map(([jornada, count]) => ({
+                name: `Jornada ${jornada}`,
+                value: count
+            }))
+            .sort((a, b) => parseInt(a.name.split(' ')[1]) - parseInt(b.name.split(' ')[1]));
+    }, [filteredTags, matches]);
+
+    // 3. Recuperación de balón por jugador (Jugador)
+    const recuperacionBalonPorJugador = useMemo(() => {
+        const counts: { [playerId: string]: number } = {};
+        filteredTags
+            .filter(tag => tag.accion === 'Recuperación de balón')
+            .forEach(tag => {
+                if (tag.player_id) {
+                    counts[tag.player_id] = (counts[tag.player_id] || 0) + 1;
+                }
+            });
+        return Object.entries(counts)
+            .map(([playerId, count]) => ({
+                name: players.find(p => p.id === playerId)?.nombre || 'Desconocido',
+                value: count,
+            }))
+            .sort((a, b) => b.value - a.value);
+    }, [filteredTags, players]);
+
+    // === FIN NUEVAS GRAFICAS ===
+
     if (loading) return <div className="flex justify-center items-center h-full"><Spinner /></div>;
     if (error) return <div className="text-center text-red-400 p-8">{error}</div>;
 
@@ -511,6 +564,43 @@ const DashboardPage: React.FC = () => {
                             </ResponsiveContainer>
                         </div>
                     </div>
+
+                    {/* === AGREGADO: NUEVAS GRAFICAS DE TRANSICIONES Y RECUPERACION BALON === */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div className="bg-gray-800 p-6 rounded-lg h-80">
+                            <h3 className="text-lg font-semibold text-white mb-4">Transiciones Ofensivas (Logradas vs No Logradas)</h3>
+                            <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={transicionesOfensivasData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                    <XAxis dataKey="name" stroke="#9CA3AF" />
+                                    <YAxis stroke="#9CA3AF" allowDecimals={false} />
+                                    <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
+                                    {/* Color verde para Logradas, rojo para No logradas */}
+                                    <Bar dataKey="value">
+                                        {transicionesOfensivasData.map((entry, idx) => (
+                                            <Cell 
+                                                key={`cell-transicion-${idx}`} 
+                                                fill={entry.name === 'Logradas' ? '#22C55E' : '#EF4444'}
+                                            />
+                                        ))}
+                                    </Bar>
+                                </BarChart>
+                            </ResponsiveContainer>
+                        </div>
+                        <div className="bg-gray-800 p-6 rounded-lg h-80">
+                            <h3 className="text-lg font-semibold text-white mb-4">Recuperación de Balón por Jornada</h3>
+                            <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={recuperacionBalonPorJornada} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                    <XAxis dataKey="name" stroke="#9CA3AF" />
+                                    <YAxis stroke="#9CA3AF" allowDecimals={false} />
+                                    <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
+                                    <Bar dataKey="value" fill="#16A34A" />
+                                </BarChart>
+                            </ResponsiveContainer>
+                        </div>
+                    </div>
+                    {/* === FIN NUEVAS GRAFICAS === */}
                 </div>
             )}
 
@@ -583,6 +673,21 @@ const DashboardPage: React.FC = () => {
                             </ResponsiveContainer>
                         </div>
                     </div>
+
+                    {/* === AGREGADO: RECUPERACION DE BALON POR JUGADOR === */}
+                    <div className="bg-gray-800 p-6 rounded-lg h-96 flex flex-col">
+                        <h3 className="text-lg font-semibold text-white mb-4">Recuperación de Balón por Jugador</h3>
+                        <ResponsiveContainer width="100%" height="100%">
+                            <BarChart data={recuperacionBalonPorJugador} layout="vertical" margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
+                                <XAxis type="number" stroke="#9CA3AF" allowDecimals={false} />
+                                <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={100} tick={{ fontSize: 14, fill: '#D1D5DB' }} />
+                                <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} cursor={{fill: 'rgba(107, 114, 128, 0.2)'}}/>
+                                <Bar dataKey="value" fill="#16A34A" name="Recuperaciones" />
+                            </BarChart>
+                        </ResponsiveContainer>
+                    </div>
+                    {/* === FIN RECUPERACION DE BALON POR JUGADOR === */}
                 </div>
             )}
         </div>
@@ -590,3 +695,4 @@ const DashboardPage: React.FC = () => {
 };
 
 export default DashboardPage;
+
