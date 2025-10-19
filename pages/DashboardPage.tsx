@@ -575,10 +575,15 @@ const DashboardPage: React.FC = () => {
                                     <XAxis dataKey="name" stroke="#9CA3AF" />
                                     <YAxis stroke="#9CA3AF" allowDecimals={false} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    <Bar dataKey="value>
-                                      <Cell fill="#22C55E" /> {/* verde para Logradas */}
-                                      <Cell fill="#EF4444" /> {/* rojo para No logrados */}
-                                </Bar>
+                                    {/* Color verde para Logradas, rojo para No logradas */}
+                                    <Bar dataKey="value">
+                                        {transicionesOfensivasData.map((entry, idx) => (
+                                            <Cell 
+                                                key={`cell-transicion-${idx}`} 
+                                                fill={entry.name === 'Logradas' ? '#22C55E' : '#EF4444'}
+                                            />
+                                        ))}
+                                    </Bar>
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
@@ -690,3 +695,4 @@ const DashboardPage: React.FC = () => {
 };
 
 export default DashboardPage;
+
