@@ -3,7 +3,7 @@ import { supabase } from '../services/supabaseClient';
 import type { Match, Tag, Player } from '../types';
 import { METRICS } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, Cell, Treemap, ScatterChart, Scatter } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, Cell, Treemap } from 'recharts';
 
 type Filters = {
     matchId: string;
@@ -412,39 +412,6 @@ const DashboardPage: React.FC = () => {
 
     // === FIN NUEVAS GRAFICAS ===
 
-    // === SCATTER CHART DATOS (AGREGADOS) ===
-    // Grafica 1: Tiempo de transiciones ofensivas logradas
-    const scatterTransicionesData = useMemo(() => {
-        // Asume que en tu tabla tags tienes campo `tiempo_transicion` en segundos (number).
-        // Si tu campo tiene otro nombre o está en formato mm:ss debes convertirlo previamente.
-        return filteredTags
-            .filter(tag => tag.accion === 'Transición ofensiva lograda' && typeof (tag as any).tiempo_transicion === 'number')
-            .map(tag => {
-                const match = matches.find(m => m.id === tag.match_id);
-                return {
-                    jornada: match?.jornada ? `Jornada ${match.jornada}` : 'Sin jornada',
-                    tiempo: (tag as any).tiempo_transicion
-                };
-            });
-    }, [filteredTags, matches]);
-
-    // Grafica 2: Tiempo de recuperación de balón
-    const scatterRecuperacionesData = useMemo(() => {
-        // Asume que en tu tabla tags tienes campo `tiempo_recuperacion` en segundos (number).
-        return filteredTags
-            .filter(tag => tag.accion === 'Recuperación de balón' && typeof (tag as any).tiempo_recuperacion === 'number')
-            .map(tag => {
-                const match = matches.find(m => m.id === tag.match_id);
-                return {
-                    jornada: match?.jornada ? `Jornada ${match.jornada}` : 'Sin jornada',
-                    tiempo: (tag as any).tiempo_recuperacion
-                };
-            });
-    }, [filteredTags, matches]);
-
-    const SCATTER_LINE_COLOR_1 = "#F97316"; // naranja intenso
-    const SCATTER_LINE_COLOR_2 = "#22D3EE"; // cyan brillante
-
     if (loading) return <div className="flex justify-center items-center h-full"><Spinner /></div>;
     if (error) return <div className="text-center text-red-400 p-8">{error}</div>;
 
@@ -633,74 +600,6 @@ const DashboardPage: React.FC = () => {
                             </ResponsiveContainer>
                         </div>
                     </div>
-
-                    {/* === AGREGADO: GRAFICAS SCATTER (AL FINAL COMO SOLICITASTE) === */}
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <div className="bg-gray-800 p-6 rounded-lg h-80">
-                            <h3 className="text-lg font-semibold text-white mb-4">Tiempo de Transiciones Ofensivas Logradas</h3>
-                            <ResponsiveContainer width="100%" height="100%">
-                                <ScatterChart margin={{ top: 20, right: 20, left: 0, bottom: 20 }}>
-                                    <CartesianGrid stroke="#374151" />
-                                    <XAxis 
-                                        dataKey="jornada"
-                                        type="category"
-                                        name="Jornada"
-                                        tick={{ fill: SCATTER_LINE_COLOR_1, fontWeight: 'bold' }}
-                                        label={{ value: 'Jornada', position: 'insideBottom', fill: SCATTER_LINE_COLOR_1, offset: -5 }}
-                                    />
-                                    <YAxis 
-                                        dataKey="tiempo"
-                                        name="Tiempo (s)"
-                                        tick={{ fill: SCATTER_LINE_COLOR_1, fontWeight: 'bold' }}
-                                        label={{ value: 'Tiempo (s)', angle: -90, position: 'insideLeft', fill: SCATTER_LINE_COLOR_1, offset: 0 }}
-                                    />
-                                    <Tooltip 
-                                        cursor={{ strokeDasharray: '3 3' }}
-                                        contentStyle={{ backgroundColor: '#1F2937', border: `1px solid ${SCATTER_LINE_COLOR_1}`, color: '#fff' }}
-                                    />
-                                    <Scatter 
-                                        name="Transiciones Ofensivas" 
-                                        data={scatterTransicionesData} 
-                                        fill={SCATTER_LINE_COLOR_1}
-                                        line={{ stroke: SCATTER_LINE_COLOR_1, strokeWidth: 2 }}
-                                    />
-                                </ScatterChart>
-                            </ResponsiveContainer>
-                        </div>
-                        <div className="bg-gray-800 p-6 rounded-lg h-80">
-                            <h3 className="text-lg font-semibold text-white mb-4">Tiempo de Recuperación de Balón</h3>
-                            <ResponsiveContainer width="100%" height="100%">
-                                <ScatterChart margin={{ top: 20, right: 20, left: 0, bottom: 20 }}>
-                                    <CartesianGrid stroke="#374151" />
-                                    <XAxis 
-                                        dataKey="jornada"
-                                        type="category"
-                                        name="Jornada"
-                                        tick={{ fill: SCATTER_LINE_COLOR_2, fontWeight: 'bold' }}
-                                        label={{ value: 'Jornada', position: 'insideBottom', fill: SCATTER_LINE_COLOR_2, offset: -5 }}
-                                    />
-                                    <YAxis 
-                                        dataKey="tiempo"
-                                        name="Tiempo (s)"
-                                        tick={{ fill: SCATTER_LINE_COLOR_2, fontWeight: 'bold' }}
-                                        label={{ value: 'Tiempo (s)', angle: -90, position: 'insideLeft', fill: SCATTER_LINE_COLOR_2, offset: 0 }}
-                                    />
-                                    <Tooltip 
-                                        cursor={{ strokeDasharray: '3 3' }}
-                                        contentStyle={{ backgroundColor: '#1F2937', border: `1px solid ${SCATTER_LINE_COLOR_2}`, color: '#fff' }}
-                                    />
-                                    <Scatter 
-                                        name="Recuperaciones de Balón" 
-                                        data={scatterRecuperacionesData} 
-                                        fill={SCATTER_LINE_COLOR_2}
-                                        line={{ stroke: SCATTER_LINE_COLOR_2, strokeWidth: 2 }}
-                                    />
-                                </ScatterChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </div>
-                    {/* === FIN GRAFICAS SCATTER === */}
-
                     {/* === FIN NUEVAS GRAFICAS === */}
                 </div>
             )}
