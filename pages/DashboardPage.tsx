@@ -60,6 +60,59 @@ const CustomizedContent = (props: any) => {
     );
 };
 
+/*
+  Helper: parseTimeToSeconds
+  - Convierte números (segundos) y strings "mm:ss" o "m:ss" en segundos (number).
+  - También acepta formatos decimales con coma o punto, y objetos con campos comunes.
+  - Devuelve null si no puede parsear.
+*/
+const parseTimeToSeconds = (value: any): number | null => {
+    if (value === null || value === undefined) return null;
+
+    // si ya viene como número
+    if (typeof value === 'number' && !isNaN(value)) return value;
+
+    // si viene como string
+    if (typeof value === 'string') {
+        let s = value.trim();
+
+        // reemplazar coma decimal por punto (ej. "12,34")
+        s = s.replace(',', '.');
+
+        // si formato mm:ss o hh:mm:ss -> tomar últimas dos partes como minutos:segundos o horas:minutos:segundos
+        if (s.includes(':')) {
+            const parts = s.split(':').map(p => p.trim());
+            // si vienen hh:mm:ss -> tomar las últimas dos como minutos y segundos y sumar horas si existen
+            if (parts.length === 3) {
+                const hours = parseFloat(parts[0]) || 0;
+                const mins = parseFloat(parts[1]) || 0;
+                const secs = parseFloat(parts[2]) || 0;
+                return hours * 3600 + mins * 60 + secs;
+            }
+            if (parts.length === 2) {
+                const mins = parseFloat(parts[0]) || 0;
+                const secs = parseFloat(parts[1]) || 0;
+                return mins * 60 + secs;
+            }
+        }
+
+        // si es un solo número en texto, interpretarlo como segundos
+        const num = parseFloat(s);
+        return isNaN(num) ? null : num;
+    }
+
+    // si viene como objeto (ej. metadata)
+    if (typeof value === 'object') {
+        // comprobar campos comunes
+        const candidate = (value as any).tiempo ?? (value as any).time ?? (value as any).duration ?? (value as any).seconds;
+        if (candidate !== undefined) {
+            return parseTimeToSeconds(candidate);
+        }
+    }
+
+    return null;
+};
+
 const DashboardPage: React.FC = () => {
     const [matches, setMatches] = useState<Match[]>([]);
     const [tags, setTags] = useState<Tag[]>([]);
@@ -415,31 +468,56 @@ const DashboardPage: React.FC = () => {
     // === SCATTER CHART DATOS (AGREGADOS) ===
     // Grafica 1: Tiempo de transiciones ofensivas logradas
     const scatterTransicionesData = useMemo(() => {
-        // Asume que en tu tabla tags tienes campo `tiempo_transicion` en segundos (number).
-        // Si tu campo tiene otro nombre o está en formato mm:ss debes convertirlo previamente.
+        // Compatibilidad ampliada: leer distintos campos que puedan contener el tiempo, incluyendo `timestamp` que estás usando
         return filteredTags
-            .filter(tag => tag.accion === 'Transición ofensiva lograda' && typeof (tag as any).tiempo_transicion === 'number')
+            .filter(tag => tag.accion === 'Transición ofensiva lograda')
             .map(tag => {
                 const match = matches.find(m => m.id === tag.match_id);
+
+                const raw = (tag as any).tiempo_transicion
+                    ?? (tag as any).tiempo
+                    ?? (tag as any).time
+                    ?? (tag as any).duration
+                    ?? (tag as any).timestamp        // <-- tu columna numérica según captura
+                    ?? (tag as any).tiempo_recuperacion
+                    ?? (tag as any).metadata?.tiempo
+                    ?? (tag as any).metadata?.time;
+
+                const tiempo = parseTimeToSeconds(raw);
+                if (tiempo === null) return null;
+
                 return {
                     jornada: match?.jornada ? `Jornada ${match.jornada}` : 'Sin jornada',
-                    tiempo: (tag as any).tiempo_transicion
+                    tiempo
                 };
-            });
+            })
+            .filter(Boolean) as { jornada: string; tiempo: number }[];
     }, [filteredTags, matches]);
 
     // Grafica 2: Tiempo de recuperación de balón
     const scatterRecuperacionesData = useMemo(() => {
-        // Asume que en tu tabla tags tienes campo `tiempo_recuperacion` en segundos (number).
         return filteredTags
-            .filter(tag => tag.accion === 'Recuperación de balón' && typeof (tag as any).tiempo_recuperacion === 'number')
+            .filter(tag => tag.accion === 'Recuperación de balón')
             .map(tag => {
                 const match = matches.find(m => m.id === tag.match_id);
+
+                const raw = (tag as any).tiempo_recuperacion
+                    ?? (tag as any).tiempo
+                    ?? (tag as any).time
+                    ?? (tag as any).duration
+                    ?? (tag as any).timestamp        // <-- tu columna numérica según captura
+                    ?? (tag as any).metadata?.tiempo
+                    ?? (tag as any).metadata?.time;
+
+                const tiempo = parseTimeToSeconds(raw);
+                if (tiempo === null) return null;
+
                 return {
                     jornada: match?.jornada ? `Jornada ${match.jornada}` : 'Sin jornada',
-                    tiempo: (tag as any).tiempo_recuperacion
+                    tiempo
                 };
-            });
+            })
+            .filter(Boolean) as { jornada: string; tiempo: number }[];
     }, [filteredTags, matches]);
 
     const SCATTER_LINE_COLOR_1 = "#F97316"; // naranja intenso
@@ -658,12 +736,22 @@ const DashboardPage: React.FC = () => {
                                         cursor={{ strokeDasharray: '3 3' }}
                                         contentStyle={{ backgroundColor: '#1F2937', border: `1px solid ${SCATTER_LINE_COLOR_1}`, color: '#fff' }}
                                     />
-                                    <Scatter 
-                                        name="Transiciones Ofensivas" 
-                                        data={scatterTransicionesData} 
-                                        fill={SCATTER_LINE_COLOR_1}
-                                        line={{ stroke: SCATTER_LINE_COLOR_1, strokeWidth: 2 }}
-                                    />
+                                    {scatterTransicionesData.length === 0 ? (
+                                        <>
+                                            <text x="50%" y="50%" textAnchor="middle" fill="#9CA3AF">Sin datos</text>
+                                            <text x="50%" y="75%" textAnchor="middle" fill="#6B7280" fontSize={12}>{`Puntos encontrados: 0`}</text>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Scatter 
+                                                name="Transiciones Ofensivas" 
+                                                data={scatterTransicionesData} 
+                                                fill={SCATTER_LINE_COLOR_1}
+                                                line={{ stroke: SCATTER_LINE_COLOR_1, strokeWidth: 2 }}
+                                            />
+                                            <text x="50%" y="95%" textAnchor="middle" fill={SCATTER_LINE_COLOR_1} fontSize={12}>{`Puntos encontrados: ${scatterTransicionesData.length}`}</text>
+                                        </>
+                                    )}
                                 </ScatterChart>
                             </ResponsiveContainer>
                         </div>
@@ -689,12 +777,22 @@ const DashboardPage: React.FC = () => {
                                         cursor={{ strokeDasharray: '3 3' }}
                                         contentStyle={{ backgroundColor: '#1F2937', border: `1px solid ${SCATTER_LINE_COLOR_2}`, color: '#fff' }}
                                     />
-                                    <Scatter 
-                                        name="Recuperaciones de Balón" 
-                                        data={scatterRecuperacionesData} 
-                                        fill={SCATTER_LINE_COLOR_2}
-                                        line={{ stroke: SCATTER_LINE_COLOR_2, strokeWidth: 2 }}
-                                    />
+                                    {scatterRecuperacionesData.length === 0 ? (
+                                        <>
+                                            <text x="50%" y="50%" textAnchor="middle" fill="#9CA3AF">Sin datos</text>
+                                            <text x="50%" y="75%" textAnchor="middle" fill="#6B7280" fontSize={12}>{`Puntos encontrados: 0`}</text>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Scatter 
+                                                name="Recuperaciones de Balón" 
+                                                data={scatterRecuperacionesData} 
+                                                fill={SCATTER_LINE_COLOR_2}
+                                                line={{ stroke: SCATTER_LINE_COLOR_2, strokeWidth: 2 }}
+                                            />
+                                            <text x="50%" y="95%" textAnchor="middle" fill={SCATTER_LINE_COLOR_2} fontSize={12}>{`Puntos encontrados: ${scatterRecuperacionesData.length}`}</text>
+                                        </>
+                                    )}
                                 </ScatterChart>
                             </ResponsiveContainer>
                         </div>
