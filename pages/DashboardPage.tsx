@@ -82,7 +82,7 @@ const parseTimeToSeconds = (value: any): number | null => {
         // si formato mm:ss o hh:mm:ss -> tomar últimas dos partes como minutos:segundos o horas:minutos:segundos
         if (s.includes(':')) {
             const parts = s.split(':').map(p => p.trim());
-            // si vienen hh:mm:ss -> tomar las últimas dos como minutos y segundos y sumar horas si existen
+            // si vienen hh:mm:ss -> sumar horas
             if (parts.length === 3) {
                 const hours = parseFloat(parts[0]) || 0;
                 const mins = parseFloat(parts[1]) || 0;
@@ -468,56 +468,108 @@ const DashboardPage: React.FC = () => {
     // === SCATTER CHART DATOS (AGREGADOS) ===
     // Grafica 1: Tiempo de transiciones ofensivas logradas
     const scatterTransicionesData = useMemo(() => {
-        // Compatibilidad ampliada: leer distintos campos que puedan contener el tiempo, incluyendo `timestamp` que estás usando
-        return filteredTags
+        // Agrupar por jornada numérica y preparar offsets para evitar superposición exacta
+        const byJornada: Record<number, any[]> = {};
+
+        filteredTags
             .filter(tag => tag.accion === 'Transición ofensiva lograda')
-            .map(tag => {
+            .forEach(tag => {
                 const match = matches.find(m => m.id === tag.match_id);
+                const jornadaNum = match && match.jornada ? Number(match.jornada) : null;
 
                 const raw = (tag as any).tiempo_transicion
                     ?? (tag as any).tiempo
                     ?? (tag as any).time
                     ?? (tag as any).duration
-                    ?? (tag as any).timestamp        // <-- tu columna numérica según captura
+                    ?? (tag as any).timestamp
                     ?? (tag as any).tiempo_recuperacion
                     ?? (tag as any).metadata?.tiempo
                     ?? (tag as any).metadata?.time;
 
                 const tiempo = parseTimeToSeconds(raw);
-                if (tiempo === null) return null;
+                if (tiempo === null || jornadaNum === null) return;
 
-                return {
-                    jornada: match?.jornada ? `Jornada ${match.jornada}` : 'Sin jornada',
-                    tiempo
-                };
-            })
-            .filter(Boolean) as { jornada: string; tiempo: number }[];
+                if (!byJornada[jornadaNum]) byJornada[jornadaNum] = [];
+                byJornada[jornadaNum].push({
+                    jornadaNum,
+                    tiempo,
+                    raw,
+                    tagId: (tag as any).id,
+                });
+            });
+
+        const spread = 0.12; // tamaño del desplazamiento horizontal (ajustable)
+        const result: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId?: string }[] = [];
+
+        Object.keys(byJornada).forEach(k => {
+            const j = Number(k);
+            const arr = byJornada[j];
+            const count = arr.length;
+            arr.forEach((item, idx) => {
+                const offset = (count === 1) ? 0 : ( (idx - (count - 1) / 2) * spread );
+                result.push({
+                    jornadaNum: j,
+                    jornadaX: j + offset,
+                    jornadaLabel: `Jornada ${j}`,
+                    tiempo: item.tiempo,
+                    tagId: item.tagId,
+                });
+            });
+        });
+
+        return result.sort((a, b) => a.jornadaNum - b.jornadaNum || a.jornadaX - b.jornadaX);
     }, [filteredTags, matches]);
 
     // Grafica 2: Tiempo de recuperación de balón
     const scatterRecuperacionesData = useMemo(() => {
-        return filteredTags
+        const byJornada: Record<number, any[]> = {};
+
+        filteredTags
             .filter(tag => tag.accion === 'Recuperación de balón')
-            .map(tag => {
+            .forEach(tag => {
                 const match = matches.find(m => m.id === tag.match_id);
+                const jornadaNum = match && match.jornada ? Number(match.jornada) : null;
 
                 const raw = (tag as any).tiempo_recuperacion
                     ?? (tag as any).tiempo
                     ?? (tag as any).time
                     ?? (tag as any).duration
-                    ?? (tag as any).timestamp        // <-- tu columna numérica según captura
+                    ?? (tag as any).timestamp
                     ?? (tag as any).metadata?.tiempo
                     ?? (tag as any).metadata?.time;
 
                 const tiempo = parseTimeToSeconds(raw);
-                if (tiempo === null) return null;
+                if (tiempo === null || jornadaNum === null) return;
 
-                return {
-                    jornada: match?.jornada ? `Jornada ${match.jornada}` : 'Sin jornada',
-                    tiempo
-                };
-            })
-            .filter(Boolean) as { jornada: string; tiempo: number }[];
+                if (!byJornada[jornadaNum]) byJornada[jornadaNum] = [];
+                byJornada[jornadaNum].push({
+                    jornadaNum,
+                    tiempo,
+                    raw,
+                    tagId: (tag as any).id,
+                });
+            });
+
+        const spread = 0.12;
+        const result: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId?: string }[] = [];
+
+        Object.keys(byJornada).forEach(k => {
+            const j = Number(k);
+            const arr = byJornada[j];
+            const count = arr.length;
+            arr.forEach((item, idx) => {
+                const offset = (count === 1) ? 0 : ( (idx - (count - 1) / 2) * spread );
+                result.push({
+                    jornadaNum: j,
+                    jornadaX: j + offset,
+                    jornadaLabel: `Jornada ${j}`,
+                    tiempo: item.tiempo,
+                    tagId: item.tagId,
+                });
+            });
+        });
+
+        return result.sort((a, b) => a.jornadaNum - b.jornadaNum || a.jornadaX - b.jornadaX);
     }, [filteredTags, matches]);
 
     const SCATTER_LINE_COLOR_1 = "#F97316"; // naranja intenso
@@ -717,17 +769,20 @@ const DashboardPage: React.FC = () => {
                         <div className="bg-gray-800 p-6 rounded-lg h-80">
                             <h3 className="text-lg font-semibold text-white mb-4">Tiempo de Transiciones Ofensivas Logradas</h3>
                             <ResponsiveContainer width="100%" height="100%">
-                                <ScatterChart margin={{ top: 20, right: 20, left: 0, bottom: 20 }}>
+                                <ScatterChart margin={{ top: 20, right: 20, left: 0, bottom: 40 }}>
                                     <CartesianGrid stroke="#374151" />
                                     <XAxis 
-                                        dataKey="jornada"
-                                        type="category"
+                                        dataKey="x"
+                                        type="number"
                                         name="Jornada"
+                                        domain={['dataMin', 'dataMax']}
+                                        ticks={Array.from(new Set(scatterTransicionesData.map(d => d.jornadaNum))).sort((a,b)=>a-b)}
+                                        tickFormatter={(val) => `Jornada ${Math.round(Number(val))}`}
                                         tick={{ fill: SCATTER_LINE_COLOR_1, fontWeight: 'bold' }}
-                                        label={{ value: 'Jornada', position: 'insideBottom', fill: SCATTER_LINE_COLOR_1, offset: -5 }}
+                                        label={{ value: 'Jornada', position: 'insideBottom', fill: SCATTER_LINE_COLOR_1, offset: 0 }}
                                     />
                                     <YAxis 
-                                        dataKey="tiempo"
+                                        dataKey="y"
                                         name="Tiempo (s)"
                                         tick={{ fill: SCATTER_LINE_COLOR_1, fontWeight: 'bold' }}
                                         label={{ value: 'Tiempo (s)', angle: -90, position: 'insideLeft', fill: SCATTER_LINE_COLOR_1, offset: 0 }}
@@ -735,40 +790,36 @@ const DashboardPage: React.FC = () => {
                                     <Tooltip 
                                         cursor={{ strokeDasharray: '3 3' }}
                                         contentStyle={{ backgroundColor: '#1F2937', border: `1px solid ${SCATTER_LINE_COLOR_1}`, color: '#fff' }}
+                                        formatter={(value: any, name: any, props: any) => [value, name]}
                                     />
-                                    {scatterTransicionesData.length === 0 ? (
-                                        <>
-                                            <text x="50%" y="50%" textAnchor="middle" fill="#9CA3AF">Sin datos</text>
-                                            <text x="50%" y="75%" textAnchor="middle" fill="#6B7280" fontSize={12}>{`Puntos encontrados: 0`}</text>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <Scatter 
-                                                name="Transiciones Ofensivas" 
-                                                data={scatterTransicionesData} 
-                                                fill={SCATTER_LINE_COLOR_1}
-                                                line={{ stroke: SCATTER_LINE_COLOR_1, strokeWidth: 2 }}
-                                            />
-                                            <text x="50%" y="95%" textAnchor="middle" fill={SCATTER_LINE_COLOR_1} fontSize={12}>{`Puntos encontrados: ${scatterTransicionesData.length}`}</text>
-                                        </>
-                                    )}
+                                    <Scatter 
+                                        name="Transiciones Ofensivas" 
+                                        data={scatterTransicionesData.map(d => ({ x: d.jornadaX, y: d.tiempo, jornadaLabel: d.jornadaLabel }))} 
+                                        fill={SCATTER_LINE_COLOR_1}
+                                    />
                                 </ScatterChart>
                             </ResponsiveContainer>
+                            <div className="text-center text-sm mt-2" style={{ color: SCATTER_LINE_COLOR_1 }}>
+                              {`Puntos encontrados: ${scatterTransicionesData.length}`}
+                            </div>
                         </div>
                         <div className="bg-gray-800 p-6 rounded-lg h-80">
                             <h3 className="text-lg font-semibold text-white mb-4">Tiempo de Recuperación de Balón</h3>
                             <ResponsiveContainer width="100%" height="100%">
-                                <ScatterChart margin={{ top: 20, right: 20, left: 0, bottom: 20 }}>
+                                <ScatterChart margin={{ top: 20, right: 20, left: 0, bottom: 40 }}>
                                     <CartesianGrid stroke="#374151" />
                                     <XAxis 
-                                        dataKey="jornada"
-                                        type="category"
+                                        dataKey="x"
+                                        type="number"
                                         name="Jornada"
+                                        domain={['dataMin', 'dataMax']}
+                                        ticks={Array.from(new Set(scatterRecuperacionesData.map(d => d.jornadaNum))).sort((a,b)=>a-b)}
+                                        tickFormatter={(val) => `Jornada ${Math.round(Number(val))}`}
                                         tick={{ fill: SCATTER_LINE_COLOR_2, fontWeight: 'bold' }}
-                                        label={{ value: 'Jornada', position: 'insideBottom', fill: SCATTER_LINE_COLOR_2, offset: -5 }}
+                                        label={{ value: 'Jornada', position: 'insideBottom', fill: SCATTER_LINE_COLOR_2, offset: 0 }}
                                     />
                                     <YAxis 
-                                        dataKey="tiempo"
+                                        dataKey="y"
                                         name="Tiempo (s)"
                                         tick={{ fill: SCATTER_LINE_COLOR_2, fontWeight: 'bold' }}
                                         label={{ value: 'Tiempo (s)', angle: -90, position: 'insideLeft', fill: SCATTER_LINE_COLOR_2, offset: 0 }}
@@ -776,25 +827,18 @@ const DashboardPage: React.FC = () => {
                                     <Tooltip 
                                         cursor={{ strokeDasharray: '3 3' }}
                                         contentStyle={{ backgroundColor: '#1F2937', border: `1px solid ${SCATTER_LINE_COLOR_2}`, color: '#fff' }}
+                                        formatter={(value: any, name: any, props: any) => [value, name]}
                                     />
-                                    {scatterRecuperacionesData.length === 0 ? (
-                                        <>
-                                            <text x="50%" y="50%" textAnchor="middle" fill="#9CA3AF">Sin datos</text>
-                                            <text x="50%" y="75%" textAnchor="middle" fill="#6B7280" fontSize={12}>{`Puntos encontrados: 0`}</text>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <Scatter 
-                                                name="Recuperaciones de Balón" 
-                                                data={scatterRecuperacionesData} 
-                                                fill={SCATTER_LINE_COLOR_2}
-                                                line={{ stroke: SCATTER_LINE_COLOR_2, strokeWidth: 2 }}
-                                            />
-                                            <text x="50%" y="95%" textAnchor="middle" fill={SCATTER_LINE_COLOR_2} fontSize={12}>{`Puntos encontrados: ${scatterRecuperacionesData.length}`}</text>
-                                        </>
-                                    )}
+                                    <Scatter 
+                                        name="Recuperaciones de Balón" 
+                                        data={scatterRecuperacionesData.map(d => ({ x: d.jornadaX, y: d.tiempo, jornadaLabel: d.jornadaLabel }))} 
+                                        fill={SCATTER_LINE_COLOR_2}
+                                    />
                                 </ScatterChart>
                             </ResponsiveContainer>
+                            <div className="text-center text-sm mt-2" style={{ color: SCATTER_LINE_COLOR_2 }}>
+                              {`Puntos encontrados: ${scatterRecuperacionesData.length}`}
+                            </div>
                         </div>
                     </div>
                     {/* === FIN GRAFICAS SCATTER === */}
