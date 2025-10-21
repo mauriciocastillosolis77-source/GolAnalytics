@@ -192,9 +192,40 @@ const DashboardPage: React.FC = () => {
                 if (matchesError) throw matchesError;
                 setMatches(matchesData || []);
 
-                const { data: tagsData, error: tagsError } = await supabase.from('tags').select('*');
-                if (tagsError) throw tagsError;
-                setTags(tagsData || []);
+                // ---------- Reemplazo: obtener todos los tags en batches para evitar límite de 1000 filas ----------
+                /*
+                  Obtener todos los tags en páginas:
+                  - Primero pedimos count exacto (select ... { count: 'exact' })
+                  - Si hay más filas que la página inicial, hacemos requests con .range() en batches
+                */
+                const pageSize = 1000; // tamaño de batch: puedes reducirlo (p.ej. 500) si hay problemas de memoria
+                const { data: firstPageData, count, error: firstError } = await supabase
+                  .from('tags')
+                  .select('*', { count: 'exact' })
+                  .range(0, pageSize - 1);
+
+                if (firstError) throw firstError;
+
+                let allTags = firstPageData || [];
+                console.log('[Dashboard] tags count (total reported):', count, 'firstPageRows:', allTags.length);
+
+                if (typeof count === 'number' && count > allTags.length) {
+                  // hay más filas: fetch por rangos
+                  for (let from = allTags.length; from < count; from += pageSize) {
+                    const to = Math.min(from + pageSize - 1, count - 1);
+                    const { data: pageData, error: pageError } = await supabase
+                      .from('tags')
+                      .select('*')
+                      .range(from, to);
+                    if (pageError) throw pageError;
+                    allTags = allTags.concat(pageData || []);
+                    console.log(`[Dashboard] fetched tags range ${from}-${to}, got ${pageData?.length || 0}`);
+                  }
+                }
+
+                setTags(allTags || []);
+                console.log('[Dashboard] total tags loaded into state:', (allTags || []).length);
+                // ---------- fin reemplazo ----------
 
                 const { data: playersData, error: playersError } = await supabase.from('players').select('*');
                 if (playersError) throw playersError;
