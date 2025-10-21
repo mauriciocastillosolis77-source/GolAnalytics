@@ -113,6 +113,58 @@ const parseTimeToSeconds = (value: any): number | null => {
     return null;
 };
 
+/*
+  Helper: getTagTime
+  - Extrae el tiempo (en segundos) de un tag probando varios campos y normalizando
+  - Si detecta valores extremadamente grandes (posible ms), divide por 1000
+*/
+const getTagTime = (tag: any): number | null => {
+    if (!tag) return null;
+    const raw = (tag as any).tiempo_transicion
+        ?? (tag as any).tiempo_recuperacion
+        ?? (tag as any).tiempo
+        ?? (tag as any).time
+        ?? (tag as any).duration
+        ?? (tag as any).timestamp
+        ?? (tag as any).metadata?.tiempo
+        ?? (tag as any).metadata?.time
+        ?? (tag as any).metadata?.seconds
+        ?? (tag as any).timestamp_seconds;
+
+    let seconds = parseTimeToSeconds(raw);
+
+    // Si parse devolvió null, intentar leer directamente tag.timestamp numérico
+    if (seconds === null) {
+        const maybeNum = Number(raw);
+        if (!isNaN(maybeNum)) seconds = maybeNum;
+    }
+
+    if (seconds === null) return null;
+
+    // Normalizar si parece estar en milisegundos (valores mayores a 10000 -> ms)
+    if (seconds > 10000) {
+        seconds = seconds / 1000;
+    }
+
+    return seconds;
+};
+
+/*
+ Helper: formatear segundos a mm:ss o hh:mm:ss para mostrar en eje Y y tooltips
+*/
+const formatSecondsToMMSS = (value: number | null | undefined) => {
+    if (value === null || value === undefined || isNaN(Number(value))) return '';
+    const total = Math.floor(Number(value));
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const seconds = total % 60;
+    const pad = (n: number) => n.toString().padStart(2, '0');
+    if (hours > 0) {
+        return `${hours}:${pad(minutes)}:${pad(seconds)}`; // hh:mm:ss
+    }
+    return `${minutes}:${pad(seconds)}`; // mm:ss
+};
+
 const DashboardPage: React.FC = () => {
     const [matches, setMatches] = useState<Match[]>([]);
     const [tags, setTags] = useState<Tag[]>([]);
@@ -466,110 +518,120 @@ const DashboardPage: React.FC = () => {
     // === FIN NUEVAS GRAFICAS ===
 
     // === SCATTER CHART DATOS (AGREGADOS) ===
-    // Grafica 1: Tiempo de transiciones ofensivas logradas
+    // Grafica 1: Duración desde la recuperación hasta la transición ofensiva lograda
     const scatterTransicionesData = useMemo(() => {
-        // Agrupar por jornada numérica y preparar offsets para evitar superposición exacta
-        const byJornada: Record<number, any[]> = {};
-
-        filteredTags
-            .filter(tag => tag.accion === 'Transición ofensiva lograda')
-            .forEach(tag => {
-                const match = matches.find(m => m.id === tag.match_id);
-                const jornadaNum = match && match.jornada ? Number(match.jornada) : null;
-
-                const raw = (tag as any).tiempo_transicion
-                    ?? (tag as any).tiempo
-                    ?? (tag as any).time
-                    ?? (tag as any).duration
-                    ?? (tag as any).timestamp
-                    ?? (tag as any).tiempo_recuperacion
-                    ?? (tag as any).metadata?.tiempo
-                    ?? (tag as any).metadata?.time;
-
-                const tiempo = parseTimeToSeconds(raw);
-                if (tiempo === null || jornadaNum === null) return;
-
-                if (!byJornada[jornadaNum]) byJornada[jornadaNum] = [];
-                byJornada[jornadaNum].push({
-                    jornadaNum,
-                    tiempo,
-                    raw,
-                    tagId: (tag as any).id,
-                });
+        // Agrupar tags por match (usar filteredTags para respetar filtros)
+        const tagsByMatch: Record<string, any[]> = {};
+        filteredTags.forEach(tag => {
+            if (!tag.match_id) return;
+            const tSeconds = getTagTime(tag);
+            if (tSeconds === null) return;
+            if (!tagsByMatch[tag.match_id]) tagsByMatch[tag.match_id] = [];
+            tagsByMatch[tag.match_id].push({
+                ...tag,
+                __timeSeconds: tSeconds
             });
+        });
 
-        const spread = 0.12; // tamaño del desplazamiento horizontal (ajustable)
-        const result: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId?: string }[] = [];
+        const points: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId?: string }[] = [];
 
-        Object.keys(byJornada).forEach(k => {
-            const j = Number(k);
-            const arr = byJornada[j];
-            const count = arr.length;
-            arr.forEach((item, idx) => {
-                const offset = (count === 1) ? 0 : ( (idx - (count - 1) / 2) * spread );
-                result.push({
-                    jornadaNum: j,
-                    jornadaX: j + offset,
-                    jornadaLabel: `Jornada ${j}`,
-                    tiempo: item.tiempo,
-                    tagId: item.tagId,
+        Object.keys(tagsByMatch).forEach(matchId => {
+            const list = tagsByMatch[matchId].sort((a, b) => a.__timeSeconds - b.__timeSeconds);
+            const match = matches.find(m => m.id === matchId);
+            const jornadaNum = match && match.jornada ? Number(match.jornada) : null;
+            if (jornadaNum === null) return;
+
+            // obtener solo recoveries y transiciones logradas
+            const recoveries = list.filter((t: any) => t.accion === 'Recuperación de balón').map((r: any) => ({ time: r.__timeSeconds, id: r.id }));
+            const transitions = list.filter((t: any) => t.accion === 'Transición ofensiva lograda' && t.resultado === 'logrado').map((tr: any) => ({ time: tr.__timeSeconds, id: tr.id }));
+
+            if (transitions.length === 0 || recoveries.length === 0) return;
+
+            transitions.forEach(tr => {
+                // buscar la última recovery con tiempo < transition.time
+                const prevs = recoveries.filter(r => r.time < tr.time);
+                if (prevs.length === 0) return; // no contabilizar si no hay recovery previa
+                const lastRec = prevs[prevs.length - 1];
+                const duration = tr.time - lastRec.time;
+                if (duration < 0) return;
+                points.push({
+                    jornadaNum,
+                    jornadaX: jornadaNum, // jitter se aplicará luego
+                    jornadaLabel: `Jornada ${jornadaNum}`,
+                    tiempo: duration,
+                    tagId: tr.id
                 });
             });
         });
 
-        return result.sort((a, b) => a.jornadaNum - b.jornadaNum || a.jornadaX - b.jornadaX);
+        // aplicar jitter horizontal por jornada
+        const byJornada: Record<number, any[]> = {};
+        points.forEach(p => {
+            if (!byJornada[p.jornadaNum]) byJornada[p.jornadaNum] = [];
+            byJornada[p.jornadaNum].push(p);
+        });
+
+        const spread = 0.12;
+        const final: typeof points = [];
+        Object.keys(byJornada).forEach(k => {
+            const j = Number(k);
+            const arr = byJornada[j];
+            const count = arr.length;
+            arr.forEach((item: any, idx: number) => {
+                const offset = (count === 1) ? 0 : ((idx - (count - 1) / 2) * spread);
+                final.push({
+                    ...item,
+                    jornadaX: item.jornadaNum + offset
+                });
+            });
+        });
+
+        return final.sort((a, b) => a.jornadaNum - b.jornadaNum || a.jornadaX - b.jornadaX);
     }, [filteredTags, matches]);
 
-    // Grafica 2: Tiempo de recuperación de balón
+    // Grafica 2: Tiempo absoluto (en segundos) de las recuperaciones de balón
     const scatterRecuperacionesData = useMemo(() => {
-        const byJornada: Record<number, any[]> = {};
+        const pts: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId?: string }[] = [];
 
         filteredTags
             .filter(tag => tag.accion === 'Recuperación de balón')
             .forEach(tag => {
                 const match = matches.find(m => m.id === tag.match_id);
                 const jornadaNum = match && match.jornada ? Number(match.jornada) : null;
-
-                const raw = (tag as any).tiempo_recuperacion
-                    ?? (tag as any).tiempo
-                    ?? (tag as any).time
-                    ?? (tag as any).duration
-                    ?? (tag as any).timestamp
-                    ?? (tag as any).metadata?.tiempo
-                    ?? (tag as any).metadata?.time;
-
-                const tiempo = parseTimeToSeconds(raw);
+                const tiempo = getTagTime(tag);
                 if (tiempo === null || jornadaNum === null) return;
-
-                if (!byJornada[jornadaNum]) byJornada[jornadaNum] = [];
-                byJornada[jornadaNum].push({
+                pts.push({
                     jornadaNum,
+                    jornadaX: jornadaNum,
+                    jornadaLabel: `Jornada ${jornadaNum}`,
                     tiempo,
-                    raw,
-                    tagId: (tag as any).id,
+                    tagId: tag.id
                 });
             });
 
-        const spread = 0.12;
-        const result: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId?: string }[] = [];
+        // aplicar jitter horizontal similar
+        const byJornada: Record<number, any[]> = {};
+        pts.forEach(p => {
+            if (!byJornada[p.jornadaNum]) byJornada[p.jornadaNum] = [];
+            byJornada[p.jornadaNum].push(p);
+        });
 
+        const spread = 0.12;
+        const final: typeof pts = [];
         Object.keys(byJornada).forEach(k => {
             const j = Number(k);
             const arr = byJornada[j];
             const count = arr.length;
-            arr.forEach((item, idx) => {
-                const offset = (count === 1) ? 0 : ( (idx - (count - 1) / 2) * spread );
-                result.push({
-                    jornadaNum: j,
-                    jornadaX: j + offset,
-                    jornadaLabel: `Jornada ${j}`,
-                    tiempo: item.tiempo,
-                    tagId: item.tagId,
+            arr.forEach((item: any, idx: number) => {
+                const offset = (count === 1) ? 0 : ((idx - (count - 1) / 2) * spread);
+                final.push({
+                    ...item,
+                    jornadaX: item.jornadaNum + offset
                 });
             });
         });
 
-        return result.sort((a, b) => a.jornadaNum - b.jornadaNum || a.jornadaX - b.jornadaX);
+        return final.sort((a, b) => a.jornadaNum - b.jornadaNum || a.jornadaX - b.jornadaX);
     }, [filteredTags, matches]);
 
     const SCATTER_LINE_COLOR_1 = "#F97316"; // naranja intenso
@@ -783,18 +845,28 @@ const DashboardPage: React.FC = () => {
                                     />
                                     <YAxis 
                                         dataKey="y"
-                                        name="Tiempo (s)"
+                                        name="Tiempo"
+                                        tickFormatter={(val) => formatSecondsToMMSS(val as number)}
                                         tick={{ fill: SCATTER_LINE_COLOR_1, fontWeight: 'bold' }}
-                                        label={{ value: 'Tiempo (s)', angle: -90, position: 'insideLeft', fill: SCATTER_LINE_COLOR_1, offset: 0 }}
+                                        label={{ value: 'Tiempo', angle: -90, position: 'insideLeft', fill: SCATTER_LINE_COLOR_1, offset: 0 }}
                                     />
                                     <Tooltip 
                                         cursor={{ strokeDasharray: '3 3' }}
                                         contentStyle={{ backgroundColor: '#1F2937', border: `1px solid ${SCATTER_LINE_COLOR_1}`, color: '#fff' }}
-                                        formatter={(value: any, name: any, props: any) => [value, name]}
+                                        content={({ active, payload }) => {
+                                            if (!active || !payload || payload.length === 0) return null;
+                                            const p = payload[0].payload as any;
+                                            return (
+                                                <div style={{ padding: 8, background: '#0b1220', color: '#fff', border: `1px solid ${SCATTER_LINE_COLOR_1}` }}>
+                                                    <div style={{ fontWeight: 700 }}>{p.jornadaLabel ?? `Jornada ${Math.round(p.jornadaNum || p.x)}`}</div>
+                                                    <div style={{ marginTop: 4 }}>Duración: {formatSecondsToMMSS(p.y)}</div>
+                                                </div>
+                                            );
+                                        }}
                                     />
                                     <Scatter 
                                         name="Transiciones Ofensivas" 
-                                        data={scatterTransicionesData.map(d => ({ x: d.jornadaX, y: d.tiempo, jornadaLabel: d.jornadaLabel }))} 
+                                        data={scatterTransicionesData.map(d => ({ x: d.jornadaX, y: d.tiempo, jornadaNum: d.jornadaNum, jornadaLabel: d.jornadaLabel }))} 
                                         fill={SCATTER_LINE_COLOR_1}
                                     />
                                 </ScatterChart>
@@ -820,18 +892,28 @@ const DashboardPage: React.FC = () => {
                                     />
                                     <YAxis 
                                         dataKey="y"
-                                        name="Tiempo (s)"
+                                        name="Tiempo"
+                                        tickFormatter={(val) => formatSecondsToMMSS(val as number)}
                                         tick={{ fill: SCATTER_LINE_COLOR_2, fontWeight: 'bold' }}
-                                        label={{ value: 'Tiempo (s)', angle: -90, position: 'insideLeft', fill: SCATTER_LINE_COLOR_2, offset: 0 }}
+                                        label={{ value: 'Tiempo', angle: -90, position: 'insideLeft', fill: SCATTER_LINE_COLOR_2, offset: 0 }}
                                     />
                                     <Tooltip 
                                         cursor={{ strokeDasharray: '3 3' }}
                                         contentStyle={{ backgroundColor: '#1F2937', border: `1px solid ${SCATTER_LINE_COLOR_2}`, color: '#fff' }}
-                                        formatter={(value: any, name: any, props: any) => [value, name]}
+                                        content={({ active, payload }) => {
+                                            if (!active || !payload || payload.length === 0) return null;
+                                            const p = payload[0].payload as any;
+                                            return (
+                                                <div style={{ padding: 8, background: '#0b1220', color: '#fff', border: `1px solid ${SCATTER_LINE_COLOR_2}` }}>
+                                                    <div style={{ fontWeight: 700 }}>{p.jornadaLabel ?? `Jornada ${Math.round(p.jornadaNum || p.x)}`}</div>
+                                                    <div style={{ marginTop: 4 }}>Tiempo: {formatSecondsToMMSS(p.y)}</div>
+                                                </div>
+                                            );
+                                        }}
                                     />
                                     <Scatter 
                                         name="Recuperaciones de Balón" 
-                                        data={scatterRecuperacionesData.map(d => ({ x: d.jornadaX, y: d.tiempo, jornadaLabel: d.jornadaLabel }))} 
+                                        data={scatterRecuperacionesData.map(d => ({ x: d.jornadaX, y: d.tiempo, jornadaNum: d.jornadaNum, jornadaLabel: d.jornadaLabel }))} 
                                         fill={SCATTER_LINE_COLOR_2}
                                     />
                                 </ScatterChart>
