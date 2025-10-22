@@ -193,8 +193,10 @@ const VideoTaggerPage: React.FC = () => {
         if (
             selectedAction === "Transición ofensiva lograda" ||
             selectedAction === "Transición ofensiva no lograda" ||
-            selectedAction === "Recuperación de balón"
+            selectedAction === "Recuperación de balón" ||
+            selectedAction === "Pérdida de balón"
         ) {
+            // Mantener exactamente el texto de la acción para estos casos concretos
             accion = selectedAction;
         } else {
             accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
@@ -315,7 +317,8 @@ const VideoTaggerPage: React.FC = () => {
         if (
             fullAction === "Transición ofensiva lograda" ||
             fullAction === "Transición ofensiva no lograda" ||
-            fullAction === "Recuperación de balón"
+            fullAction === "Recuperación de balón" ||
+            fullAction === "Pérdida de balón"
         ) {
             accion = fullAction;
         } else {
