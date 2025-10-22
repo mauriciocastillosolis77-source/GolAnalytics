@@ -621,26 +621,57 @@ const DashboardPage: React.FC = () => {
     }, [filteredTags, matches]);
 
     // Grafica 2: Tiempo absoluto (en segundos) de las recuperaciones de balón
+    // MODIFICADO: ahora calcula la duración desde la ÚLTIMA "Pérdida de balón" previa en el MISMO partido hasta la recuperación
     const scatterRecuperacionesData = useMemo(() => {
-        const pts: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId?: string }[] = [];
+        const pts: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId?: string; lossTime?: number; recoveryTime?: number }[] = [];
 
-        filteredTags
-            .filter(tag => tag.accion === 'Recuperación de balón')
-            .forEach(tag => {
-                const match = matches.find(m => m.id === tag.match_id);
-                const jornadaNum = match && match.jornada ? Number(match.jornada) : null;
-                const tiempo = getTagTime(tag);
-                if (tiempo === null || jornadaNum === null) return;
+        // Agrupar tags por match y normalizar tiempo (usar getTagTime)
+        const tagsByMatch: Record<string, any[]> = {};
+        filteredTags.forEach(tag => {
+            if (!tag.match_id) return;
+            const tSeconds = getTagTime(tag);
+            if (tSeconds === null) return;
+            if (!tagsByMatch[tag.match_id]) tagsByMatch[tag.match_id] = [];
+            tagsByMatch[tag.match_id].push({
+                ...tag,
+                __timeSeconds: tSeconds
+            });
+        });
+
+        // Para cada partido, ordenar cronológicamente y emparejar: recovery -> última loss previa
+        Object.keys(tagsByMatch).forEach(matchId => {
+            const list = tagsByMatch[matchId].sort((a, b) => a.__timeSeconds - b.__timeSeconds);
+            const match = matches.find(m => m.id === matchId);
+            const jornadaNum = match && match.jornada ? Number(match.jornada) : null;
+            if (jornadaNum === null) return;
+
+            const losses = list.filter((t: any) => t.accion === 'Pérdida de balón').map((l: any) => ({ time: l.__timeSeconds, id: l.id }));
+            const recoveries = list.filter((t: any) => t.accion === 'Recuperación de balón').map((r: any) => ({ time: r.__timeSeconds, id: r.id }));
+
+            if (recoveries.length === 0 || losses.length === 0) return;
+
+            recoveries.forEach(rec => {
+                // buscar la última pérdida con tiempo < recovery.time
+                const prevLosses = losses.filter(l => l.time < rec.time);
+                if (prevLosses.length === 0) return; // no hay pérdida previa -> no contabilizar
+                const lastLoss = prevLosses[prevLosses.length - 1];
+                const duration = rec.time - lastLoss.time;
+                if (duration < 0) return;
+                // Validación de rango (1s .. 65:59 = 3959s) para evitar outliers
+                if (duration < 1 || duration > 3959) return;
                 pts.push({
                     jornadaNum,
-                    jornadaX: jornadaNum,
+                    jornadaX: jornadaNum, // jitter aplicado después
                     jornadaLabel: `Jornada ${jornadaNum}`,
-                    tiempo,
-                    tagId: tag.id
+                    tiempo: duration,
+                    tagId: rec.id,
+                    lossTime: lastLoss.time,
+                    recoveryTime: rec.time
                 });
             });
+        });
 
-        // aplicar jitter horizontal similar
+        // aplicar jitter horizontal similar al otro scatter
         const byJornada: Record<number, any[]> = {};
         pts.forEach(p => {
             if (!byJornada[p.jornadaNum]) byJornada[p.jornadaNum] = [];
@@ -937,14 +968,15 @@ const DashboardPage: React.FC = () => {
                                             return (
                                                 <div style={{ padding: 8, background: '#0b1220', color: '#fff', border: `1px solid ${SCATTER_LINE_COLOR_2}` }}>
                                                     <div style={{ fontWeight: 700 }}>{p.jornadaLabel ?? `Jornada ${Math.round(p.jornadaNum || p.x)}`}</div>
-                                                    <div style={{ marginTop: 4 }}>Tiempo: {formatSecondsToMMSS(p.y)}</div>
+                                                    <div style={{ marginTop: 4 }}>Duración: {formatSecondsToMMSS(p.y)}</div>
+                                                    <div style={{ marginTop: 4, fontSize: 12, color: '#D1D5DB' }}>Pérdida: {formatSecondsToMMSS(p.lossTime)} — Recuperación: {formatSecondsToMMSS(p.recoveryTime)}</div>
                                                 </div>
                                             );
                                         }}
                                     />
                                     <Scatter 
                                         name="Recuperaciones de Balón" 
-                                        data={scatterRecuperacionesData.map(d => ({ x: d.jornadaX, y: d.tiempo, jornadaNum: d.jornadaNum, jornadaLabel: d.jornadaLabel }))} 
+                                        data={scatterRecuperacionesData.map(d => ({ x: d.jornadaX, y: d.tiempo, jornadaNum: d.jornadaNum, jornadaLabel: d.jornadaLabel, lossTime: d.lossTime, recoveryTime: d.recoveryTime }))} 
                                         fill={SCATTER_LINE_COLOR_2}
                                     />
                                 </ScatterChart>
