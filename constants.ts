@@ -20,6 +20,8 @@ export const METRICS = [
   "Atajadas",
   "Goles recibidos",
   "Recuperación de balón",
+  // Nueva acción: pérdida de balón
+  "Pérdida de balón",
   // Nuevas métricas para transición ofensiva
   "Transición ofensiva lograda",
   "Transición ofensiva no lograda"
