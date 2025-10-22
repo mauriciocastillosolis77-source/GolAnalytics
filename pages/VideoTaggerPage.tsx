@@ -7,6 +7,7 @@ import { EditIcon, TrashIcon, SparklesIcon, CloudUploadIcon, CloudCheckIcon } fr
 import { analyzeVideoFrames } from '../services/geminiService';
 import { blobToBase64 } from '../utils/blob';
 import AISuggestionsModal from '../components/ai/AISuggestionsModal';
+import { fetchVideosForMatch, createVideoForMatch, Video as VideoMeta } from '../services/videosService';
 
 declare var XLSX: any;
 
@@ -35,6 +36,15 @@ const VideoTaggerPage: React.FC = () => {
     const [activeVideoUrl, setActiveVideoUrl] = useState<string | null>(null);
     const [currentVideoFile, setCurrentVideoFile] = useState<File | null>(null);
 
+    // Video metadata from DB
+    const [videos, setVideos] = useState<VideoMeta[]>([]);
+    const [selectedVideoId, setSelectedVideoId] = useState<string>('');
+    const [selectedVideo, setSelectedVideo] = useState<VideoMeta | null>(null);
+    const [showNewVideoModal, setShowNewVideoModal] = useState(false);
+    const [newVideoFileName, setNewVideoFileName] = useState('');
+    const [newVideoOffset, setNewVideoOffset] = useState('00:00');
+    const [isCreatingVideo, setIsCreatingVideo] = useState(false);
+
     // Section 3: Tagging
     const [players, setPlayers] = useState<Player[]>([]);
     const [tags, setTags] = useState<Tag[]>([]);
@@ -54,35 +64,73 @@ const VideoTaggerPage: React.FC = () => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [currentTime, setCurrentTime] = useState(0);
 
-    // Fetch matches and players when component mounts
+    // Fetch matches when component mounts
     useEffect(() => {
         const fetchData = async () => {
             setIsLoading(true);
-            const { data: matchesData } = await supabase.from('matches').select('*').order('fecha', { ascending: false });
-            setMatches(matchesData || []);
-            if (matchesData && matchesData.length > 0 && !selectedMatchId) {
-                setSelectedMatchId(matchesData[0].id);
+            try {
+                const { data: matchesData } = await supabase.from('matches').select('*').order('fecha', { ascending: false });
+                setMatches(matchesData || []);
+                if (matchesData && matchesData.length > 0 && !selectedMatchId) {
+                    setSelectedMatchId(matchesData[0].id);
+                }
+            } catch (err) {
+                console.error('Error fetching matches', err);
+            } finally {
+                setIsLoading(false);
             }
-            setIsLoading(false);
         };
         fetchData();
     }, []);
 
+    // When selectedMatchId changes, fetch tags, players and videos
     useEffect(() => {
         if (!selectedMatchId) return;
-        const fetchTagsAndPlayers = async () => {
+        const fetchTagsPlayersVideos = async () => {
             setIsLoading(true);
-            const { data: tagsData } = await supabase.from('tags').select('*').eq('match_id', selectedMatchId).order('timestamp', { ascending: true });
-            setTags(tagsData || []);
-            const { data: playersData } = await supabase.from('players').select('*');
-            setPlayers(playersData || []);
-            if (playersData && playersData.length > 0 && !selectedPlayerId) {
-                setSelectedPlayerId(playersData[0].id);
+            try {
+                const { data: tagsData } = await supabase.from('tags').select('*').eq('match_id', selectedMatchId).order('timestamp', { ascending: true });
+                setTags(tagsData || []);
+                const { data: playersData } = await supabase.from('players').select('*');
+                setPlayers(playersData || []);
+                if (playersData && playersData.length > 0 && !selectedPlayerId) {
+                    setSelectedPlayerId(playersData[0].id);
+                }
+
+                // Fetch videos metadata for the match
+                try {
+                    const videosData = await fetchVideosForMatch(selectedMatchId);
+                    setVideos(videosData || []);
+                    if (videosData && videosData.length > 0 && !selectedVideoId) {
+                        setSelectedVideoId(videosData[0].id);
+                        setSelectedVideo(videosData[0]);
+                    } else if (!videosData || videosData.length === 0) {
+                        setSelectedVideoId('');
+                        setSelectedVideo(null);
+                    }
+                } catch (err) {
+                    console.warn('Could not fetch videos for match', err);
+                    setVideos([]);
+                    setSelectedVideo(null);
+                }
+            } catch (err) {
+                console.error('Error fetching tags/players/videos', err);
+            } finally {
+                setIsLoading(false);
             }
-            setIsLoading(false);
         };
-        fetchTagsAndPlayers();
+        fetchTagsPlayersVideos();
     }, [selectedMatchId]);
+
+    // Update selectedVideo object when selectedVideoId or videos change
+    useEffect(() => {
+        if (!selectedVideoId) {
+            setSelectedVideo(null);
+            return;
+        }
+        const v = videos.find(x => x.id === selectedVideoId) || null;
+        setSelectedVideo(v);
+    }, [selectedVideoId, videos]);
 
     // Handlers for creating a match
     const handleCreateMatch = async () => {
@@ -132,14 +180,12 @@ const VideoTaggerPage: React.FC = () => {
                     throw new Error(`El archivo debe contener las columnas: ${required.join(', ')}.`);
                 }
 
-                // CORREGIDO: Quitamos match_id
                 const parsedPlayers = rawData.slice(1).map(row => ({
                     nombre: String(row[headers.indexOf('nombre')] || '').trim(),
                     numero: Number(row[headers.indexOf('numero')]),
                     posicion: String(row[headers.indexOf('posicion')] || '').trim()
                 }));
 
-                // Validación básica para evitar nombres vacíos
                 const newPlayers = parsedPlayers.filter(p => p.nombre && !players.some(existing => existing.nombre === p.nombre && existing.numero === p.numero));
                 if (newPlayers.length > 0) {
                     const { data: inserted, error } = await supabase.from('players').insert(newPlayers).select();
@@ -164,7 +210,7 @@ const VideoTaggerPage: React.FC = () => {
         reader.readAsArrayBuffer(file);
     };
 
-    // Handler for selecting a video file
+    // Handler for selecting a video file (local)
     const handleVideoSelect = (file: File) => {
         // Solo revoca la URL anterior si hay un video diferente
         if (activeVideoUrl && currentVideoFile && file !== currentVideoFile) {
@@ -172,6 +218,10 @@ const VideoTaggerPage: React.FC = () => {
         }
         setActiveVideoUrl(URL.createObjectURL(file));
         setCurrentVideoFile(file);
+
+        // Deselect any registered DB video because user selected a local file
+        setSelectedVideoId('');
+        setSelectedVideo(null);
     };
 
     const formatTime = (time: number) => new Date(time * 1000).toISOString().slice(14, 19);
@@ -193,12 +243,20 @@ const VideoTaggerPage: React.FC = () => {
         if (
             selectedAction === "Transición ofensiva lograda" ||
             selectedAction === "Transición ofensiva no lograda" ||
-            selectedAction === "Recuperación de balón"
+            selectedAction === "Recuperación de balón" ||
+            selectedAction === "Pérdida de balón"
         ) {
+            // Mantener exactamente el texto de la acción para estos casos concretos
             accion = selectedAction;
         } else {
             accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
         }
+
+        const relativeTime = Math.floor(videoRef.current.currentTime);
+        // Determine video_file and timestamp_absolute
+        const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
+        const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
+        const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
 
         const newTag: Tag = {
             id: `temp-${Date.now()}`,
@@ -206,7 +264,9 @@ const VideoTaggerPage: React.FC = () => {
             player_id: selectedPlayerId,
             accion: accion,
             resultado: resultado,
-            timestamp: videoRef.current.currentTime
+            timestamp: relativeTime,
+            video_file: videoFileName ?? undefined,
+            timestamp_absolute: timestamp_absolute as any
         };
         setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
     };
@@ -237,17 +297,54 @@ const VideoTaggerPage: React.FC = () => {
         setSaveStatus(null);
         try {
             const tempTags = tags.filter(t => String(t.id).startsWith('temp-'));
-            if (tempTags.length === 0) return;
-            const { error } = await supabase.from('tags').insert(tempTags.map(({ id, ...tag }) => tag));
+            if (tempTags.length === 0) {
+                setIsSaving(false);
+                return;
+            }
+
+            // Ensure payload includes video_file and timestamp_absolute if present
+            const payload = tempTags.map(({ id, ...tag }) => {
+                // normalize undefined timestamp_absolute to null if needed
+                return {
+                    ...tag,
+                    timestamp_absolute: (typeof tag.timestamp_absolute === 'number') ? tag.timestamp_absolute : null
+                };
+            });
+
+            const { error } = await supabase.from('tags').insert(payload);
             if (error) throw error;
             // Re-fetch tags after saving to get their real IDs
             const { data: savedTags } = await supabase.from('tags').select('*').eq('match_id', selectedMatchId).order('timestamp', { ascending: true });
             setTags(savedTags || []);
             setSaveStatus({ message: "Jugadas guardadas correctamente.", type: 'success' });
         } catch (err) {
+            console.error('Error saving tags', err);
             setSaveStatus({ message: "Error al guardar jugadas.", type: 'error' });
         } finally {
             setIsSaving(false);
+        }
+    };
+
+    // Handler to create a new video metadata record
+    const handleCreateVideo = async () => {
+        if (!newVideoFileName || !selectedMatchId) {
+            alert('Ingrese nombre del archivo y seleccione un partido.');
+            return;
+        }
+        setIsCreatingVideo(true);
+        try {
+            const created = await createVideoForMatch(selectedMatchId, newVideoFileName, newVideoOffset, null);
+            setVideos(prev => [...prev, created]);
+            setSelectedVideoId(created.id);
+            setSelectedVideo(created);
+            setShowNewVideoModal(false);
+            setNewVideoFileName('');
+            setNewVideoOffset('00:00');
+        } catch (err: any) {
+            console.error('Error creating video metadata', err);
+            alert('Error creando video: ' + (err?.message || String(err)));
+        } finally {
+            setIsCreatingVideo(false);
         }
     };
 
@@ -315,12 +412,18 @@ const VideoTaggerPage: React.FC = () => {
         if (
             fullAction === "Transición ofensiva lograda" ||
             fullAction === "Transición ofensiva no lograda" ||
-            fullAction === "Recuperación de balón"
+            fullAction === "Recuperación de balón" ||
+            fullAction === "Pérdida de balón"
         ) {
             accion = fullAction;
         } else {
             accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
         }
+
+        const relativeTime = timestamp;
+        const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
+        const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
+        const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
 
         const newTag: Tag = {
             id: `temp-ai-${Date.now()}`,
@@ -328,7 +431,9 @@ const VideoTaggerPage: React.FC = () => {
             player_id: selectedPlayerId,
             accion: accion,
             resultado: resultado,
-            timestamp: timestamp,
+            timestamp: relativeTime,
+            video_file: videoFileName ?? undefined,
+            timestamp_absolute: timestamp_absolute as any
         };
         setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
@@ -365,6 +470,14 @@ const VideoTaggerPage: React.FC = () => {
                                 className="max-h-full w-full"
                                 onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
                             ></video>
+                        ) : selectedVideo ? (
+                            // Note: registered video metadata does not contain the actual file blob.
+                            // We still allow tagging based on metadata (video_file + start_offset_seconds).
+                            <div className="text-center text-gray-300">
+                                <div className="mb-2">Video seleccionado: <strong className="text-white">{selectedVideo.video_file}</strong></div>
+                                <div className="text-sm">Offset inicio: {selectedVideo.start_offset_seconds}s</div>
+                                <p className="mt-4">Para reproducir el archivo completo, carga el archivo localmente en "Videos del Partido".</p>
+                            </div>
                         ) : (
                             <p className="text-gray-400">Seleccione un partido y cargue videos para empezar</p>
                         )}
@@ -374,7 +487,6 @@ const VideoTaggerPage: React.FC = () => {
                         onClick={() => {
                             if (!activeVideoUrl) return;
                             window.open(activeVideoUrl, '_blank');
-                            // NO revocamos la URL ni cambiamos el estado aquí
                         }}
                         disabled={!activeVideoUrl}
                         className="mt-4 w-full bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded"
@@ -398,9 +510,9 @@ const VideoTaggerPage: React.FC = () => {
                                         <span className="font-semibold">{players.find(p => p.id === tag.player_id)?.nombre || "Jugador"}</span>
                                         <span className="text-xs text-gray-300 ml-2">{formatTime(tag.timestamp)}</span>
                                         <div className="text-xs text-gray-300">{tag.accion} {tag.resultado && <span className={isSuccess ? 'text-green-300' : 'text-red-300'}>{tag.resultado}</span>}</div>
+                                        {tag.video_file && <div className="text-xs text-gray-400 mt-1">Video: {tag.video_file} — ts_abs: {tag.timestamp_absolute ?? 'N/A'}</div>}
                                     </div>
                                     <div className="flex items-center gap-2">
-                                        {/* Opcional: Agregar edición */}
                                         <button
                                             onClick={() => deleteTag(tag)}
                                             disabled={isSaving}
@@ -454,6 +566,7 @@ const VideoTaggerPage: React.FC = () => {
                         </div>
                     )}
                 </div>
+
                 {/* 2. Carga de Archivos */}
                 <div className="bg-gray-800 rounded-lg p-4">
                     <h3 className="text-lg font-semibold mb-2 text-white">2. Carga de Archivos</h3>
@@ -463,18 +576,31 @@ const VideoTaggerPage: React.FC = () => {
                         {playerUploadStatus === 'loading' && <Spinner size="h-4 w-4" />}
                     </div>
                     {playerUploadMessage && <p className={`text-xs pt-1 ${playerUploadStatus === 'success' ? 'text-green-400' : playerUploadStatus === 'error' ? 'text-red-400' : 'text-gray-400'}`}>{playerUploadMessage}</p>}
-                    <label className="block text-sm text-gray-400 mt-4 mb-1">Videos del Partido</label>
+                    <label className="block text-sm text-gray-400 mt-4 mb-1">Videos del Partido (local)</label>
                     <input type="file" multiple accept="video/*" onChange={e => setVideoFiles(Array.from(e.target.files || []))} className="w-full text-sm file:mr-4 file:py-1 file:px-2 file:rounded-full file:border-0 file:font-semibold file:bg-gray-600 file:text-white hover:file:bg-gray-500" />
                     <div className="mt-2 max-h-24 overflow-y-auto">
                         {videoFiles.map(f => (
                             <button key={f.name} onClick={() => handleVideoSelect(f)} className="text-left text-xs text-cyan-400 hover:underline w-full truncate p-1 rounded hover:bg-gray-700">{f.name}</button>
                         ))}
                     </div>
+
+                    <label className="block text-sm text-gray-400 mt-4 mb-1">Videos registrados (metadatos)</label>
+                    <div className="flex gap-2 items-center">
+                        <select value={selectedVideoId} onChange={e => setSelectedVideoId(e.target.value)} className="flex-1 bg-gray-700 p-2 rounded">
+                            <option value="">-- Seleccione video registrado --</option>
+                            {videos.map(v => (
+                                <option key={v.id} value={v.id}>{v.video_file} (offset: {v.start_offset_seconds}s)</option>
+                            ))}
+                        </select>
+                        <button onClick={() => setShowNewVideoModal(true)} className="ml-2 bg-indigo-600 hover:bg-indigo-500 p-2 rounded text-white text-sm">Registrar nuevo</button>
+                    </div>
+
                     <label className="block text-sm text-gray-400 mt-4 mb-1">Mi equipo (uniforme)</label>
                     <input type="file" accept="image/*" onChange={e => setTeamUniformFile(e.target.files?.[0] || null)} className="w-full text-sm file:mr-4 file:py-1 file:px-2 file:rounded-full file:border-0 file:font-semibold file:bg-gray-600 file:text-white hover:file:bg-gray-500" />
                     <label className="block text-sm text-gray-400 mt-4 mb-1">Equipo Rival (uniforme)</label>
                     <input type="file" accept="image/*" onChange={e => setOpponentUniformFile(e.target.files?.[0] || null)} className="w-full text-sm file:mr-4 file:py-1 file:px-2 file:rounded-full file:border-0 file:font-semibold file:bg-gray-600 file:text-white hover:file:bg-gray-500" />
                 </div>
+
                 {/* 3. Etiquetar Jugada */}
                 <div className="bg-gray-800 rounded-lg p-4">
                     <h3 className="text-lg font-semibold mb-2 text-white">3. Etiquetar Jugada</h3>
@@ -488,7 +614,7 @@ const VideoTaggerPage: React.FC = () => {
                     <select value={selectedAction} onChange={e => setSelectedAction(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-4">
                         {METRICS.map(m => <option key={m} value={m}>{m}</option>)}
                     </select>
-                    <button onClick={addTag} disabled={!selectedPlayerId || !selectedAction || !activeVideoUrl} className="w-full bg-green-600 hover:bg-green-500 p-2 rounded font-semibold text-white flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
+                    <button onClick={addTag} disabled={!selectedPlayerId || !selectedAction || (!activeVideoUrl && !selectedVideo)} className="w-full bg-green-600 hover:bg-green-500 p-2 rounded font-semibold text-white flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
                         Etiquetar Jugada
                     </button>
                     <button onClick={saveTags} disabled={isSaving || tags.filter(t => String(t.id).startsWith('temp-')).length === 0} className="mt-2 w-full bg-blue-600 hover:bg-blue-500 p-2 rounded font-semibold text-white flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
@@ -501,15 +627,31 @@ const VideoTaggerPage: React.FC = () => {
                         </div>
                     )}
                 </div>
+
                 {/* 4. Analisis Asistido por IA */}
                 <div className="bg-gray-800 rounded-lg p-4">
                     <h3 className="text-lg font-semibold mb-2 text-white">Análisis Asistido por IA (Beta)</h3>
                     <p className="text-xs text-gray-400 mb-4">La IA puede sugerir jugadas. Puedes aceptar o rechazar las sugerencias.</p>
-                    <button onClick={handleAIAssistedAnalysis} disabled={!activeVideoUrl || isAnalyzingAI || !selectedMatchId} className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
+                    <button onClick={handleAIAssistedAnalysis} disabled={!activeVideoUrl && !selectedVideo || isAnalyzingAI || !selectedMatchId} className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
                         {isAnalyzingAI ? <><Spinner /> Analizando...</> : <><SparklesIcon />Sugerir Acciones</>}
                     </button>
                 </div>
             </div>
+
+            {/* New Video modal */}
+            {showNewVideoModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
+                    <div className="bg-gray-800 rounded p-6 w-[420px]">
+                        <h3 className="text-lg font-semibold mb-3">Registrar nuevo video</h3>
+                        <input placeholder="Nombre del archivo (ej. VID_20251021_1.mp4)" className="w-full bg-gray-700 p-2 rounded mb-2" value={newVideoFileName} onChange={e => setNewVideoFileName(e.target.value)} />
+                        <input placeholder="Inicio del video (MM:SS)" className="w-full bg-gray-700 p-2 rounded mb-4" value={newVideoOffset} onChange={e => setNewVideoOffset(e.target.value)} />
+                        <div className="flex gap-2 justify-end">
+                            <button onClick={() => setShowNewVideoModal(false)} className="px-3 py-2 bg-gray-600 rounded">Cancelar</button>
+                            <button onClick={handleCreateVideo} disabled={isCreatingVideo || !newVideoFileName} className="px-3 py-2 bg-green-600 rounded text-white">{isCreatingVideo ? <Spinner /> : 'Crear'}</button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

@@ -26,6 +26,9 @@ export interface Tag {
   accion: string;
   resultado: string;
   timestamp: number;
+  // Nuevos campos añadidos para soportar videos y timestamps absolutos
+  video_file?: string;
+  timestamp_absolute?: number;
   created_at?: string;
 }
 
