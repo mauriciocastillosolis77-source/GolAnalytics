@@ -8,6 +8,7 @@ import { analyzeVideoFrames } from '../services/geminiService';
 import { blobToBase64 } from '../utils/blob';
 import AISuggestionsModal from '../components/ai/AISuggestionsModal';
 import { fetchVideosForMatch, createVideoForMatch, Video as VideoMeta } from '../services/videosService';
+import { buildLearningContext, saveFeedback, getLearningStats, type LearningContext } from '../services/aiLearningService';
 
 declare var XLSX: any;
 
@@ -51,10 +52,18 @@ const VideoTaggerPage: React.FC = () => {
     const [selectedPlayerId, setSelectedPlayerId] = useState<string>('');
     const [selectedAction, setSelectedAction] = useState<string>(METRICS[0]);
 
-    // Section 4: AI Analysis
+    // Section 4: AI Analysis with Learning
     const [isAnalyzingAI, setIsAnalyzingAI] = useState(false);
     const [aiSuggestions, setAiSuggestions] = useState<AISuggestion[]>([]);
     const [isSuggestionsModalOpen, setIsSuggestionsModalOpen] = useState(false);
+    const [learningContext, setLearningContext] = useState<LearningContext | null>(null);
+    const [isLoadingContext, setIsLoadingContext] = useState(false);
+    const [learningStats, setLearningStats] = useState<{
+        totalFeedback: number;
+        acceptanceRate: number;
+        mostAcceptedActions: Array<{action: string; count: number}>;
+        improvementTrend: number;
+    } | null>(null);
 
     // UI State
     const [isLoading, setIsLoading] = useState(true);
@@ -83,7 +92,7 @@ const VideoTaggerPage: React.FC = () => {
         fetchData();
     }, []);
 
-    // When selectedMatchId changes, fetch tags, players and videos
+    // When selectedMatchId changes, fetch tags, players, videos and learning context
     useEffect(() => {
         if (!selectedMatchId) return;
         const fetchTagsPlayersVideos = async () => {
@@ -112,6 +121,31 @@ const VideoTaggerPage: React.FC = () => {
                     console.warn('Could not fetch videos for match', err);
                     setVideos([]);
                     setSelectedVideo(null);
+                }
+
+                // Load learning context
+                setIsLoadingContext(true);
+                try {
+                    const context = await buildLearningContext(selectedMatchId);
+                    setLearningContext(context);
+                    console.log('🧠 Learning context loaded:', {
+                        historicalPlays: context.historicalTags.length,
+                        teamPatterns: context.teamPatterns.length,
+                        successRate: `${(context.successRate * 100).toFixed(1)}%`
+                    });
+                } catch (err) {
+                    console.warn('Could not load learning context:', err);
+                    setLearningContext(null);
+                } finally {
+                    setIsLoadingContext(false);
+                }
+
+                // Load learning stats
+                try {
+                    const stats = await getLearningStats();
+                    setLearningStats(stats);
+                } catch (err) {
+                    console.warn('Could not load learning stats:', err);
                 }
             } catch (err) {
                 console.error('Error fetching tags/players/videos', err);
@@ -151,204 +185,147 @@ const VideoTaggerPage: React.FC = () => {
                 jornada: 1
             });
         } catch (err: any) {
-            setMatchCreationError(err.message);
+            console.error('Error creating match:', err);
+            setMatchCreationError(err.message || 'Error al crear el partido');
         } finally {
             setIsSavingMatch(false);
         }
     };
 
-    // Handler for uploading players via Excel file (sin match_id)
-    const handlePlayerFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-        setPlayerUploadStatus('loading');
-        setPlayerUploadMessage('');
-        const reader = new FileReader();
-        reader.onload = async (ev) => {
-            try {
-                const data = ev.target?.result;
-                if (!data) throw new Error("No se pudo leer el archivo.");
-
-                const workbook = XLSX.read(data, { type: 'array' });
-                const worksheet = workbook.Sheets[workbook.SheetNames[0]];
-                const rawData: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
-                if (rawData.length < 2) throw new Error("El archivo está vacío.");
-
-                const headers = rawData[0].map(h => String(h).trim().toLowerCase());
-                const required = ['nombre', 'numero', 'posicion'];
-                if (!required.every(h => headers.includes(h))) {
-                    throw new Error(`El archivo debe contener las columnas: ${required.join(', ')}.`);
-                }
-
-                const parsedPlayers = rawData.slice(1).map(row => ({
-                    nombre: String(row[headers.indexOf('nombre')] || '').trim(),
-                    numero: Number(row[headers.indexOf('numero')]),
-                    posicion: String(row[headers.indexOf('posicion')] || '').trim()
-                }));
-
-                const newPlayers = parsedPlayers.filter(p => p.nombre && !players.some(existing => existing.nombre === p.nombre && existing.numero === p.numero));
-                if (newPlayers.length > 0) {
-                    const { data: inserted, error } = await supabase.from('players').insert(newPlayers).select();
-                    if (error) throw error;
-                    setPlayerUploadStatus('success');
-                    setPlayerUploadMessage(`✅ ${inserted?.length || 0} nuevos jugadores cargados. ${parsedPlayers.length - newPlayers.length} ya existían.`);
-                } else {
-                    setPlayerUploadStatus('success');
-                    setPlayerUploadMessage(`No se encontraron jugadores nuevos para cargar.`);
-                }
-
-                const { data: allPlayers } = await supabase.from('players').select('*');
-                setPlayers(allPlayers || []);
-                if (allPlayers && allPlayers.length > 0 && !selectedPlayerId) {
-                    setSelectedPlayerId(allPlayers[0].id);
-                }
-            } catch (err: any) {
-                setPlayerUploadStatus('error');
-                setPlayerUploadMessage(`❌ Error: ${err.message}`);
-            }
-        };
-        reader.readAsArrayBuffer(file);
-    };
-
-    // Handler for selecting a video file (local)
-    const handleVideoSelect = (file: File) => {
-        // Solo revoca la URL anterior si hay un video diferente
-        if (activeVideoUrl && currentVideoFile && file !== currentVideoFile) {
-            URL.revokeObjectURL(activeVideoUrl);
-        }
-        setActiveVideoUrl(URL.createObjectURL(file));
-        setCurrentVideoFile(file);
-
-        // Deselect any registered DB video because user selected a local file
-        setSelectedVideoId('');
-        setSelectedVideo(null);
-    };
-
-    const formatTime = (time: number) => new Date(time * 1000).toISOString().slice(14, 19);
-
-    // Handler for adding a tag (jugada)
-    const addTag = () => {
-        if (!selectedPlayerId || !videoRef.current) return;
-
-        const actionParts = selectedAction.split(' ');
-
-        // Lógica extendida para transición ofensiva y recuperación de balón
-        let resultado = '';
-        if (actionParts.includes('logrado')) resultado = 'logrado';
-        else if (actionParts.includes('fallado')) resultado = 'fallado';
-        else if (selectedAction === "Transición ofensiva lograda") resultado = 'logrado';
-        else if (selectedAction === "Transición ofensiva no lograda") resultado = 'no logrado';
-
-        let accion = selectedAction;
-        if (
-            selectedAction === "Transición ofensiva lograda" ||
-            selectedAction === "Transición ofensiva no lograda" ||
-            selectedAction === "Recuperación de balón" ||
-            selectedAction === "Pérdida de balón"
-        ) {
-            // Mantener exactamente el texto de la acción para estos casos concretos
-            accion = selectedAction;
-        } else {
-            accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
-        }
-
-        const relativeTime = Math.floor(videoRef.current.currentTime);
-        // Determine video_file and timestamp_absolute
-        const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
-        const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
-        const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
-
-        const newTag: Tag = {
-            id: `temp-${Date.now()}`,
-            match_id: selectedMatchId,
-            player_id: selectedPlayerId,
-            accion: accion,
-            resultado: resultado,
-            timestamp: relativeTime,
-            video_file: videoFileName ?? undefined,
-            timestamp_absolute: timestamp_absolute as any
-        };
-        setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
-    };
-
-    // Handler for deleting a tag
-    const deleteTag = async (tagToDelete: Tag) => {
-        const isSaved = !String(tagToDelete.id).startsWith('temp-');
-        if (isSaved) {
-            setSaveStatus(null);
-            setIsSaving(true);
-            const { error } = await supabase.from('tags').delete().eq('id', tagToDelete.id);
-            if (error) {
-                setSaveStatus({ message: "Error al eliminar la jugada.", type: 'error' });
-            } else {
-                setTags(prev => prev.filter(t => t.id !== tagToDelete.id));
-                setSaveStatus({ message: "Jugada eliminada correctamente.", type: 'success' });
-            }
-            setIsSaving(false);
-        } else {
-            setTags(prev => prev.filter(t => t.id !== tagToDelete.id));
-        }
-    };
-
-    // Handler for saving all tags (jugadas) to DB
-    const saveTags = async () => {
-        if (tags.length === 0) return;
-        setIsSaving(true);
-        setSaveStatus(null);
-        try {
-            const tempTags = tags.filter(t => String(t.id).startsWith('temp-'));
-            if (tempTags.length === 0) {
-                setIsSaving(false);
-                return;
-            }
-
-            // Ensure payload includes video_file and timestamp_absolute if present
-            const payload = tempTags.map(({ id, ...tag }) => {
-                // normalize undefined timestamp_absolute to null if needed
-                return {
-                    ...tag,
-                    timestamp_absolute: (typeof tag.timestamp_absolute === 'number') ? tag.timestamp_absolute : null
-                };
-            });
-
-            const { error } = await supabase.from('tags').insert(payload);
-            if (error) throw error;
-            // Re-fetch tags after saving to get their real IDs
-            const { data: savedTags } = await supabase.from('tags').select('*').eq('match_id', selectedMatchId).order('timestamp', { ascending: true });
-            setTags(savedTags || []);
-            setSaveStatus({ message: "Jugadas guardadas correctamente.", type: 'success' });
-        } catch (err) {
-            console.error('Error saving tags', err);
-            setSaveStatus({ message: "Error al guardar jugadas.", type: 'error' });
-        } finally {
-            setIsSaving(false);
-        }
-    };
-
-    // Handler to create a new video metadata record
+    // Handlers for creating a video metadata entry
     const handleCreateVideo = async () => {
-        if (!newVideoFileName || !selectedMatchId) {
-            alert('Ingrese nombre del archivo y seleccione un partido.');
-            return;
-        }
+        if (!newVideoFileName || !selectedMatchId) return;
         setIsCreatingVideo(true);
         try {
-            const created = await createVideoForMatch(selectedMatchId, newVideoFileName, newVideoOffset, null);
-            setVideos(prev => [...prev, created]);
-            setSelectedVideoId(created.id);
-            setSelectedVideo(created);
+            const offsetParts = newVideoOffset.split(':').map(Number);
+            const offsetSeconds = offsetParts.length === 2 ? offsetParts[0] * 60 + offsetParts[1] : 0;
+            const newVideo = await createVideoForMatch(selectedMatchId, newVideoFileName, offsetSeconds);
+            setVideos(prev => [...prev, newVideo]);
+            setSelectedVideoId(newVideo.id);
+            setSelectedVideo(newVideo);
             setShowNewVideoModal(false);
             setNewVideoFileName('');
             setNewVideoOffset('00:00');
-        } catch (err: any) {
-            console.error('Error creating video metadata', err);
-            alert('Error creando video: ' + (err?.message || String(err)));
+        } catch (err) {
+            console.error('Error creating video:', err);
+            alert('Error al registrar el video.');
         } finally {
             setIsCreatingVideo(false);
         }
     };
 
-    // Handler for AI-assisted analysis
+    const handlePlayerFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        setPlayerUploadStatus('loading');
+        setPlayerUploadMessage('Leyendo archivo...');
+        try {
+            const data = await file.arrayBuffer();
+            const workbook = XLSX.read(data);
+            const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+            const rows: any[] = XLSX.utils.sheet_to_json(firstSheet);
+            if (rows.length === 0) {
+                setPlayerUploadStatus('error');
+                setPlayerUploadMessage('No hay datos en el archivo.');
+                return;
+            }
+            const playersToInsert = rows.map(r => ({
+                nombre: r.Nombre || r.nombre || 'Sin nombre',
+                numero: Number(r.Numero || r.numero) || 0,
+                posicion: r.Posicion || r.posicion || ''
+            }));
+            const { error } = await supabase.from('players').insert(playersToInsert);
+            if (error) throw error;
+            const { data: newPlayers } = await supabase.from('players').select('*');
+            setPlayers(newPlayers || []);
+            setPlayerUploadStatus('success');
+            setPlayerUploadMessage(`${playersToInsert.length} jugador(es) cargados exitosamente.`);
+        } catch (error: any) {
+            console.error('Error uploading players:', error);
+            setPlayerUploadStatus('error');
+            setPlayerUploadMessage(error.message || 'Error al cargar el archivo.');
+        }
+    };
+
+    const handleVideoSelect = (file: File) => {
+        const url = URL.createObjectURL(file);
+        setActiveVideoUrl(url);
+        setCurrentVideoFile(file);
+    };
+
+    const addTag = () => {
+        if (!selectedPlayerId || !selectedAction) return;
+        const time = videoRef.current?.currentTime || 0;
+        const tempId = `temp-${Date.now()}`;
+        const actionParts = selectedAction.split(' ');
+        let resultado = '';
+        if (actionParts.includes('logrado')) resultado = 'logrado';
+        else if (actionParts.includes('fallado')) resultado = 'fallado';
+        let accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
+        if (!accion) accion = selectedAction;
+        const newTag: Tag = {
+            id: tempId,
+            match_id: selectedMatchId,
+            player_id: selectedPlayerId,
+            accion,
+            resultado,
+            timestamp: time,
+            video_file: selectedVideo?.video_file,
+            timestamp_absolute: selectedVideo ? selectedVideo.start_offset_seconds + time : time
+        };
+        setTags(prev => [...prev, newTag]);
+    };
+
+    const deleteTag = (tagId: string | number) => {
+        setTags(prev => prev.filter(t => t.id !== tagId));
+    };
+
+    const saveTags = async () => {
+        const unsaved = tags.filter(t => String(t.id).startsWith('temp-'));
+        if (unsaved.length === 0) return;
+        setIsSaving(true);
+        setSaveStatus(null);
+        try {
+            const toInsert = unsaved.map(t => ({
+                match_id: t.match_id,
+                player_id: t.player_id,
+                accion: t.accion,
+                resultado: t.resultado,
+                timestamp: t.timestamp,
+                video_file: t.video_file,
+                timestamp_absolute: t.timestamp_absolute
+            }));
+            const { data, error } = await supabase.from('tags').insert(toInsert).select();
+            if (error) throw error;
+            const savedIds = new Set(unsaved.map(t => t.id));
+            setTags(prev => [...prev.filter(t => !savedIds.has(t.id)), ...(data || [])]);
+            setSaveStatus({ message: `${data?.length || 0} jugadas guardadas correctamente.`, type: 'success' });
+        } catch (err: any) {
+            console.error('Error saving tags:', err);
+            setSaveStatus({ message: err.message || 'Error al guardar las jugadas.', type: 'error' });
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    const exportToExcel = () => {
+        const dataToExport = tags.map(t => ({
+            Jugador: players.find(p => p.id === t.player_id)?.nombre || t.player_id,
+            Accion: t.accion,
+            Resultado: t.resultado || '',
+            Timestamp: t.timestamp.toFixed(2),
+            Video: t.video_file || '',
+            TimestampAbsoluto: t.timestamp_absolute !== undefined ? t.timestamp_absolute.toFixed(2) : ''
+        }));
+        const ws = XLSX.utils.json_to_sheet(dataToExport);
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Tags');
+        XLSX.writeFile(wb, 'tags_export.xlsx');
+    };
+
+    // ==========================================
+    // AI ANALYSIS WITH LEARNING CONTEXT
+    // ==========================================
     const handleAIAssistedAnalysis = async () => {
         if (!videoRef.current || !canvasRef.current) return;
         setIsAnalyzingAI(true);
@@ -358,10 +335,13 @@ const VideoTaggerPage: React.FC = () => {
             const context = canvas.getContext('2d');
             if (!context) return;
 
+            console.log('🎬 Starting AI analysis with learning context...');
+
             const frames: { data: string; mimeType: string }[] = [];
             const frameCount = 8, interval = 2, startTime = Math.max(0, video.currentTime - (frameCount * interval));
             video.pause();
 
+            // Capture frames
             for (let i = 0; i < frameCount; i++) {
                 video.currentTime = startTime + i * interval;
                 await new Promise(r => setTimeout(r, 200));
@@ -376,10 +356,22 @@ const VideoTaggerPage: React.FC = () => {
             }
 
             if (frames.length > 0) {
-                const suggestions = await analyzeVideoFrames(frames, tags);
+                // Use enhanced AI analysis with learning context
+                const suggestions = await analyzeVideoFrames(
+                    frames, 
+                    tags, 
+                    learningContext || undefined,
+                    players,
+                    video.currentTime
+                );
+                
                 setAiSuggestions(suggestions);
-                if (suggestions.length > 0) setIsSuggestionsModalOpen(true);
-                else alert("La IA no encontró nuevas jugadas para sugerir.");
+                if (suggestions.length > 0) {
+                    console.log(`✅ AI suggested ${suggestions.length} plays`);
+                    setIsSuggestionsModalOpen(true);
+                } else {
+                    alert("La IA no encontró nuevas jugadas para sugerir.");
+                }
             }
         } catch (error) {
             console.error("Error during AI analysis:", error);
@@ -390,18 +382,18 @@ const VideoTaggerPage: React.FC = () => {
         }
     };
 
-    const handleAcceptSuggestion = (suggestion: AISuggestion) => {
+    const handleAcceptSuggestion = async (suggestion: AISuggestion) => {
         const timeParts = suggestion.timestamp.split(':').map(Number);
         const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
 
         const fullAction = suggestion.action;
         if (!METRICS.includes(fullAction)) {
-            handleRejectSuggestion(suggestion);
+            console.warn('Action not in METRICS, rejecting:', fullAction);
+            await handleRejectSuggestion(suggestion);
             return;
         }
-        const actionParts = fullAction.split(' ');
 
-        // Lógica extendida para transición ofensiva y recuperación de balón
+        const actionParts = fullAction.split(' ');
         let resultado = '';
         if (actionParts.includes('logrado')) resultado = 'logrado';
         else if (actionParts.includes('fallado')) resultado = 'fallado';
@@ -420,34 +412,76 @@ const VideoTaggerPage: React.FC = () => {
             accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
         }
 
-        const relativeTime = timestamp;
-        const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
-        const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
-        const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
+        if (!accion) accion = fullAction;
 
+        const tempId = `temp-${Date.now()}`;
         const newTag: Tag = {
-            id: `temp-ai-${Date.now()}`,
+            id: tempId,
             match_id: selectedMatchId,
-            player_id: selectedPlayerId,
-            accion: accion,
-            resultado: resultado,
-            timestamp: relativeTime,
-            video_file: videoFileName ?? undefined,
-            timestamp_absolute: timestamp_absolute as any
+            player_id: selectedPlayerId || players[0]?.id || '',
+            accion,
+            resultado,
+            timestamp: timestamp,
+            video_file: selectedVideo?.video_file,
+            timestamp_absolute: selectedVideo ? selectedVideo.start_offset_seconds + timestamp : timestamp
         };
-        setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
+
+        setTags(prev => [...prev, newTag]);
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
+
+        // Save feedback: suggestion was accepted
+        try {
+            await saveFeedback({
+                match_id: selectedMatchId,
+                suggestion_timestamp: timestamp,
+                suggested_action: fullAction,
+                suggested_player_id: selectedPlayerId || players[0]?.id,
+                was_accepted: true,
+                actual_action: accion,
+                actual_player_id: selectedPlayerId || players[0]?.id
+            });
+            console.log('✅ Positive feedback saved for AI learning');
+            
+            // Refresh learning stats
+            const stats = await getLearningStats();
+            setLearningStats(stats);
+        } catch (err) {
+            console.error('Error saving feedback:', err);
+        }
     };
 
-    const handleRejectSuggestion = (suggestion: AISuggestion) => {
+    const handleRejectSuggestion = async (suggestion: AISuggestion) => {
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
+
+        // Save feedback: suggestion was rejected
+        try {
+            const timeParts = suggestion.timestamp.split(':').map(Number);
+            const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
+
+            await saveFeedback({
+                match_id: selectedMatchId,
+                suggestion_timestamp: timestamp,
+                suggested_action: suggestion.action,
+                suggested_player_id: selectedPlayerId || players[0]?.id,
+                was_accepted: false
+            });
+            console.log('❌ Negative feedback saved for AI learning');
+            
+            // Refresh learning stats
+            const stats = await getLearningStats();
+            setLearningStats(stats);
+        } catch (err) {
+            console.error('Error saving feedback:', err);
+        }
     };
 
-    if (isLoading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
+    if (isLoading) {
+        return <div className="flex items-center justify-center h-screen"><Spinner /></div>;
+    }
 
     return (
-        <div className="flex h-full gap-4 p-4">
-            <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
+        <div className="flex flex-col lg:flex-row h-screen overflow-hidden">
+            {/* Suggestions Modal */}
             {isSuggestionsModalOpen && (
                 <AISuggestionsModal
                     suggestions={aiSuggestions}
@@ -457,93 +491,48 @@ const VideoTaggerPage: React.FC = () => {
                 />
             )}
 
-            {/* Left Column: Video and Tagged Plays */}
-            <div className="flex-1 flex flex-col gap-4">
-                <div className="bg-gray-800 rounded-lg p-4 flex flex-col">
-                    {/* VIDEO, altura fija */}
-                    <div className="min-h-[300px] max-h-[350px] flex items-center justify-center bg-black rounded-md">
-                        {activeVideoUrl ? (
-                            <video
-                                ref={videoRef}
-                                src={activeVideoUrl}
-                                controls
-                                className="max-h-full w-full"
-                                onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
-                            ></video>
-                        ) : selectedVideo ? (
-                            // Note: registered video metadata does not contain the actual file blob.
-                            // We still allow tagging based on metadata (video_file + start_offset_seconds).
-                            <div className="text-center text-gray-300">
-                                <div className="mb-2">Video seleccionado: <strong className="text-white">{selectedVideo.video_file}</strong></div>
-                                <div className="text-sm">Offset inicio: {selectedVideo.start_offset_seconds}s</div>
-                                <p className="mt-4">Para reproducir el archivo completo, carga el archivo localmente en "Videos del Partido".</p>
-                            </div>
-                        ) : (
-                            <p className="text-gray-400">Seleccione un partido y cargue videos para empezar</p>
-                        )}
+            {/* Video Section */}
+            <div className="flex-1 bg-black flex items-center justify-center relative">
+                {activeVideoUrl || selectedVideo ? (
+                    <>
+                        <video
+                            ref={videoRef}
+                            src={activeVideoUrl || ''}
+                            controls
+                            className="max-w-full max-h-full"
+                            onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
+                        />
+                        <canvas ref={canvasRef} style={{ display: 'none' }} />
+                    </>
+                ) : (
+                    <div className="text-gray-400 text-center p-4">
+                        <p className="text-lg">No hay video seleccionado</p>
+                        <p className="text-sm mt-2">Carga un archivo de video desde el panel lateral</p>
                     </div>
-                    {/* BOTÓN seguro */}
-                    <button
-                        onClick={() => {
-                            if (!activeVideoUrl) return;
-                            window.open(activeVideoUrl, '_blank');
-                        }}
-                        disabled={!activeVideoUrl}
-                        className="mt-4 w-full bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded"
-                    >
-                        Abrir video en ventana nueva
-                    </button>
-                    {/* LISTA DE JUGADAS debajo, scroll propio */}
-                    <div className="h-[200px] overflow-y-auto mt-4 bg-gray-900 rounded p-2">
-                        <h3 className="text-lg font-semibold mb-2 text-white">Jugadas Etiquetadas</h3>
-                        {tags.length > 0 ? tags.map(tag => {
-                            const isSuccess = tag.resultado === 'logrado';
-                            const isFailure = tag.resultado === 'fallado';
-                            const isSaved = !String(tag.id).startsWith('temp-');
-                            const borderColor = isSuccess ? 'border-green-500' : isFailure ? 'border-red-500' : 'border-gray-500';
-                            return (
-                                <div
-                                    key={tag.id}
-                                    className={`flex items-center justify-between mb-2 p-2 border-l-4 ${borderColor} bg-gray-700 rounded`}
-                                >
-                                    <div className="flex-1">
-                                        <span className="font-semibold">{players.find(p => p.id === tag.player_id)?.nombre || "Jugador"}</span>
-                                        <span className="text-xs text-gray-300 ml-2">{formatTime(tag.timestamp)}</span>
-                                        <div className="text-xs text-gray-300">{tag.accion} {tag.resultado && <span className={isSuccess ? 'text-green-300' : 'text-red-300'}>{tag.resultado}</span>}</div>
-                                        {tag.video_file && <div className="text-xs text-gray-400 mt-1">Video: {tag.video_file} — ts_abs: {tag.timestamp_absolute ?? 'N/A'}</div>}
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <button
-                                            onClick={() => deleteTag(tag)}
-                                            disabled={isSaving}
-                                            className="p-1 text-red-300 hover:text-red-500"
-                                            title="Eliminar"
-                                        >
-                                            <TrashIcon />
-                                        </button>
-                                    </div>
-                                </div>
-                            );
-                        }) : (
-                            <p className="text-gray-400 text-center mt-4">Aún no se han etiquetado jugadas para este partido.</p>
-                        )}
+                )}
+
+                {/* Time Display */}
+                {(activeVideoUrl || selectedVideo) && (
+                    <div className="absolute bottom-16 left-4 bg-black bg-opacity-70 px-3 py-1 rounded text-white text-sm">
+                        Tiempo: {currentTime.toFixed(1)}s
                     </div>
-                </div>
+                )}
             </div>
 
-            {/* Right Column: Management Panels */}
-            <div className="w-1/3 flex flex-col gap-4 overflow-y-auto pr-2">
-                {/* 1. Gestión del Partido */}
+            {/* Control Panel */}
+            <div className="w-full lg:w-96 bg-gray-900 p-4 overflow-y-auto space-y-4">
+                <h2 className="text-2xl font-bold text-white mb-4">Control de Etiquetado</h2>
+
+                {/* 1. Selección de Partido */}
                 <div className="bg-gray-800 rounded-lg p-4">
-                    <h3 className="text-lg font-semibold mb-2 text-white">1. Gestión del Partido</h3>
+                    <h3 className="text-lg font-semibold mb-2 text-white">1. Seleccionar Partido</h3>
                     <select value={selectedMatchId} onChange={e => setSelectedMatchId(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-2">
-                        {matches.length === 0 && <option>Cree un partido para empezar</option>}
                         {matches.map(m => (
-                            <option key={m.id} value={m.id}>{m.torneo} - {m.nombre_equipo} vs {m.rival} ({m.fecha})</option>
+                            <option key={m.id} value={m.id}>{m.torneo} - {m.nombre_equipo} vs {m.rival} (J{m.jornada})</option>
                         ))}
                     </select>
                     <button
-                        onClick={() => setIsCreatingMatch(v => !v)}
+                        onClick={() => setIsCreatingMatch(!isCreatingMatch)}
                         className="w-full mt-2 bg-blue-600 hover:bg-blue-500 p-2 rounded font-semibold flex items-center justify-center gap-2"
                     >
                         <CloudUploadIcon />
@@ -628,13 +617,105 @@ const VideoTaggerPage: React.FC = () => {
                     )}
                 </div>
 
-                {/* 4. Analisis Asistido por IA */}
+                {/* 4. Análisis Asistido por IA con Aprendizaje */}
                 <div className="bg-gray-800 rounded-lg p-4">
-                    <h3 className="text-lg font-semibold mb-2 text-white">Análisis Asistido por IA (Beta)</h3>
-                    <p className="text-xs text-gray-400 mb-4">La IA puede sugerir jugadas. Puedes aceptar o rechazar las sugerencias.</p>
-                    <button onClick={handleAIAssistedAnalysis} disabled={!activeVideoUrl && !selectedVideo || isAnalyzingAI || !selectedMatchId} className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
-                        {isAnalyzingAI ? <><Spinner /> Analizando...</> : <><SparklesIcon />Sugerir Acciones</>}
+                    <h3 className="text-lg font-semibold mb-2 text-white">🧠 Análisis Asistido por IA (con Aprendizaje)</h3>
+                    
+                    {/* Learning Stats Display */}
+                    {learningStats && learningStats.totalFeedback > 0 && (
+                        <div className="mb-4 p-3 bg-gray-700 rounded text-xs space-y-1">
+                            <div className="flex justify-between">
+                                <span className="text-gray-300">Precisión de IA:</span>
+                                <span className={`font-bold ${learningStats.acceptanceRate > 0.7 ? 'text-green-400' : learningStats.acceptanceRate > 0.5 ? 'text-yellow-400' : 'text-red-400'}`}>
+                                    {(learningStats.acceptanceRate * 100).toFixed(1)}%
+                                </span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-gray-300">Sugerencias totales:</span>
+                                <span className="text-blue-400">{learningStats.totalFeedback}</span>
+                            </div>
+                            {learningStats.improvementTrend !== 0 && (
+                                <div className="flex justify-between items-center">
+                                    <span className="text-gray-300">Tendencia:</span>
+                                    <span className={learningStats.improvementTrend > 0 ? 'text-green-400' : 'text-red-400'}>
+                                        {learningStats.improvementTrend > 0 ? '↗' : '↘'} {Math.abs(learningStats.improvementTrend * 100).toFixed(1)}%
+                                    </span>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Context Loading Indicator */}
+                    {isLoadingContext && (
+                        <div className="mb-3 p-2 bg-blue-900 bg-opacity-30 rounded text-xs text-blue-300 flex items-center gap-2">
+                            <Spinner size="h-3 w-3" />
+                            <span>Cargando contexto de aprendizaje...</span>
+                        </div>
+                    )}
+
+                    {/* Learning Context Summary */}
+                    {learningContext && (
+                        <div className="mb-3 p-2 bg-purple-900 bg-opacity-30 rounded text-xs text-purple-300">
+                            <div className="flex items-center gap-1 mb-1">
+                                <span>🎓</span>
+                                <span className="font-semibold">Entrenado con:</span>
+                            </div>
+                            <div className="ml-5 space-y-0.5 text-gray-400">
+                                <div>• {learningContext.historicalTags.length} jugadas históricas</div>
+                                <div>• {learningContext.teamPatterns.length} patrones de equipo</div>
+                                <div>• {Object.keys(learningContext.playerPreferences).length} perfiles de jugadores</div>
+                            </div>
+                        </div>
+                    )}
+
+                    <p className="text-xs text-gray-400 mb-4">
+                        La IA aprende de tus correcciones y mejora sus sugerencias con cada partido.
+                    </p>
+                    
+                    <button 
+                        onClick={handleAIAssistedAnalysis} 
+                        disabled={!activeVideoUrl && !selectedVideo || isAnalyzingAI || !selectedMatchId || isLoadingContext} 
+                        className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed"
+                    >
+                        {isAnalyzingAI ? (
+                            <>
+                                <Spinner /> 
+                                Analizando con IA...
+                            </>
+                        ) : (
+                            <>
+                                <SparklesIcon />
+                                {learningContext ? 'Sugerir Acciones (IA Entrenada)' : 'Sugerir Acciones'}
+                            </>
+                        )}
                     </button>
+                </div>
+
+                {/* 5. Tags List */}
+                <div className="bg-gray-800 rounded-lg p-4">
+                    <div className="flex justify-between items-center mb-2">
+                        <h3 className="text-lg font-semibold text-white">Jugadas Etiquetadas ({tags.length})</h3>
+                        <button onClick={exportToExcel} className="text-xs bg-green-700 hover:bg-green-600 px-2 py-1 rounded">Exportar Excel</button>
+                    </div>
+                    <div className="max-h-64 overflow-y-auto space-y-1">
+                        {tags.length === 0 && <p className="text-gray-500 text-sm">No hay jugadas etiquetadas.</p>}
+                        {tags.map(tag => {
+                            const player = players.find(p => p.id === tag.player_id);
+                            const isTemp = String(tag.id).startsWith('temp-');
+                            return (
+                                <div key={tag.id} className={`flex items-center justify-between p-2 rounded ${isTemp ? 'bg-yellow-900 bg-opacity-30' : 'bg-gray-700'}`}>
+                                    <div className="flex-1 text-xs">
+                                        <div className="font-semibold text-white">{player ? `${player.numero} - ${player.nombre}` : 'Desconocido'}</div>
+                                        <div className="text-gray-400">{tag.accion} {tag.resultado && `(${tag.resultado})`}</div>
+                                        <div className="text-gray-500">{tag.timestamp.toFixed(2)}s</div>
+                                    </div>
+                                    <button onClick={() => deleteTag(tag.id)} className="text-red-400 hover:text-red-300">
+                                        <TrashIcon />
+                                    </button>
+                                </div>
+                            );
+                        })}
+                    </div>
                 </div>
             </div>
 
