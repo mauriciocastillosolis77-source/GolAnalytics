@@ -2,7 +2,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import type { LearningContext } from './aiLearningService';
 
-const GEMINI_API_KEY = import.meta.env.VITE_API_KEY;
+const GEMINI_API_KEY = import.meta.env.VITE_API_KEY_NEW || import.meta.env.VITE_API_KEY;
 
 if (!GEMINI_API_KEY) {
   console.warn('⚠️ GEMINI_API_KEY no configurada');
