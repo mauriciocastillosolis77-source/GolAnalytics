@@ -405,7 +405,9 @@ const { user } = useAuth();
     };
     };
 
-    const handleAcceptSuggestion = (suggestion: AISuggestion) => {
+   const handleAcceptSuggestion = async (suggestion: AISuggestion) => {
+        if (!user) return;
+        
         const timeParts = suggestion.timestamp.split(':').map(Number);
         const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
 
@@ -414,6 +416,7 @@ const { user } = useAuth();
             handleRejectSuggestion(suggestion);
             return;
         }
+        
         const actionParts = fullAction.split(' ');
 
         // Lógica extendida para transición ofensiva y recuperación de balón
@@ -450,12 +453,46 @@ const { user } = useAuth();
             video_file: videoFileName ?? undefined,
             timestamp_absolute: timestamp_absolute as any
         };
+        
         setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
+        
+        // 🧠 GUARDAR FEEDBACK: Aceptada
+        try {
+            const { saveFeedback } = await import('../services/aiLearningService');
+            await saveFeedback(
+                {
+                    suggestion_id: (suggestion as any).id || `temp-${Date.now()}`,
+                    accepted: true
+                },
+                user.id
+            );
+            console.log('✅ Feedback guardado: Aceptada');
+        } catch (err) {
+            console.error('Error guardando feedback:', err);
+        }
     };
 
-    const handleRejectSuggestion = (suggestion: AISuggestion) => {
+    const handleRejectSuggestion = async (suggestion: AISuggestion) => {
+        if (!user) return;
+        
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
+        
+        // 🧠 GUARDAR FEEDBACK: Rechazada
+        try {
+            const { saveFeedback } = await import('../services/aiLearningService');
+            await saveFeedback(
+                {
+                    suggestion_id: (suggestion as any).id || `temp-${Date.now()}`,
+                    accepted: false,
+                    user_notes: 'Sugerencia rechazada por el usuario'
+                },
+                user.id
+            );
+            console.log('❌ Feedback guardado: Rechazada');
+        } catch (err) {
+            console.error('Error guardando feedback:', err);
+        }
     };
 
     if (isLoading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
