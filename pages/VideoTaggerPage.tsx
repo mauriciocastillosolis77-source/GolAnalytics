@@ -5,6 +5,8 @@ import { METRICS } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
 import { EditIcon, TrashIcon, SparklesIcon, CloudUploadIcon, CloudCheckIcon } from '../components/ui/Icons';
 import { analyzeVideoFrames } from '../services/geminiService';
+import { analyzeWithLearning } from '../services/aiLearningService';
+import { useAuth } from '../contexts/AuthContext';
 import { blobToBase64 } from '../utils/blob';
 import AISuggestionsModal from '../components/ai/AISuggestionsModal';
 import { fetchVideosForMatch, createVideoForMatch, Video as VideoMeta } from '../services/videosService';
@@ -12,6 +14,7 @@ import { fetchVideosForMatch, createVideoForMatch, Video as VideoMeta } from '..
 declare var XLSX: any;
 
 const VideoTaggerPage: React.FC = () => {
+const { user } = useAuth();
     // Section 1: Match Management
     const [matches, setMatches] = useState<Match[]>([]);
     const [selectedMatchId, setSelectedMatchId] = useState<string>('');
@@ -348,46 +351,58 @@ const VideoTaggerPage: React.FC = () => {
         }
     };
 
-    // Handler for AI-assisted analysis
+   // Handler for AI-assisted analysis (CON APRENDIZAJE)
     const handleAIAssistedAnalysis = async () => {
-        if (!videoRef.current || !canvasRef.current) return;
+        if (!videoRef.current || !user) {
+            alert('Debes estar autenticado para usar la IA');
+            return;
+        }
+        
         setIsAnalyzingAI(true);
         try {
-            const video = videoRef.current;
-            const canvas = canvasRef.current;
-            const context = canvas.getContext('2d');
-            if (!context) return;
-
-            const frames: { data: string; mimeType: string }[] = [];
-            const frameCount = 8, interval = 2, startTime = Math.max(0, video.currentTime - (frameCount * interval));
-            video.pause();
-
-            for (let i = 0; i < frameCount; i++) {
-                video.currentTime = startTime + i * interval;
-                await new Promise(r => setTimeout(r, 200));
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-                context.drawImage(video, 0, 0, canvas.width, canvas.height);
-                const blob: Blob | null = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.8));
-                if (blob) {
-                    const base64 = await blobToBase64(blob);
-                    if (base64) frames.push({ data: base64, mimeType: 'image/jpeg' });
-                }
+            const videoUrl = activeVideoUrl;
+            if (!videoUrl) {
+                alert('Carga un video primero');
+                return;
             }
 
-            if (frames.length > 0) {
-                const suggestions = await analyzeVideoFrames(frames, tags);
-                setAiSuggestions(suggestions);
-                if (suggestions.length > 0) setIsSuggestionsModalOpen(true);
-                else alert("La IA no encontró nuevas jugadas para sugerir.");
+            const currentTime = Math.floor(videoRef.current.currentTime);
+            
+            console.log('🧠 Analizando con IA + aprendizaje...');
+            
+            // Usar el nuevo servicio con aprendizaje contextual
+            const suggestions = await analyzeWithLearning(
+                videoUrl,
+                currentTime,
+                selectedMatchId,
+                user.id
+            );
+
+            if (suggestions.length > 0) {
+                // Convertir formato de sugerencias al formato que espera tu modal
+                const formattedSuggestions = suggestions.map(s => ({
+                    id: s.id,
+                    action: s.metric_name,
+                    timestamp: formatTime(s.timestamp),
+                    confidence: Math.round(s.confidence * 100),
+                    reasoning: s.reasoning
+                }));
+                
+                setAiSuggestions(formattedSuggestions as any);
+                setIsSuggestionsModalOpen(true);
+                
+                console.log(`✅ ${suggestions.length} sugerencias recibidas`);
+            } else {
+                alert("La IA no encontró jugadas en este momento. Prueba en otro momento del video.");
             }
-        } catch (error) {
-            console.error("Error during AI analysis:", error);
-            alert("Ocurrió un error durante el análisis de IA.");
+            
+        } catch (error: any) {
+            console.error("Error durante análisis de IA:", error);
+            alert(error?.message || "Error al analizar con IA. Verifica tu API Key.");
         } finally {
             setIsAnalyzingAI(false);
-            videoRef.current?.play();
         }
+    };
     };
 
     const handleAcceptSuggestion = (suggestion: AISuggestion) => {
