@@ -88,7 +88,7 @@ export async function analyzeVideoSegment(
     const prompt = buildAnalysisPrompt(context, currentTime);
     
     // 3. Analizar con Gemini
-    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+   const model = genAI.getGenerativeModel({ model: 'gemini-pro-vision' });
     
     const result = await model.generateContent([
       prompt,
