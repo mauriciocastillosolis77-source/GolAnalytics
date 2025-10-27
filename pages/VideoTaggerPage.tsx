@@ -403,7 +403,6 @@ const { user } = useAuth();
             setIsAnalyzingAI(false);
         }
     };
-    };
 
    const handleAcceptSuggestion = async (suggestion: AISuggestion) => {
         if (!user) return;
