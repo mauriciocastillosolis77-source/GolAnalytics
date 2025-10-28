@@ -389,7 +389,81 @@ const VideoTaggerPage: React.FC = () => {
             videoRef.current?.play();
         }
     };
-
+// Handler for AI analysis using our trained model
+    const handleCustomModelAnalysis = async () => {
+        if (!videoRef.current) return;
+        
+        setIsAnalyzingAI(true);
+        
+        try {
+            const video = videoRef.current;
+            const canvas = canvasRef.current;
+            const context = canvas?.getContext('2d');
+            if (!context) return;
+            
+            // Capture current frame
+            video.pause();
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            // Convert to base64
+            const blob: Blob | null = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.9));
+            if (!blob) {
+                alert("No se pudo capturar el frame");
+                return;
+            }
+            
+            const base64 = await blobToBase64(blob);
+            if (!base64) {
+                alert("Error al procesar la imagen");
+                return;
+            }
+            
+            // Call our API
+            const response = await fetch('/api/predict', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    image: base64,
+                    timestamp: video.currentTime
+                })
+            });
+            
+            if (!response.ok) {
+                throw new Error('Error en la API');
+            }
+            
+            const result = await response.json();
+            
+            if (result.success && result.predictions) {
+                // Convert predictions to suggestions format
+                const suggestions: AISuggestion[] = result.predictions.map((pred: any) => ({
+                    timestamp: formatTime(video.currentTime),
+                    action: pred.action,
+                    confidence: Math.round(pred.probability * 100)
+                }));
+                
+                setAiSuggestions(suggestions);
+                if (suggestions.length > 0) {
+                    setIsSuggestionsModalOpen(true);
+                } else {
+                    alert("No se encontraron sugerencias");
+                }
+            } else {
+                alert(result.message || "Error desconocido");
+            }
+            
+        } catch (error) {
+            console.error("Error during custom model analysis:", error);
+            alert("Ocurrió un error durante el análisis con el modelo personalizado.");
+        } finally {
+            setIsAnalyzingAI(false);
+            videoRef.current?.play();
+        }
+    };
     const handleAcceptSuggestion = (suggestion: AISuggestion) => {
         const timeParts = suggestion.timestamp.split(':').map(Number);
         const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
@@ -634,6 +708,13 @@ const VideoTaggerPage: React.FC = () => {
                     <p className="text-xs text-gray-400 mb-4">La IA puede sugerir jugadas. Puedes aceptar o rechazar las sugerencias.</p>
                     <button onClick={handleAIAssistedAnalysis} disabled={!activeVideoUrl && !selectedVideo || isAnalyzingAI || !selectedMatchId} className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
                         {isAnalyzingAI ? <><Spinner /> Analizando...</> : <><SparklesIcon />Sugerir Acciones</>}
+                    </button>
+<button 
+                        onClick={handleCustomModelAnalysis} 
+                        disabled={!activeVideoUrl && !selectedVideo || isAnalyzingAI || !selectedMatchId} 
+                        className="w-full mt-2 bg-indigo-600 hover:bg-indigo-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed"
+                    >
+                        {isAnalyzingAI ? <><Spinner /> Analizando...</> : <><SparklesIcon />Modelo Personalizado (74% Top-3)</>}
                     </button>
                 </div>
             </div>
