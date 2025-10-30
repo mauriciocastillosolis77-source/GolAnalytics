@@ -464,34 +464,51 @@ const VideoTaggerPage: React.FC = () => {
             videoRef.current?.play();
         }
     };
-    const handleAcceptSuggestion = (suggestion: AISuggestion) => {
-    // Convertir formato: "1_vs_1_ofensivo" → "1 vs 1 ofensivo"
-    let accionConvertida = suggestion.action.replace(/_/g, ' ');
-    
-    // Verificar que la acción existe en METRICS
-    if (!METRICS.includes(accionConvertida)) {
-        alert(`Acción "${accionConvertida}" no encontrada en las opciones disponibles.`);
-        handleRejectSuggestion(suggestion);
-        return;
-    }
-    
-    // Pre-llenar el formulario con la acción sugerida
-    setSelectedAction(accionConvertida);
-    
-    // Mover el video al timestamp de la sugerencia
-    if (videoRef.current) {
-        const timeParts = suggestion.timestamp.split(':').map(Number);
-        const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
-        videoRef.current.currentTime = timestamp;
-    }
-    
-    // Cerrar modal y remover sugerencia
-    setIsSuggestionsModalOpen(false);
-    setAiSuggestions(prev => prev.filter(s => s !== suggestion));
-    
-    // Mensaje informativo
-    alert(`Acción "${accionConvertida}" seleccionada. Completa los datos restantes (jugador, tipo, resultado) y presiona "Etiquetar Jugada".`);
-};
+   const handleAcceptSuggestion = (suggestion: AISuggestion) => {
+        // Convertir formato: "1_vs_1_ofensivo" → "1 vs 1 ofensivo"
+        let accionBase = suggestion.action.replace(/_/g, ' ');
+        
+        // Buscar si la acción base existe con "logrado" o "fallado"
+        const opcionLogrado = `${accionBase} logrado`;
+        const opcionFallado = `${accionBase} fallado`;
+        
+        let accionFinal = '';
+        
+        // Verificar qué opciones existen
+        if (METRICS.includes(accionBase)) {
+            // La acción existe tal cual (ej: "Recuperación de balón")
+            accionFinal = accionBase;
+        } else if (METRICS.includes(opcionLogrado) || METRICS.includes(opcionFallado)) {
+            // La acción necesita logrado/fallado - usar la primera que exista
+            if (METRICS.includes(opcionLogrado)) {
+                accionFinal = opcionLogrado;
+            } else {
+                accionFinal = opcionFallado;
+            }
+        } else {
+            // Acción no encontrada en ningún formato
+            alert(`Acción "${accionBase}" no encontrada. Las opciones más cercanas son:\n- ${opcionLogrado}\n- ${opcionFallado}\n\nPor favor, selecciona manualmente.`);
+            handleRejectSuggestion(suggestion);
+            return;
+        }
+        
+        // Pre-llenar el formulario con la acción sugerida
+        setSelectedAction(accionFinal);
+        
+        // Mover el video al timestamp de la sugerencia
+        if (videoRef.current) {
+            const timeParts = suggestion.timestamp.split(':').map(Number);
+            const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
+            videoRef.current.currentTime = timestamp;
+        }
+        
+        // Cerrar modal y remover sugerencia
+        setIsSuggestionsModalOpen(false);
+        setAiSuggestions(prev => prev.filter(s => s !== suggestion));
+        
+        // Mensaje informativo
+        alert(`Acción "${accionFinal}" seleccionada. Verifica si es correcta y ajusta "logrado/fallado" si es necesario antes de etiquetar.`);
+    };
 
     const handleRejectSuggestion = (suggestion: AISuggestion) => {
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
