@@ -465,53 +465,33 @@ const VideoTaggerPage: React.FC = () => {
         }
     };
     const handleAcceptSuggestion = (suggestion: AISuggestion) => {
+    // Convertir formato: "1_vs_1_ofensivo" → "1 vs 1 ofensivo"
+    let accionConvertida = suggestion.action.replace(/_/g, ' ');
+    
+    // Verificar que la acción existe en METRICS
+    if (!METRICS.includes(accionConvertida)) {
+        alert(`Acción "${accionConvertida}" no encontrada en las opciones disponibles.`);
+        handleRejectSuggestion(suggestion);
+        return;
+    }
+    
+    // Pre-llenar el formulario con la acción sugerida
+    setSelectedAction(accionConvertida);
+    
+    // Mover el video al timestamp de la sugerencia
+    if (videoRef.current) {
         const timeParts = suggestion.timestamp.split(':').map(Number);
         const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
-
-        const fullAction = suggestion.action;
-        if (!METRICS.includes(fullAction)) {
-            handleRejectSuggestion(suggestion);
-            return;
-        }
-        const actionParts = fullAction.split(' ');
-
-        // Lógica extendida para transición ofensiva y recuperación de balón
-        let resultado = '';
-        if (actionParts.includes('logrado')) resultado = 'logrado';
-        else if (actionParts.includes('fallado')) resultado = 'fallado';
-        else if (fullAction === "Transición ofensiva lograda") resultado = 'logrado';
-        else if (fullAction === "Transición ofensiva no lograda") resultado = 'no logrado';
-
-        let accion = fullAction;
-        if (
-            fullAction === "Transición ofensiva lograda" ||
-            fullAction === "Transición ofensiva no lograda" ||
-            fullAction === "Recuperación de balón" ||
-            fullAction === "Pérdida de balón"
-        ) {
-            accion = fullAction;
-        } else {
-            accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
-        }
-
-        const relativeTime = timestamp;
-        const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
-        const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
-        const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
-
-        const newTag: Tag = {
-            id: `temp-ai-${Date.now()}`,
-            match_id: selectedMatchId,
-            player_id: selectedPlayerId,
-            accion: accion,
-            resultado: resultado,
-            timestamp: relativeTime,
-            video_file: videoFileName ?? undefined,
-            timestamp_absolute: timestamp_absolute as any
-        };
-        setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
-        setAiSuggestions(prev => prev.filter(s => s !== suggestion));
-    };
+        videoRef.current.currentTime = timestamp;
+    }
+    
+    // Cerrar modal y remover sugerencia
+    setIsSuggestionsModalOpen(false);
+    setAiSuggestions(prev => prev.filter(s => s !== suggestion));
+    
+    // Mensaje informativo
+    alert(`Acción "${accionConvertida}" seleccionada. Completa los datos restantes (jugador, tipo, resultado) y presiona "Etiquetar Jugada".`);
+};
 
     const handleRejectSuggestion = (suggestion: AISuggestion) => {
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
