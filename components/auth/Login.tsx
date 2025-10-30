@@ -80,14 +80,18 @@ const Login: React.FC<LoginProps> = ({ onSwitchToRegister }) => {
         </button>
       </div>
 
-       <div className="text-center">
+            <div className="text-center">
         <p className="text-sm text-gray-400">
           ¿No tienes una cuenta?{' '}
-          <button type="button" onClick={onSwitchToRegister} className="font-medium text-cyan-400 hover:text-cyan-300">
-            Regístrate
-          </button>
+          {import.meta.env.VITE_ALLOW_SIGNUP === 'true' ? (
+            <button type="button" onClick={onSwitchToRegister} className="font-medium text-cyan-400 hover:text-cyan-300">
+              Regístrate
+            </button>
+          ) : (
+            <span className="font-medium text-gray-500">Registro deshabilitado</span>
+          )}
         </p>
-      </div>
+      </div> 
     </form>
   );
 };
