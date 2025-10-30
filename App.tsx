@@ -8,6 +8,7 @@ import VideoTaggerPage from './pages/VideoTaggerPage';
 import NotFoundPage from './pages/NotFoundPage';
 import Layout from './components/layout/Layout';
 import { Spinner } from './components/ui/Spinner';
+import AdminCreateUser from './pages/AdminCreateUser';
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode; allowedRoles?: string[] }> = ({ children, allowedRoles }) => {
   const { user, profile } = useAuth();
@@ -47,7 +48,17 @@ const App: React.FC = () => {
                 </ProtectedRoute>
               } 
             />
-            
+
+            {/* NEW: admin create user */}
+            <Route 
+              path="/admin/create-user" 
+              element={
+                <ProtectedRoute allowedRoles={[ROLES.ADMIN]}>
+                  <Layout><AdminCreateUser /></Layout>
+                </ProtectedRoute>
+              } 
+            />
+
             <Route path="*" element={<NotFoundPage />} />
         </Routes>
     );
