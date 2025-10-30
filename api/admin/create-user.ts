@@ -16,15 +16,15 @@ import { createClient } from '@supabase/supabase-js';
   - Usa SUPABASE_SERVICE_ROLE_KEY desde variables de entorno (no tiene prefijo VITE_)
 */
 
-const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const ADMIN_CREATION_TOKEN = process.env.ADMIN_CREATION_TOKEN; // agrega esto en Vercel y compártelo solo con los admins
+const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
+const ADMIN_CREATION_TOKEN = process.env.ADMIN_CREATION_TOKEN || '';
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
   console.error('Missing Supabase config envs');
 }
 
-const supabaseAdmin = createClient(SUPABASE_URL || '', SUPABASE_SERVICE_ROLE_KEY || '');
+const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Only allow POST
@@ -33,8 +33,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // Simple protection: check ADMIN_CREATION_TOKEN header
-  const token = req.headers['x-admin-token'] || req.headers['X-ADMIN-TOKEN'];
-  if (!ADMIN_CREATION_TOKEN || token !== ADMIN_CREATION_TOKEN) {
+  const tokenHeader = (req.headers['x-admin-token'] as string) || (req.headers['X-ADMIN-TOKEN'] as string) || '';
+  if (!ADMIN_CREATION_TOKEN || tokenHeader !== ADMIN_CREATION_TOKEN) {
     return res.status(401).json({ error: 'Unauthorized - missing or invalid admin token' });
   }
 
@@ -46,6 +46,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     // 1) Create user in Supabase Auth using admin API
+    // If the user already exists, Supabase will return an error; depending on your desired behavior
+    // you might want to lookup by email first. For now we attempt createUser and surface errors.
     const { data: userData, error: createUserError } = await supabaseAdmin.auth.admin.createUser({
       email,
       password,
@@ -62,25 +64,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(500).json({ error: 'No user id returned from Supabase' });
     }
 
-    // 2) Insert profile row in 'profiles' table
-    const profileRow = {
+    // 2) Insert or update (upsert) profile row in 'profiles' table
+    const profileRow: any = {
       id: userId,
       rol: role,
       email,
-      full_name,
-      team_id
+      full_name
     };
-
-    const { error: insertError } = await supabaseAdmin.from('profiles').insert(profileRow);
-
-    if (insertError) {
-      console.error('Error inserting profile:', insertError);
-      // Attempt to rollback by removing created user (best-effort)
-      await supabaseAdmin.auth.admin.deleteUser(userId).catch(() => {});
-      return res.status(500).json({ error: 'Error inserting profile', details: insertError.message });
+    if (team_id !== null && team_id !== undefined) {
+      profileRow.team_id = team_id;
     }
 
-    // Return credentials to the caller (you may want to avoid returning the password in production)
+    // Use upsert so if the profile already exists we update it, otherwise insert.
+    const { error: upsertError } = await supabaseAdmin
+      .from('profiles')
+      .upsert(profileRow, { returning: 'minimal' });
+
+    if (upsertError) {
+      console.error('Error upserting profile:', upsertError);
+      // Surface a clear error; do not attempt to delete the created user here.
+      return res.status(500).json({ error: 'Error inserting/updating profile', details: upsertError.message });
+    }
+
+    // Return success to the caller
     return res.status(201).json({ message: 'User created', id: userId, email });
   } catch (err: any) {
     console.error('Unexpected error:', err);
