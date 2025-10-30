@@ -461,7 +461,6 @@ const VideoTaggerPage: React.FC = () => {
             alert("Ocurrió un error durante el análisis con el modelo personalizado.");
         } finally {
             setIsAnalyzingAI(false);
-            videoRef.current?.play();
         }
     };
    const handleAcceptSuggestion = (suggestion: AISuggestion) => {
