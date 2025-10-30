@@ -421,7 +421,7 @@ const VideoTaggerPage: React.FC = () => {
             }
             
             // Call our API
-            const response = await fetch('/api/predict', {
+           const response = await fetch('https://peaceful-art-production.up.railway.app/predict', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
