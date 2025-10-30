@@ -1,4 +1,3 @@
-import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { createClient } from '@supabase/supabase-js';
 
 /*
@@ -20,6 +19,7 @@ import { createClient } from '@supabase/supabase-js';
     3) Inserta/upserta el profile en la tabla profiles
 */
 
+// No usamos tipos específicos de Vercel para evitar dependencias de build
 const SUPABASE_URL = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || '';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
@@ -29,7 +29,7 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
+export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -44,7 +44,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const userAccessToken = match[1];
 
     // 1) get user info from Supabase using the provided access token
-    // Note: supabaseAdmin.auth.getUser requires passing the JWT token
+    // Note: getUser accepts the token via auth.getUser(token)
     const { data: tokenUserData, error: getUserErr } = await supabaseAdmin.auth.getUser(userAccessToken);
     if (getUserErr || !tokenUserData?.user?.id) {
       console.error('Error retrieving user from token', getUserErr);
@@ -102,9 +102,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       profileRow.team_id = team_id;
     }
 
+    // Quitar la opción 'returning' para evitar incompatibilidades con la versión de tipos
     const { error: upsertError } = await supabaseAdmin
       .from('profiles')
-      .upsert(profileRow, { returning: 'minimal' });
+      .upsert(profileRow);
 
     if (upsertError) {
       console.error('Error upserting profile:', upsertError);
