@@ -50,21 +50,27 @@ const AdminUsersPage: React.FC = () => {
 
       const userId = signUpData.user.id;
 
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
       const { error: profileError } = await supabase
         .from('profiles')
-        .update({
+        .upsert({
+          id: userId,
           rol: role,
           team_id: teamId || null,
-          full_name: fullName
-        })
-        .eq('id', userId);
+          full_name: fullName,
+          username: email.split('@')[0],
+          avatar_url: null
+        }, {
+          onConflict: 'id'
+        });
 
       if (profileError) {
-        throw new Error(`Usuario creado pero error al actualizar perfil: ${profileError.message}`);
+        throw new Error(`Database error saving new user`);
       }
 
       setMessage({ 
-        text: `Usuario creado exitosamente: ${email}. El usuario debe verificar su correo antes de iniciar sesión.`, 
+        text: `Usuario creado exitosamente: ${email}. El usuario puede iniciar sesión inmediatamente.`, 
         type: 'success' 
       });
       setEmail('');
