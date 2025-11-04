@@ -2,7 +2,7 @@ import { supabase } from './supabaseClient';
 
 export interface Team {
   id: string;
-  name: string;
+  nombre: string;
   created_at?: string;
 }
 
@@ -10,7 +10,7 @@ export async function fetchTeams(): Promise<Team[]> {
   const { data, error } = await supabase
     .from('teams')
     .select('*')
-    .order('name', { ascending: true });
+    .order('nombre', { ascending: true });
 
   if (error) {
     console.error('Error fetching teams:', error);

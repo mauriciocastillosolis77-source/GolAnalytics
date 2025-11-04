@@ -648,7 +648,7 @@ const VideoTaggerPage: React.FC = () => {
                                 />
                                 <datalist id="teams-list">
                                     {teams.map(team => (
-                                        <option key={team.id} value={team.name} />
+                                        <option key={team.id} value={team.nombre} />
                                     ))}
                                 </datalist>
                                 <p className="text-xs text-gray-400 mt-1">Selecciona un equipo existente o escribe uno nuevo</p>
