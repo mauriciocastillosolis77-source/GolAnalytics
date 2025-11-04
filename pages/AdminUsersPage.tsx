@@ -30,35 +30,43 @@ const AdminUsersPage: React.FC = () => {
     setIsLoading(true);
 
     try {
-      const session = await supabase.auth.getSession();
-      const accessToken = session.data.session?.access_token;
-
-      if (!accessToken) {
-        throw new Error('No estás autenticado');
-      }
-
-      const response = await fetch('/api/admin/create-user-proxy', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${accessToken}`
-        },
-        body: JSON.stringify({
-          email,
-          password,
-          full_name: fullName,
-          role,
-          team_id: teamId || null
-        })
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            full_name: fullName
+          }
+        }
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || data.details || 'Error al crear usuario');
+      if (signUpError) {
+        throw new Error(signUpError.message);
       }
 
-      setMessage({ text: `Usuario creado exitosamente: ${data.email}`, type: 'success' });
+      if (!signUpData.user) {
+        throw new Error('No se pudo crear el usuario');
+      }
+
+      const userId = signUpData.user.id;
+
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .update({
+          rol: role,
+          team_id: teamId || null,
+          full_name: fullName
+        })
+        .eq('id', userId);
+
+      if (profileError) {
+        throw new Error(`Usuario creado pero error al actualizar perfil: ${profileError.message}`);
+      }
+
+      setMessage({ 
+        text: `Usuario creado exitosamente: ${email}. El usuario debe verificar su correo antes de iniciar sesión.`, 
+        type: 'success' 
+      });
       setEmail('');
       setPassword('');
       setFullName('');
