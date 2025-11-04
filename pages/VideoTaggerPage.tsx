@@ -142,10 +142,12 @@ const VideoTaggerPage: React.FC = () => {
         setIsSavingMatch(true);
         setMatchCreationError(null);
         try {
-            const teamId = await getOrCreateTeam(newMatchData.nombre_equipo);
+            const normalizedTeamName = newMatchData.nombre_equipo.trim().toUpperCase();
+            const teamId = await getOrCreateTeam(normalizedTeamName);
             
             const matchToInsert = {
                 ...newMatchData,
+                nombre_equipo: normalizedTeamName,
                 team_id: teamId
             };
             
