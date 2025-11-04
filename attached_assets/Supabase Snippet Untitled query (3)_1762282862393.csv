@@ -1,0 +1,11 @@
+schemaname,tablename,policyname,cmd
+public,tags,Admins can do everything on tags.,ALL
+public,tags,Permitir a admins borrar etiquetas,DELETE
+public,tags,Permitir a admins crear etiquetas,INSERT
+public,tags,Permitir a admins editar etiquetas,UPDATE
+public,tags,Permitir a usuarios autenticados leer las etiquetas,SELECT
+public,tags,tags_delete_admins,DELETE
+public,tags,tags_insert_admins,INSERT
+public,tags,tags_owner,ALL
+public,tags,tags_select_admins_aux,SELECT
+public,tags,tags_update_admins,UPDATE
