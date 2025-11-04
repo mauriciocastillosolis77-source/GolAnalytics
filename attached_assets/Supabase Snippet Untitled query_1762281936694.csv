@@ -1,0 +1,7 @@
+column_name,data_type,is_nullable
+id,uuid,NO
+rol,text,YES
+created_at,timestamp with time zone,YES
+email,text,YES
+full_name,text,YES
+team_id,uuid,YES
