@@ -10,7 +10,7 @@ GolAnalytics is a soccer analytics application designed for coaches to analyze t
 - Leverage AI (Google Gemini) to auto-suggest tagged actions from video frames
 - Export tagged data for further analysis
 
-The system supports role-based access control with admin and auxiliar (assistant) roles, where admins have full tagging capabilities while auxiliars have read-only access to dashboards.
+The system supports role-based access control with admin and auxiliar (assistant) roles, where admins have full tagging capabilities while auxiliars have read-only access to dashboards. Admins can create new users through the built-in user management interface.
 
 ## User Preferences
 
@@ -34,6 +34,10 @@ Preferred communication style: Simple, everyday language.
 - **Context + Hooks**: Authentication state and user profile data are provided through `AuthContext` and consumed via `useAuth()` hook
 - **Compound Components**: Layout system separates Header, Sidebar, and main content areas
 - **Protected Routes**: Higher-order component pattern to guard routes based on authentication and user roles
+
+**Admin Pages** (admin-only access):
+- **VideoTaggerPage** (`/tagger`): Create matches, upload videos, tag player actions, manage players
+- **AdminUsersPage** (`/admin/users`): Create new users with role and team assignment
 
 ### Backend Architecture
 
