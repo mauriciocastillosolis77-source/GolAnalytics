@@ -1,0 +1,5 @@
+schemaname,tablename,policyname,cmd
+public,players,admin_delete_players,DELETE
+public,players,admin_insert_players,INSERT
+public,players,admin_update_players,UPDATE
+public,players,users_read_players_by_role,SELECT
