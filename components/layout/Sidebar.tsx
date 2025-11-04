@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { ROLES } from '../../constants';
-import { DashboardIcon, Logo, TaggerIcon } from '../ui/Icons';
+import { DashboardIcon, Logo, TaggerIcon, UsersIcon } from '../ui/Icons';
 
 // Forzar a Tailwind a incluir las clases necesarias (para evitar purge)
 const _forceTailwindClasses = ["translate-x-0", "-translate-x-64"];
@@ -78,16 +78,28 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
           </NavLink>
 
           {profile?.rol === ROLES.ADMIN && (
-            <NavLink
-              to="/tagger"
-              className={({ isActive }) =>
-                `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
-              }
-              onClick={() => setSidebarOpen(false)}
-            >
-              <TaggerIcon />
-              <span className="ml-3">Etiquetador</span>
-            </NavLink>
+            <>
+              <NavLink
+                to="/tagger"
+                className={({ isActive }) =>
+                  `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
+                }
+                onClick={() => setSidebarOpen(false)}
+              >
+                <TaggerIcon />
+                <span className="ml-3">Etiquetador</span>
+              </NavLink>
+              <NavLink
+                to="/admin/users"
+                className={({ isActive }) =>
+                  `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
+                }
+                onClick={() => setSidebarOpen(false)}
+              >
+                <UsersIcon />
+                <span className="ml-3">Usuarios</span>
+              </NavLink>
+            </>
           )}
         </nav>
 
