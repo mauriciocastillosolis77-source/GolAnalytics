@@ -1,0 +1,10 @@
+schemaname,tablename,policyname,cmd
+public,matches,Admins can do everything on matches.,ALL
+public,matches,Authenticated users can view matches.,SELECT
+public,matches,Permitir a los admins crear partidos,INSERT
+public,matches,Permitir a usuarios autenticados leer los partidos,SELECT
+public,matches,admin_delete_matches,DELETE
+public,matches,admin_insert_matches,INSERT
+public,matches,admin_update_matches,UPDATE
+public,matches,matches_owner,ALL
+public,matches,users_read_matches_by_role,SELECT
