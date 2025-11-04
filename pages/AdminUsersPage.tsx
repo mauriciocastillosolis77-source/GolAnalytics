@@ -66,7 +66,8 @@ const AdminUsersPage: React.FC = () => {
         });
 
       if (profileError) {
-        throw new Error(`Database error saving new user`);
+        console.error('Profile error details:', profileError);
+        throw new Error(profileError.message || 'Database error saving new user');
       }
 
       setMessage({ 
