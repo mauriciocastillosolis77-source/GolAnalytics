@@ -47,16 +47,23 @@ Preferred communication style: Simple, everyday language.
 - `/api/predict.py`: Python-based endpoint for AI predictions (currently returns mock data)
 
 **Data Schema**:
-- `profiles`: User metadata including role (admin/auxiliar), username, avatar
-- `matches`: Match records with tournament, team, category, date, rival, and match day
-- `players`: Player roster with name, number, position
+- `teams`: Team records with normalized names (UPPERCASE). All team names are automatically converted to uppercase to prevent duplicates (e.g., "Rayados" → "RAYADOS")
+- `profiles`: User metadata including role (admin/auxiliar), username, avatar, and team_id (foreign key to teams). Users are assigned to a specific team for data isolation
+- `matches`: Match records with tournament, team_id (foreign key), team name (nombre_equipo), category, date, rival, and match day
+- `players`: Player roster with name, number, position, and team_id (foreign key to teams)
 - `tags`: Tagged actions during matches with player reference, action type, result, timestamp, and optional video metadata
 - `videos`: Video file metadata including match reference, filename, start offset, duration, storage path
 
+**Multi-Tenancy Architecture**:
+- **Team-Based Data Isolation**: All users are assigned to a team via `profiles.team_id`. Data is filtered by team to ensure users only see their team's information
+- **Team Name Normalization**: All team names are automatically normalized to UPPERCASE in both frontend (`VideoTaggerPage.tsx`) and database (`upsert_team()` function) to prevent case-sensitive duplicates
+- **Admin Cross-Team Access**: Admin users can view and manage data across all teams. The VideoTaggerPage includes a team selector allowing admins to create matches for any team (existing or new)
+- **Team Auto-Creation**: When creating a match, if the specified team doesn't exist, it's automatically created via the `upsert_team()` SQL function
+
 **Row Level Security (RLS)**:
+- **Admin role**: Can view/edit all teams' data (matches, players, tags, videos). RLS policies check `auth.uid() IN (SELECT user_id FROM profiles WHERE role = 'admin')`
+- **Auxiliar role**: Can only view data from their assigned team. RLS policies check `team_id = (SELECT team_id FROM profiles WHERE user_id = auth.uid())`
 - Users can read/update their own profile
-- Authenticated users can read shared data (matches, players, tags, videos)
-- Only admin role can insert/update/delete tags, matches, players, and videos
 - Service role key used in serverless functions bypasses RLS for administrative operations
 
 ### External Dependencies
