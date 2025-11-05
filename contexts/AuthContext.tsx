@@ -34,14 +34,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             .select('*')
             .eq('id', currentUser.id)
             .single();
-          if (profileError) throw profileError;
-          setProfile(profileData || null);
+          if (profileError) {
+            console.error("Error fetching initial profile:", profileError);
+            setProfile(null);
+          } else {
+            setProfile(profileData || null);
+          }
         } catch (error) {
            console.error("Error fetching initial profile:", error);
-           // If profile fails, log out the user to prevent inconsistent state
-           await supabase.auth.signOut();
-           setUser(null);
-           setSession(null);
            setProfile(null);
         }
       }

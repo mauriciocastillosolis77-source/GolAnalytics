@@ -8,6 +8,7 @@ export interface Match {
   fecha: string;
   rival: string;
   jornada: number;
+  team_id?: string;
   created_at?: string;
 }
 

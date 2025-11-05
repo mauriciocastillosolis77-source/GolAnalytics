@@ -1,0 +1,5 @@
+schemaname,tablename,policyname,cmd
+public,matches,admin_delete_matches,DELETE
+public,matches,admin_insert_matches,INSERT
+public,matches,admin_update_matches,UPDATE
+public,matches,users_read_matches_by_role,SELECT

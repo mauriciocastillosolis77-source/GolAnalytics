@@ -1,0 +1,12 @@
+column_name,data_type,is_nullable
+id,uuid,NO
+fecha,date,NO
+rival,text,YES
+torneo,text,YES
+categoria,text,YES
+jornada,text,YES
+is_finalized,boolean,YES
+created_at,timestamp without time zone,YES
+coach_uid,text,YES
+nombre_equipo,text,YES
+team_id,uuid,YES

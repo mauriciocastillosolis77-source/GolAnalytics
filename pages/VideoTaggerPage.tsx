@@ -8,6 +8,7 @@ import { analyzeVideoFrames } from '../services/geminiService';
 import { blobToBase64 } from '../utils/blob';
 import AISuggestionsModal from '../components/ai/AISuggestionsModal';
 import { fetchVideosForMatch, createVideoForMatch, Video as VideoMeta } from '../services/videosService';
+import { fetchTeams, getOrCreateTeam, type Team } from '../services/teamsService';
 
 declare var XLSX: any;
 
@@ -26,6 +27,7 @@ const VideoTaggerPage: React.FC = () => {
     });
     const [isSavingMatch, setIsSavingMatch] = useState(false);
     const [matchCreationError, setMatchCreationError] = useState<string | null>(null);
+    const [teams, setTeams] = useState<Team[]>([]);
 
     // Section 2: File Management
     const [playerUploadStatus, setPlayerUploadStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
@@ -64,7 +66,7 @@ const VideoTaggerPage: React.FC = () => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [currentTime, setCurrentTime] = useState(0);
 
-    // Fetch matches when component mounts
+    // Fetch matches and teams when component mounts
     useEffect(() => {
         const fetchData = async () => {
             setIsLoading(true);
@@ -74,6 +76,9 @@ const VideoTaggerPage: React.FC = () => {
                 if (matchesData && matchesData.length > 0 && !selectedMatchId) {
                     setSelectedMatchId(matchesData[0].id);
                 }
+                
+                const teamsData = await fetchTeams();
+                setTeams(teamsData);
             } catch (err) {
                 console.error('Error fetching matches', err);
             } finally {
@@ -137,7 +142,16 @@ const VideoTaggerPage: React.FC = () => {
         setIsSavingMatch(true);
         setMatchCreationError(null);
         try {
-            const { data, error } = await supabase.from('matches').insert([newMatchData]).select();
+            const normalizedTeamName = newMatchData.nombre_equipo.trim().toUpperCase();
+            const teamId = await getOrCreateTeam(normalizedTeamName);
+            
+            const matchToInsert = {
+                ...newMatchData,
+                nombre_equipo: normalizedTeamName,
+                team_id: teamId
+            };
+            
+            const { data, error } = await supabase.from('matches').insert([matchToInsert]).select();
             if (error) throw error;
             setMatches(prev => [data[0], ...prev]);
             setSelectedMatchId(data[0].id);
@@ -150,6 +164,9 @@ const VideoTaggerPage: React.FC = () => {
                 rival: '',
                 jornada: 1
             });
+            
+            const teamsData = await fetchTeams();
+            setTeams(teamsData);
         } catch (err: any) {
             setMatchCreationError(err.message);
         } finally {
@@ -622,7 +639,22 @@ const VideoTaggerPage: React.FC = () => {
                     {isCreatingMatch && (
                         <div className="mt-2 space-y-2">
                             <input type="text" placeholder="Torneo" value={newMatchData.torneo} onChange={e => setNewMatchData({ ...newMatchData, torneo: e.target.value })} className="w-full bg-gray-700 p-2 rounded" />
-                            <input type="text" placeholder="Mi Equipo" value={newMatchData.nombre_equipo} onChange={e => setNewMatchData({ ...newMatchData, nombre_equipo: e.target.value })} className="w-full bg-gray-700 p-2 rounded" />
+                            <div>
+                                <input 
+                                    type="text" 
+                                    placeholder="Mi Equipo" 
+                                    value={newMatchData.nombre_equipo} 
+                                    onChange={e => setNewMatchData({ ...newMatchData, nombre_equipo: e.target.value })} 
+                                    className="w-full bg-gray-700 p-2 rounded" 
+                                    list="teams-list"
+                                />
+                                <datalist id="teams-list">
+                                    {teams.map(team => (
+                                        <option key={team.id} value={team.nombre} />
+                                    ))}
+                                </datalist>
+                                <p className="text-xs text-gray-400 mt-1">Selecciona un equipo existente o escribe uno nuevo</p>
+                            </div>
                             <input type="text" placeholder="Categoría" value={newMatchData.categoria} onChange={e => setNewMatchData({ ...newMatchData, categoria: e.target.value })} className="w-full bg-gray-700 p-2 rounded" />
                             <input type="date" value={newMatchData.fecha} onChange={e => setNewMatchData({ ...newMatchData, fecha: e.target.value })} className="w-full bg-gray-700 p-2 rounded" />
                             <input type="text" placeholder="Rival" value={newMatchData.rival} onChange={e => setNewMatchData({ ...newMatchData, rival: e.target.value })} className="w-full bg-gray-700 p-2 rounded" />

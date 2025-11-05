@@ -5,6 +5,7 @@ import { ROLES } from './constants';
 import AuthPage from './pages/AuthPage';
 import DashboardPage from './pages/DashboardPage';
 import VideoTaggerPage from './pages/VideoTaggerPage';
+import AdminUsersPage from './pages/AdminUsersPage';
 import NotFoundPage from './pages/NotFoundPage';
 import Layout from './components/layout/Layout';
 import { Spinner } from './components/ui/Spinner';
@@ -44,6 +45,14 @@ const App: React.FC = () => {
               element={
                 <ProtectedRoute allowedRoles={[ROLES.ADMIN]}>
                   <Layout><VideoTaggerPage /></Layout>
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
+              path="/admin/users" 
+              element={
+                <ProtectedRoute allowedRoles={[ROLES.ADMIN]}>
+                  <Layout><AdminUsersPage /></Layout>
                 </ProtectedRoute>
               } 
             />

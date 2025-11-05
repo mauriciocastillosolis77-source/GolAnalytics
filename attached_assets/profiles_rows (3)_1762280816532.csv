@@ -1,0 +1,11 @@
+id,rol,created_at,email,full_name,team_id
+25d3bfc9-816f-4dd3-a605-0ae728c0953e,auxiliar,2025-10-13 20:39:12.578952+00,,Profes Rayados cat 2012,
+2c9824ea-666d-4c63-862c-1170fc1a25f3,auxiliar,2025-10-30 19:28:03.276123+00,prueba+1@golanalytics.test,Prueba Uno,
+602d6474-8600-495c-b23f-718587774214,admin,2025-10-09 16:09:33.882255+00,,Mau - Admin web,
+675ef572-d2df-463d-aee1-5709bca7ff7b,auxiliar,2025-10-30 19:52:30.568732+00,prueba+3@golanalytics.test,Prueba Tres,
+6bf7534e-cbe3-4859-8801-16a4069261f4,auxiliar,2025-10-10 15:05:14.438039+00,,Dani Perez - Auxiliar web,
+6d9723bc-a898-44e4-97cc-78b04f578e30,admin,2025-10-10 15:07:31.682269+00,,Dani Perez - Admin web,
+897731bd-af6c-420f-83df-7a9020e18058,auxiliar,2025-10-09 22:48:28.591702+00,,,
+94f04c88-78f6-4dca-9ae1-f5a9360a7f50,admin,2025-10-07 20:20:57.023963+00,,Mau - Admin Local,
+e100dea7-13d0-4d48-837f-82fe234f8ea4,auxiliar,2025-10-09 18:46:28.943571+00,,,
+f9ba0d1a-2c10-41ab-8cbf-e1925c149ffb,auxiliar,2025-10-21 22:13:19.677755+00,,Patrick Harris - ux web,

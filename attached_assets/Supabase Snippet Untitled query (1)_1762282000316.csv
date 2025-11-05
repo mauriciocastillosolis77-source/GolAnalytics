@@ -1,0 +1,11 @@
+id,email,rol,team_id,nombre_equipo
+94f04c88-78f6-4dca-9ae1-f5a9360a7f50,null,admin,027790a8-89cc-4c3a-ae44-8ff6fd8fe940,Rayados
+602d6474-8600-495c-b23f-718587774214,null,admin,027790a8-89cc-4c3a-ae44-8ff6fd8fe940,Rayados
+6d9723bc-a898-44e4-97cc-78b04f578e30,null,admin,027790a8-89cc-4c3a-ae44-8ff6fd8fe940,Rayados
+2c9824ea-666d-4c63-862c-1170fc1a25f3,prueba+1@golanalytics.test,auxiliar,027790a8-89cc-4c3a-ae44-8ff6fd8fe940,Rayados
+675ef572-d2df-463d-aee1-5709bca7ff7b,prueba+3@golanalytics.test,auxiliar,027790a8-89cc-4c3a-ae44-8ff6fd8fe940,Rayados
+897731bd-af6c-420f-83df-7a9020e18058,null,auxiliar,027790a8-89cc-4c3a-ae44-8ff6fd8fe940,Rayados
+f9ba0d1a-2c10-41ab-8cbf-e1925c149ffb,null,auxiliar,027790a8-89cc-4c3a-ae44-8ff6fd8fe940,Rayados
+e100dea7-13d0-4d48-837f-82fe234f8ea4,null,auxiliar,027790a8-89cc-4c3a-ae44-8ff6fd8fe940,Rayados
+25d3bfc9-816f-4dd3-a605-0ae728c0953e,null,auxiliar,027790a8-89cc-4c3a-ae44-8ff6fd8fe940,Rayados
+6bf7534e-cbe3-4859-8801-16a4069261f4,null,auxiliar,027790a8-89cc-4c3a-ae44-8ff6fd8fe940,Rayados
