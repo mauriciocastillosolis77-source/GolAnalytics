@@ -30,12 +30,16 @@ const AdminUsersPage: React.FC = () => {
     setIsLoading(true);
 
     try {
+      const { data: currentSession } = await supabase.auth.getSession();
+      
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email,
         password,
         options: {
           data: {
-            full_name: fullName
+            full_name: fullName,
+            role: role,
+            team_id: teamId || null
           }
         }
       });
@@ -48,23 +52,8 @@ const AdminUsersPage: React.FC = () => {
         throw new Error('No se pudo crear el usuario');
       }
 
-      const userId = signUpData.user.id;
-
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .insert({
-          id: userId,
-          rol: role,
-          team_id: teamId || null,
-          full_name: fullName,
-          username: email.split('@')[0],
-          email: email,
-          avatar_url: null
-        });
-
-      if (profileError) {
-        console.error('Profile error details:', profileError);
-        throw new Error(profileError.message || 'Error al guardar el perfil');
+      if (currentSession?.session) {
+        await supabase.auth.setSession(currentSession.session);
       }
 
       setMessage({ 
