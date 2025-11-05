@@ -45,18 +45,22 @@ Preferred communication style: Simple, everyday language.
 
 **Authentication**: Supabase Auth handles user authentication (email/password). Row Level Security (RLS) policies enforce authorization at the database level.
 
-**Serverless Functions**: Vercel serverless functions (`/api` directory) handle administrative tasks:
-- `/api/admin/create-user.ts`: Creates new users with role assignment (protected by admin token)
-- `/api/admin/create-user-proxy.ts`: Proxy endpoint that validates admin JWT before creating users
-- `/api/predict.py`: Python-based endpoint for AI predictions (currently returns mock data)
+**User Creation**: Admin users can create new users directly from the AdminUsersPage (`/admin/users`). The system uses:
+- Client-side `supabase.auth.signUp()` to create the auth user
+- Database trigger `on_auth_user_created` that automatically creates the user profile with role and team assignment
+- Session restoration logic to keep the admin logged in after creating a new user (prevents automatic logout)
+- Users can login immediately without email verification
 
 **Data Schema**:
 - `teams`: Team records with normalized names (UPPERCASE). All team names are automatically converted to uppercase to prevent duplicates (e.g., "Rayados" → "RAYADOS")
-- `profiles`: User metadata including role (admin/auxiliar), username, avatar, and team_id (foreign key to teams). Users are assigned to a specific team for data isolation
+- `profiles`: User metadata including id (uuid), rol (admin/auxiliar), full_name, email, team_id (foreign key to teams), and created_at. Users are assigned to a specific team for data isolation
 - `matches`: Match records with tournament, team_id (foreign key), team name (nombre_equipo), category, date, rival, and match day
 - `players`: Player roster with name, number, position, and team_id (foreign key to teams)
 - `tags`: Tagged actions during matches with player reference, action type, result, timestamp, and optional video metadata
 - `videos`: Video file metadata including match reference, filename, start offset, duration, storage path
+
+**Database Triggers**:
+- `on_auth_user_created`: Automatically creates a profile record when a new auth user is created, extracting role, full_name, and team_id from user metadata
 
 **Multi-Tenancy Architecture**:
 - **Team-Based Data Isolation**: All users are assigned to a team via `profiles.team_id`. Data is filtered by team to ensure users only see their team's information
@@ -94,7 +98,5 @@ Preferred communication style: Simple, everyday language.
 - `VITE_SUPABASE_URL`: Supabase project URL
 - `VITE_SUPABASE_KEY`: Supabase anonymous/public key (client-side)
 - `VITE_API_KEY` / `GEMINI_API_KEY`: Google Gemini API key for AI analysis
-- `SUPABASE_SERVICE_ROLE_KEY`: Supabase admin key (server-side only, used in serverless functions)
-- `ADMIN_CREATION_TOKEN`: Secret token for protecting user creation endpoints
 
-**Deployment Platform**: Designed for Vercel deployment with serverless functions. Vite build output serves static assets while `/api` functions handle backend operations.
+**Deployment Platform**: Designed for deployment on platforms like Vercel or Replit. Vite build output serves static assets. User creation is handled client-side with database triggers managing profile creation.
