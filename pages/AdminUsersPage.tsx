@@ -30,48 +30,28 @@ const AdminUsersPage: React.FC = () => {
     setIsLoading(true);
 
     try {
-      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            full_name: fullName
-          }
-        }
+      const response = await fetch('/api/admin/create-user-admin', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          email,
+          password,
+          full_name: fullName,
+          role,
+          team_id: teamId || null
+        })
       });
 
-      if (signUpError) {
-        throw new Error(signUpError.message);
-      }
+      const data = await response.json();
 
-      if (!signUpData.user) {
-        throw new Error('No se pudo crear el usuario');
-      }
-
-      const userId = signUpData.user.id;
-
-      await new Promise(resolve => setTimeout(resolve, 1000));
-
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .upsert({
-          id: userId,
-          rol: role,
-          team_id: teamId || null,
-          full_name: fullName,
-          username: email.split('@')[0],
-          avatar_url: null
-        }, {
-          onConflict: 'id'
-        });
-
-      if (profileError) {
-        console.error('Profile error details:', profileError);
-        throw new Error(profileError.message || 'Database error saving new user');
+      if (!response.ok) {
+        throw new Error(data.error || data.details || 'Error al crear usuario');
       }
 
       setMessage({ 
-        text: `Usuario creado exitosamente: ${email}. El usuario puede iniciar sesión inmediatamente.`, 
+        text: `Usuario creado exitosamente: ${email}. El usuario puede iniciar sesión inmediatamente con la contraseña proporcionada.`, 
         type: 'success' 
       });
       setEmail('');
