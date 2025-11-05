@@ -30,8 +30,12 @@ const AdminUsersPage: React.FC = () => {
     setIsLoading(true);
 
     try {
-      const { data: currentSession } = await supabase.auth.getSession();
+      const { data: { session: adminSession } } = await supabase.auth.getSession();
       
+      if (!adminSession) {
+        throw new Error('No hay sesión de administrador activa');
+      }
+
       const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
         email,
         password,
@@ -52,9 +56,12 @@ const AdminUsersPage: React.FC = () => {
         throw new Error('No se pudo crear el usuario');
       }
 
-      if (currentSession?.session) {
-        await supabase.auth.setSession(currentSession.session);
-      }
+      await supabase.auth.signOut();
+      
+      await supabase.auth.setSession({
+        access_token: adminSession.access_token,
+        refresh_token: adminSession.refresh_token
+      });
 
       setMessage({ 
         text: `Usuario creado exitosamente: ${email}. El usuario puede iniciar sesión inmediatamente con la contraseña proporcionada.`, 
@@ -67,6 +74,11 @@ const AdminUsersPage: React.FC = () => {
       if (teams.length > 0) {
         setTeamId(teams[0].id);
       }
+
+      setTimeout(() => {
+        window.location.reload();
+      }, 2000);
+
     } catch (err: any) {
       console.error('Error creating user:', err);
       setMessage({ text: err.message || 'Error al crear usuario', type: 'error' });
