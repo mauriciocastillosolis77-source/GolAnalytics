@@ -1,0 +1,85 @@
+# ============================================
+# PASO 13: Guardar Modelo y Metadatos
+# ============================================
+
+print("=" * 70)
+print("💾 GUARDANDO MODELO")
+print("=" * 70)
+print()
+
+# Guardar modelo en formato TensorFlow
+print("📦 Guardando modelo...")
+model.save('golanalytics_vision_model.keras')
+print("✅ Modelo guardado: golanalytics_vision_model.keras")
+print()
+
+# Guardar clase names
+with open('class_names.json', 'w') as f:
+    json.dump(class_names, f)
+print("✅ Nombres de clases guardados: class_names.json")
+print()
+
+# Guardar metadatos
+final_metadata = {
+    'model_version': 'v1_vision',
+    'trained_at': datetime.now().isoformat(),
+    'framework': 'TensorFlow/Keras',
+    'base_model': 'EfficientNetB0',
+    'image_size': list(IMG_SIZE),
+    'n_classes': n_classes,
+    'class_names': class_names,
+    'training': {
+        'epochs_phase1': len(history_phase1.history['accuracy']),
+        'epochs_phase2': len(history_phase2.history['accuracy']),
+        'total_epochs': len(history_combined['accuracy']),
+        'batch_size': BATCH_SIZE,
+        'learning_rate_phase1': LEARNING_RATE,
+        'learning_rate_phase2': LEARNING_RATE / 10,
+    },
+    'performance': {
+        'test_accuracy': float(test_acc),
+        'test_top3_accuracy': float(test_top3),
+        'test_loss': float(test_loss),
+        'best_val_accuracy': float(max(history_combined['val_accuracy'])),
+    },
+    'dataset': {
+        'total_frames': metadata['total_frames'],
+        'train_frames': metadata['splits']['train']['success'],
+        'val_frames': metadata['splits']['val']['success'],
+        'test_frames': metadata['splits']['test']['success'],
+    }
+}
+
+with open('model_metadata.json', 'w', encoding='utf-8') as f:
+    json.dump(final_metadata, f, indent=2, ensure_ascii=False)
+
+print("✅ Metadatos guardados: model_metadata.json")
+print()
+
+# Descargar archivos
+from google.colab import files
+
+print("📥 Descargando archivos...")
+print("   (Estos archivos se descargarán a tu computadora)")
+print()
+
+files.download('golanalytics_vision_model.keras')
+files.download('class_names.json')
+files.download('model_metadata.json')
+
+print()
+print("=" * 70)
+print("🎉 ¡ENTRENAMIENTO COMPLETADO!")
+print("=" * 70)
+print()
+print(f"✅ Test Accuracy: {test_acc*100:.2f}%")
+print(f"✅ Test Top-3 Accuracy: {test_top3*100:.2f}%")
+print()
+print("📦 Archivos descargados:")
+print("   1. golanalytics_vision_model.keras")
+print("   2. class_names.json")
+print("   3. model_metadata.json")
+print()
+print("🚀 Siguiente paso: Integrar a tu aplicación")
+print()
+print("=" * 70)
