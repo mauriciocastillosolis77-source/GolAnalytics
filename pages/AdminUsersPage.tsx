@@ -30,24 +30,41 @@ const AdminUsersPage: React.FC = () => {
     setIsLoading(true);
 
     try {
-      const response = await fetch('/api/admin/create-user-admin', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          email,
-          password,
-          full_name: fullName,
-          role,
-          team_id: teamId || null
-        })
+      const { data: signUpData, error: signUpError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            full_name: fullName
+          }
+        }
       });
 
-      const data = await response.json();
+      if (signUpError) {
+        throw new Error(signUpError.message);
+      }
 
-      if (!response.ok) {
-        throw new Error(data.error || data.details || 'Error al crear usuario');
+      if (!signUpData.user) {
+        throw new Error('No se pudo crear el usuario');
+      }
+
+      const userId = signUpData.user.id;
+
+      const { error: profileError } = await supabase
+        .from('profiles')
+        .insert({
+          id: userId,
+          rol: role,
+          team_id: teamId || null,
+          full_name: fullName,
+          username: email.split('@')[0],
+          email: email,
+          avatar_url: null
+        });
+
+      if (profileError) {
+        console.error('Profile error details:', profileError);
+        throw new Error(profileError.message || 'Error al guardar el perfil');
       }
 
       setMessage({ 
