@@ -1,0 +1,29 @@
+pg_get_functiondef
+"CREATE OR REPLACE FUNCTION public.handle_new_user()
+ RETURNS trigger
+ LANGUAGE plpgsql
+ SECURITY DEFINER
+ SET search_path TO 'public'
+AS $function$
+DECLARE
+  default_team_id uuid;
+BEGIN
+  -- Obtener ID del equipo ""Rayados"" como default
+  SELECT id INTO default_team_id
+  FROM public.teams
+  WHERE nombre = 'Rayados'
+  LIMIT 1;
+  
+  -- Si no existe Rayados, error
+  IF default_team_id IS NULL THEN
+    RAISE EXCEPTION 'No se encontró equipo por defecto ""Rayados"". Créalo primero.';
+  END IF;
+  
+  -- Insertar perfil con rol auxiliar y team_id de Rayados
+  INSERT INTO public.profiles (id, rol, team_id, email)
+  VALUES (new.id, 'auxiliar', default_team_id, new.email);
+  
+  RETURN new;
+END;
+$function$
+"
