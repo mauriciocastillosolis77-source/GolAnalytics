@@ -1,4 +1,4 @@
-modules = ["nodejs-20"]
+modules = ["nodejs-20", "postgresql-16"]
 
 [workflows]
 runButton = "Project"
@@ -46,3 +46,6 @@ externalPort = 4200
 
 [agent]
 expertMode = true
+
+[nix]
+channel = "stable-25_05"
