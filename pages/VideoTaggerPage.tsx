@@ -577,7 +577,7 @@ const VideoTaggerPage: React.FC = () => {
             
             // Filter for high-confidence predictions
             const suggestions = allResults
-                .filter(r => r.predictions && r.predictions.length > 0 && r.predictions[0].probability > 0.3)
+                .filter(r => r.predictions && r.predictions.length > 0 && r.predictions[0].probability > 0.2)
                 .map(r => ({
                     timestamp: r.timestamp,
                     action: r.predictions[0].action,
