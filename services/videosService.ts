@@ -14,6 +14,7 @@ import { mmssToSeconds } from '../utils/time';
 export interface Video {
   id: string;
   match_id: string;
+  team_id: string;
   video_file: string;
   start_offset_seconds: number;
   duration_seconds?: number | null;
