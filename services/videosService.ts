@@ -14,6 +14,7 @@ import { mmssToSeconds } from '../utils/time';
 export interface Video {
   id: string;
   match_id: string;
+  team_id: string;
   video_file: string;
   start_offset_seconds: number;
   duration_seconds?: number | null;
@@ -40,19 +41,21 @@ export async function fetchVideosForMatch(matchId: string): Promise<Video[]> {
  * Crea un registro de video para un partido.
  * - videoFileName: nombre/identificador del archivo (no hace upload de fichero aquí).
  * - offsetMmss: formato esperado MM:SS o HH:MM:SS o SS.
+ * - teamId: ID del equipo asociado al partido.
  */
-export async function createVideoForMatch(matchId: string, videoFileName: string, offsetMmss: string, createdBy?: string | null): Promise<Video> {
+export async function createVideoForMatch(matchId: string, teamId: string, videoFileName: string, offsetMmss: string, createdBy?: string | null): Promise<Video> {
   const start_offset_seconds = mmssToSeconds(offsetMmss || '0');
 
   const payload = {
     match_id: matchId,
+    team_id: teamId,
     video_file: videoFileName,
     start_offset_seconds,
     created_by: createdBy || null
   };
 
   const { data, error } = await supabase
-    .from<Video>('videos')
+    .from('videos')
     .insert([payload])
     .select()
     .single();

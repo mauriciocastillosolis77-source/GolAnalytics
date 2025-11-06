@@ -57,6 +57,12 @@ const VideoTaggerPage: React.FC = () => {
     const [isAnalyzingAI, setIsAnalyzingAI] = useState(false);
     const [aiSuggestions, setAiSuggestions] = useState<AISuggestion[]>([]);
     const [isSuggestionsModalOpen, setIsSuggestionsModalOpen] = useState(false);
+    
+    // Batch Analysis State
+    const [isBatchAnalyzing, setIsBatchAnalyzing] = useState(false);
+    const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
+    const [batchSuggestions, setBatchSuggestions] = useState<any[]>([]);
+    const [showBatchResultsModal, setShowBatchResultsModal] = useState(false);
 
     // UI State
     const [isLoading, setIsLoading] = useState(true);
@@ -342,15 +348,22 @@ const VideoTaggerPage: React.FC = () => {
         }
     };
 
-    // Handler to create a new video metadata record
+        // Handler to create a new video metadata record
     const handleCreateVideo = async () => {
         if (!newVideoFileName || !selectedMatchId) {
             alert('Ingrese nombre del archivo y seleccione un partido.');
             return;
         }
+        
+        const selectedMatch = matches.find(m => m.id === selectedMatchId);
+        if (!selectedMatch?.team_id) {
+            alert('El partido seleccionado no tiene un equipo asociado. Por favor, verifica los datos del partido.');
+            return;
+        }
+        
         setIsCreatingVideo(true);
         try {
-            const created = await createVideoForMatch(selectedMatchId, newVideoFileName, newVideoOffset, null);
+            const created = await createVideoForMatch(selectedMatchId, selectedMatch.team_id, newVideoFileName, newVideoOffset, null);
             setVideos(prev => [...prev, created]);
             setSelectedVideoId(created.id);
             setSelectedVideo(created);
@@ -364,7 +377,6 @@ const VideoTaggerPage: React.FC = () => {
             setIsCreatingVideo(false);
         }
     };
-
     // Handler for AI-assisted analysis
     const handleAIAssistedAnalysis = async () => {
         if (!videoRef.current || !canvasRef.current) return;
@@ -480,7 +492,123 @@ const VideoTaggerPage: React.FC = () => {
             setIsAnalyzingAI(false);
         }
     };
-   const handleAcceptSuggestion = (suggestion: AISuggestion) => {
+    // Handler for Batch Analysis (analyze entire video)
+    const handleBatchAnalysis = async () => {
+        if (!videoRef.current || !canvasRef.current) {
+            alert("No hay video cargado");
+            return;
+        }
+        
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        const context = canvas.getContext('2d');
+        if (!context) return;
+        
+        const videoDuration = video.duration;
+        if (!videoDuration || videoDuration === 0) {
+            alert("No se pudo obtener la duración del video");
+            return;
+        }
+        
+        setIsBatchAnalyzing(true);
+        setBatchSuggestions([]);
+        
+        try {
+            // Extract frames every 2 seconds
+            const frameInterval = 2;
+            const totalFrames = Math.floor(videoDuration / frameInterval);
+            setBatchProgress({ current: 0, total: totalFrames });
+            
+            const frames: any[] = [];
+            video.pause();
+            
+            // Extract all frames
+            for (let i = 0; i < totalFrames; i++) {
+                const timestamp = i * frameInterval;
+                video.currentTime = timestamp;
+                await new Promise(r => setTimeout(r, 300));
+                
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                const blob: Blob | null = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.8));
+                if (blob) {
+                    const base64 = await blobToBase64(blob);
+                    if (base64) {
+                        frames.push({
+                            image: base64,
+                            timestamp: timestamp
+                        });
+                    }
+                }
+                
+                setBatchProgress({ current: i + 1, total: totalFrames });
+            }
+            
+            // Process frames in batches of 10
+            const batchSize = 10;
+            const allResults: any[] = [];
+            
+            for (let i = 0; i < frames.length; i += batchSize) {
+                const batch = frames.slice(i, i + batchSize);
+                
+                try {
+                    const response = await fetch('https://peaceful-art-production.up.railway.app/analyze-batch', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            frames: batch
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        console.error('Error en batch', i / batchSize + 1);
+                        continue;
+                    }
+                    
+                    const result = await response.json();
+                    
+                    if (result.success && result.results) {
+                        allResults.push(...result.results);
+                    }
+                } catch (error) {
+                    console.error(`Error processing batch ${i / batchSize + 1}:`, error);
+                }
+                
+                setBatchProgress({ current: i + batch.length, total: totalFrames });
+            }
+            
+            // Filter for high-confidence predictions
+            const suggestions = allResults
+                .filter(r => r.predictions && r.predictions.length > 0 && r.predictions[0].probability > 0.2)
+                .map(r => ({
+                    timestamp: r.timestamp,
+                    action: r.predictions[0].action,
+                    confidence: Math.round(r.predictions[0].probability * 100),
+                    predictions: r.predictions,
+                    accepted: false
+                }));
+            
+            setBatchSuggestions(suggestions);
+            setShowBatchResultsModal(true);
+            
+            if (suggestions.length === 0) {
+                alert("No se encontraron jugadas con suficiente confianza");
+            }
+            
+        } catch (error) {
+            console.error("Error during batch analysis:", error);
+            alert("Ocurrió un error durante el análisis en batch");
+        } finally {
+            setIsBatchAnalyzing(false);
+            setBatchProgress({ current: 0, total: 0 });
+        }
+    };
+    
+    const handleAcceptSuggestion = (suggestion: AISuggestion) => {
         // Convertir formato: "1_vs_1_ofensivo" → "1 vs 1 ofensivo"
         let accionBase = suggestion.action.replace(/_/g, ' ');
         
@@ -734,6 +862,32 @@ const VideoTaggerPage: React.FC = () => {
                 <div className="bg-gray-800 rounded-lg p-4">
                     <h3 className="text-lg font-semibold mb-2 text-white">Análisis Asistido por IA (Beta)</h3>
                     <p className="text-xs text-gray-400 mb-4">La IA puede sugerir jugadas. Puedes aceptar o rechazar las sugerencias.</p>
+                    
+                    {/* Batch Analysis Button */}
+                    <button 
+                        onClick={handleBatchAnalysis} 
+                        disabled={!activeVideoUrl || isBatchAnalyzing || !selectedMatchId} 
+                        className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 p-3 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed mb-3"
+                    >
+                        {isBatchAnalyzing ? <><Spinner /> Analizando partido...</> : <><SparklesIcon />Analizar Partido Completo 🚀</>}
+                    </button>
+                    
+                    {/* Progress Bar */}
+                    {isBatchAnalyzing && batchProgress.total > 0 && (
+                        <div className="mb-3">
+                            <div className="flex justify-between text-xs text-gray-400 mb-1">
+                                <span>Progreso: {batchProgress.current} / {batchProgress.total} frames</span>
+                                <span>{Math.round((batchProgress.current / batchProgress.total) * 100)}%</span>
+                            </div>
+                            <div className="w-full bg-gray-700 rounded-full h-2">
+                                <div 
+                                    className="bg-gradient-to-r from-purple-600 to-pink-600 h-2 rounded-full transition-all duration-300"
+                                    style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
+                                ></div>
+                            </div>
+                        </div>
+                    )}
+                    
                     <button onClick={handleAIAssistedAnalysis} disabled={!activeVideoUrl && !selectedVideo || isAnalyzingAI || !selectedMatchId} className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
                         {isAnalyzingAI ? <><Spinner /> Analizando...</> : <><SparklesIcon />Sugerir Acciones</>}
                     </button>
@@ -747,6 +901,92 @@ const VideoTaggerPage: React.FC = () => {
                 </div>
             </div>
 
+            {/* Batch Results Modal */}
+            {showBatchResultsModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+                    <div className="bg-gray-800 rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-xl font-semibold text-white">
+                                ✨ Sugerencias del Análisis Completo ({batchSuggestions.length} jugadas)
+                            </h3>
+                            <button onClick={() => setShowBatchResultsModal(false)} className="text-gray-400 hover:text-white text-2xl">&times;</button>
+                        </div>
+                        
+                        <div className="overflow-y-auto flex-1">
+                            <table className="w-full text-sm">
+                                <thead className="bg-gray-700 sticky top-0">
+                                    <tr>
+                                        <th className="p-2 text-left">Tiempo</th>
+                                        <th className="p-2 text-left">Acción</th>
+                                        <th className="p-2 text-left">Confianza</th>
+                                        <th className="p-2 text-left">Alt 2</th>
+                                        <th className="p-2 text-left">Alt 3</th>
+                                        <th className="p-2 text-center">Acciones</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {batchSuggestions.map((sugg, idx) => (
+                                        <tr key={idx} className={`border-b border-gray-700 ${sugg.accepted ? 'bg-green-900 bg-opacity-20' : ''}`}>
+                                            <td className="p-2">{Math.floor(sugg.timestamp / 60)}:{String(sugg.timestamp % 60).padStart(2, '0')}</td>
+                                            <td className="p-2 font-semibold">{sugg.action.replace(/_/g, ' ')}</td>
+                                            <td className="p-2">
+                                                <span className={`px-2 py-1 rounded text-xs ${sugg.confidence >= 70 ? 'bg-green-600' : sugg.confidence >= 50 ? 'bg-yellow-600' : 'bg-orange-600'}`}>
+                                                    {sugg.confidence}%
+                                                </span>
+                                            </td>
+                                            <td className="p-2 text-xs text-gray-400">
+                                                {sugg.predictions[1] && `${sugg.predictions[1].action.replace(/_/g, ' ')} (${Math.round(sugg.predictions[1].probability * 100)}%)`}
+                                            </td>
+                                            <td className="p-2 text-xs text-gray-400">
+                                                {sugg.predictions[2] && `${sugg.predictions[2].action.replace(/_/g, ' ')} (${Math.round(sugg.predictions[2].probability * 100)}%)`}
+                                            </td>
+                                            <td className="p-2 text-center">
+                                                <button 
+                                                    onClick={() => {
+                                                        // Set video to this timestamp and pre-fill action
+                                                        if (videoRef.current) {
+                                                            videoRef.current.currentTime = sugg.timestamp;
+                                                        }
+                                                        const actionName = sugg.action.replace(/_/g, ' ');
+                                                        const matchingMetric = METRICS.find(m => m.toLowerCase().includes(actionName.toLowerCase()));
+                                                        if (matchingMetric) {
+                                                            setSelectedAction(matchingMetric);
+                                                        }
+                                                        setBatchSuggestions(prev => prev.map((s, i) => i === idx ? {...s, accepted: true} : s));
+                                                    }}
+                                                    disabled={sugg.accepted}
+                                                    className="px-3 py-1 bg-green-600 hover:bg-green-500 rounded text-xs disabled:bg-gray-600 disabled:cursor-not-allowed mr-2"
+                                                >
+                                                    {sugg.accepted ? '✓' : 'Aceptar'}
+                                                </button>
+                                                <button 
+                                                    onClick={() => {
+                                                        setBatchSuggestions(prev => prev.filter((_, i) => i !== idx));
+                                                    }}
+                                                    className="px-3 py-1 bg-red-600 hover:bg-red-500 rounded text-xs"
+                                                >
+                                                    ✗
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                            
+                            {batchSuggestions.length === 0 && (
+                                <p className="text-center text-gray-400 py-8">No hay sugerencias para mostrar</p>
+                            )}
+                        </div>
+                        
+                        <div className="mt-4 flex gap-2 justify-end">
+                            <button onClick={() => setShowBatchResultsModal(false)} className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded">
+                                Cerrar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            
             {/* New Video modal */}
             {showNewVideoModal && (
                 <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
