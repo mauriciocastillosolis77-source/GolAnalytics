@@ -348,15 +348,22 @@ const VideoTaggerPage: React.FC = () => {
         }
     };
 
-    // Handler to create a new video metadata record
+        // Handler to create a new video metadata record
     const handleCreateVideo = async () => {
         if (!newVideoFileName || !selectedMatchId) {
             alert('Ingrese nombre del archivo y seleccione un partido.');
             return;
         }
+        
+        const selectedMatch = matches.find(m => m.id === selectedMatchId);
+        if (!selectedMatch?.team_id) {
+            alert('El partido seleccionado no tiene un equipo asociado. Por favor, verifica los datos del partido.');
+            return;
+        }
+        
         setIsCreatingVideo(true);
         try {
-            const created = await createVideoForMatch(selectedMatchId, newVideoFileName, newVideoOffset, null);
+            const created = await createVideoForMatch(selectedMatchId, selectedMatch.team_id, newVideoFileName, newVideoOffset, null);
             setVideos(prev => [...prev, created]);
             setSelectedVideoId(created.id);
             setSelectedVideo(created);
@@ -370,7 +377,6 @@ const VideoTaggerPage: React.FC = () => {
             setIsCreatingVideo(false);
         }
     };
-
     // Handler for AI-assisted analysis
     const handleAIAssistedAnalysis = async () => {
         if (!videoRef.current || !canvasRef.current) return;
