@@ -281,9 +281,11 @@ const VideoTaggerPage: React.FC = () => {
         const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
         const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
 
+              const selectedMatch = matches.find(m => m.id === selectedMatchId);
         const newTag: Tag = {
             id: `temp-${Date.now()}`,
             match_id: selectedMatchId,
+            team_id: selectedMatch?.team_id || '',
             player_id: selectedPlayerId,
             accion: accion,
             resultado: resultado,
