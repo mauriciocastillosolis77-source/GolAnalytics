@@ -4,6 +4,7 @@ import type { Match, Tag, Player } from '../types';
 import { Spinner } from '../components/ui/Spinner';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from 'recharts';
 import { useAuth } from '../contexts/AuthContext';
+import { ACTION_GROUPS } from '../constants/actionGroups';
 
 const RendimientoPage: React.FC = () => {
     const { profile } = useAuth();
@@ -21,30 +22,58 @@ const RendimientoPage: React.FC = () => {
                 // Get user's team_id
                 const userTeamId = profile?.team_id;
 
-                // Fetch matches for user's team
-                let matchesQuery = supabase.from('matches').select('*').order('jornada', { ascending: true });
+                // Fetch matches (with team filter for non-admin)
+                let matchesQuery = supabase.from('matches').select('*').order('fecha', { ascending: false });
                 if (profile?.rol !== 'admin' && userTeamId) {
                     matchesQuery = matchesQuery.eq('team_id', userTeamId);
                 }
-                const { data: matchesData } = await matchesQuery;
+                const { data: matchesData, error: matchesError } = await matchesQuery;
+                if (matchesError) throw matchesError;
+                setMatches(matchesData || []);
 
-                // Fetch players for user's team
+                // Fetch tags with pagination AND team filter for non-admin
+                const pageSize = 1000;
+                let tagsBaseQuery = supabase.from('tags').select('*', { count: 'exact' });
+                
+                // Apply team filter for non-admin users
+                if (profile?.rol !== 'admin' && userTeamId) {
+                    tagsBaseQuery = tagsBaseQuery.eq('team_id', userTeamId);
+                }
+                
+                const { data: firstPageData, count, error: firstError } = await tagsBaseQuery.range(0, pageSize - 1);
+                if (firstError) throw firstError;
+
+                let allTags = firstPageData || [];
+                console.log('[Rendimiento] tags count (total reported):', count, 'firstPageRows:', allTags.length);
+
+                if (typeof count === 'number' && count > allTags.length) {
+                    // Fetch remaining pages with same team filter
+                    for (let from = allTags.length; from < count; from += pageSize) {
+                        const to = Math.min(from + pageSize - 1, count - 1);
+                        let pageQuery = supabase.from('tags').select('*');
+                        
+                        if (profile?.rol !== 'admin' && userTeamId) {
+                            pageQuery = pageQuery.eq('team_id', userTeamId);
+                        }
+                        
+                        const { data: pageData, error: pageError } = await pageQuery.range(from, to);
+                        if (pageError) throw pageError;
+                        allTags = allTags.concat(pageData || []);
+                        console.log(`[Rendimiento] fetched tags range ${from}-${to}, got ${pageData?.length || 0}`);
+                    }
+                }
+
+                setTags(allTags || []);
+                console.log('[Rendimiento] total tags loaded into state:', (allTags || []).length);
+
+                // Fetch players (with team filter for non-admin)
                 let playersQuery = supabase.from('players').select('*').order('nombre', { ascending: true });
                 if (profile?.rol !== 'admin' && userTeamId) {
                     playersQuery = playersQuery.eq('team_id', userTeamId);
                 }
-                const { data: playersData } = await playersQuery;
-
-                // Fetch all tags for user's team
-                let tagsQuery = supabase.from('tags').select('*');
-                if (profile?.rol !== 'admin' && userTeamId) {
-                    tagsQuery = tagsQuery.eq('team_id', userTeamId);
-                }
-                const { data: tagsData } = await tagsQuery;
-
-                setMatches(matchesData || []);
+                const { data: playersData, error: playersError } = await playersQuery;
+                if (playersError) throw playersError;
                 setPlayers(playersData || []);
-                setTags(tagsData || []);
 
                 // Set first player as selected by default
                 if (playersData && playersData.length > 0) {
@@ -179,9 +208,9 @@ const RendimientoPage: React.FC = () => {
             .sort((a, b) => parseInt(a.jornada.slice(1)) - parseInt(b.jornada.slice(1)));
     }, [playerTags, matches]);
 
-    // Helper function to aggregate tags by jornada for specific action types
-    const getActionDataByJornada = (actionFilter: (accion: string) => boolean) => {
-        const filteredTags = playerTags.filter(tag => actionFilter(tag.accion.toLowerCase()));
+    // Helper function to aggregate tags by jornada for specific action types (using exact action names)
+    const getActionDataByJornada = (actionNames: readonly string[]) => {
+        const filteredTags = playerTags.filter(tag => actionNames.includes(tag.accion));
         
         if (filteredTags.length === 0) return [];
 
@@ -212,47 +241,47 @@ const RendimientoPage: React.FC = () => {
 
     // PASES - Cortos (TOTAL: ofensivos + defensivos)
     const pasesCortosData = useMemo(() => 
-        getActionDataByJornada(accion => accion.includes('pase') && accion.includes('corto'))
+        getActionDataByJornada(ACTION_GROUPS.PASES_CORTOS)
     , [playerTags, matches]);
 
     // PASES - Largos (TOTAL: ofensivos + defensivos)
     const pasesLargosData = useMemo(() => 
-        getActionDataByJornada(accion => accion.includes('pase') && accion.includes('largo'))
+        getActionDataByJornada(ACTION_GROUPS.PASES_LARGOS)
     , [playerTags, matches]);
 
     // DUELOS - 1v1 (TOTAL: ofensivos + defensivos)
     const duelos1v1Data = useMemo(() => 
-        getActionDataByJornada(accion => accion.includes('1 vs 1'))
+        getActionDataByJornada(ACTION_GROUPS.DUELOS_1V1)
     , [playerTags, matches]);
 
-    // DUELOS - Aéreos (TOTAL: ofensivos + defensivos, normalize accents)
+    // DUELOS - Aéreos (TOTAL: ofensivos + defensivos)
     const duelosAereosData = useMemo(() => 
-        getActionDataByJornada(accion => accion.includes('aereo') || accion.includes('aéreo'))
+        getActionDataByJornada(ACTION_GROUPS.DUELOS_AEREOS)
     , [playerTags, matches]);
 
     // FINALIZACIÓN - Tiros a Gol
     const tirosGolData = useMemo(() => 
-        getActionDataByJornada(accion => accion.includes('tiro a gol'))
+        getActionDataByJornada(ACTION_GROUPS.TIROS_GOL)
     , [playerTags, matches]);
 
     // FINALIZACIÓN - Goles
     const golesData = useMemo(() => 
-        getActionDataByJornada(accion => accion === 'gol')
+        getActionDataByJornada(ACTION_GROUPS.GOLES)
     , [playerTags, matches]);
 
     // DEFENSA - Atajadas
     const atajadasData = useMemo(() => 
-        getActionDataByJornada(accion => accion.includes('atajada'))
+        getActionDataByJornada(ACTION_GROUPS.ATAJADAS)
     , [playerTags, matches]);
 
     // DEFENSA - Goles Recibidos
     const golesRecibidosData = useMemo(() => 
-        getActionDataByJornada(accion => accion.includes('gol recibido'))
+        getActionDataByJornada(ACTION_GROUPS.GOLES_RECIBIDOS)
     , [playerTags, matches]);
 
-    // DEFENSA - Recuperaciones de Balón (normalize accents)
+    // DEFENSA - Recuperaciones de Balón
     const recuperacionesData = useMemo(() => 
-        getActionDataByJornada(accion => accion.includes('recuperación') || accion.includes('recuperacion'))
+        getActionDataByJornada(ACTION_GROUPS.RECUPERACIONES)
     , [playerTags, matches]);
 
     // Table data
@@ -475,7 +504,7 @@ const RendimientoPage: React.FC = () => {
                                                 labelStyle={{ color: '#F3F4F6' }}
                                             />
                                             <Legend wrapperStyle={{ color: '#F3F4F6' }} />
-                                            <Bar dataKey="logrados" stackId="a" fill="#8B5CF6" name="Ganados" />
+                                            <Bar dataKey="logrados" stackId="a" fill="#10B981" name="Ganados" />
                                             <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="Perdidos" />
                                         </BarChart>
                                     </ResponsiveContainer>
@@ -498,7 +527,7 @@ const RendimientoPage: React.FC = () => {
                                                 labelStyle={{ color: '#F3F4F6' }}
                                             />
                                             <Legend wrapperStyle={{ color: '#F3F4F6' }} />
-                                            <Bar dataKey="logrados" stackId="a" fill="#8B5CF6" name="Ganados" />
+                                            <Bar dataKey="logrados" stackId="a" fill="#10B981" name="Ganados" />
                                             <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="Perdidos" />
                                         </BarChart>
                                     </ResponsiveContainer>
@@ -675,4 +704,5 @@ const RendimientoPage: React.FC = () => {
 };
 
 export default RendimientoPage;
+
 
