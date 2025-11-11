@@ -2,9 +2,8 @@ import React, { useEffect, useRef } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { ROLES } from '../../constants';
-import { DashboardIcon, Logo, TaggerIcon, UsersIcon } from '../ui/Icons';
+import { DashboardIcon, Logo, TaggerIcon, UsersIcon, RendimientoIcon } from '../ui/Icons';
 
-// Forzar a Tailwind a incluir las clases necesarias (para evitar purge)
 const _forceTailwindClasses = ["translate-x-0", "-translate-x-64"];
 
 const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) => void }> = ({ sidebarOpen, setSidebarOpen }) => {
@@ -12,7 +11,6 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
   const trigger = useRef<HTMLButtonElement>(null);
   const sidebar = useRef<HTMLDivElement>(null);
 
-  // Cierra el menú si se hace clic fuera (solo móvil)
   useEffect(() => {
     const clickHandler = ({ target }: MouseEvent) => {
       if (!sidebar.current || !trigger.current) return;
@@ -23,7 +21,6 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
     return () => document.removeEventListener('mousedown', clickHandler);
   }, [sidebarOpen, setSidebarOpen]);
 
-  // Evita el scroll cuando el menú está abierto (móvil)
   useEffect(() => {
     if (sidebarOpen) {
       document.body.style.overflow = 'hidden';
@@ -34,7 +31,6 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
 
   return (
     <>
-      {/* Backdrop */}
       <div
         className={`fixed inset-0 bg-gray-900 bg-opacity-40 z-40 lg:hidden transition-opacity duration-200 ${sidebarOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         aria-hidden="true"
@@ -49,7 +45,6 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
           lg:static lg:translate-x-0 lg:z-auto
         `}
       >
-        {/* Botón cerrar solo en móvil */}
         <button
           ref={trigger}
           className="lg:hidden text-gray-500 hover:text-gray-400 absolute top-0 right-0 mt-4 mr-4"
@@ -75,6 +70,17 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
           >
             <DashboardIcon />
             <span className="ml-3">Tablero</span>
+          </NavLink>
+
+          <NavLink
+            to="/rendimiento"
+            className={({ isActive }) =>
+              `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
+            }
+            onClick={() => setSidebarOpen(false)}
+          >
+            <RendimientoIcon />
+            <span className="ml-3">Rendimiento</span>
           </NavLink>
 
           {profile?.rol === ROLES.ADMIN && (
