@@ -179,39 +179,81 @@ const RendimientoPage: React.FC = () => {
             .sort((a, b) => parseInt(a.jornada.slice(1)) - parseInt(b.jornada.slice(1)));
     }, [playerTags, matches]);
 
-    // Calculate data for passes analysis
-    const pasesData = useMemo(() => {
-        const pasesTags = playerTags.filter(tag => tag.accion.toLowerCase().includes('pase'));
+    // Helper function to aggregate tags by jornada for specific action types
+    const getActionDataByJornada = (actionFilter: (accion: string) => boolean) => {
+        const filteredTags = playerTags.filter(tag => actionFilter(tag.accion.toLowerCase()));
         
-        if (pasesTags.length === 0) return [];
+        if (filteredTags.length === 0) return [];
 
-        const pasesCortos = pasesTags.filter(t => t.accion.toLowerCase().includes('corto')).length;
-        const pasesLargos = pasesTags.filter(t => t.accion.toLowerCase().includes('largo')).length;
-        const pasesDefensivos = pasesTags.filter(t => t.accion.toLowerCase().includes('defensivo')).length;
-        const pasesOfensivos = pasesTags.filter(t => t.accion.toLowerCase().includes('ofensivo')).length;
+        const byJornada = filteredTags.reduce((acc, tag) => {
+            const match = matches.find(m => m.id === tag.match_id);
+            if (!match) return acc;
 
-        return [
-            { categoria: 'Cortos', cantidad: pasesCortos },
-            { categoria: 'Largos', cantidad: pasesLargos },
-            { categoria: 'Defensivos', cantidad: pasesDefensivos },
-            { categoria: 'Ofensivos', cantidad: pasesOfensivos }
-        ];
-    }, [playerTags]);
+            const jornada = match.jornada;
+            if (!acc[jornada]) {
+                acc[jornada] = { jornada, logrados: 0, fallados: 0 };
+            }
+            if (tag.resultado === 'logrado') {
+                acc[jornada].logrados++;
+            } else {
+                acc[jornada].fallados++;
+            }
+            return acc;
+        }, {} as Record<number, { jornada: number; logrados: number; fallados: number }>);
 
-    // Calculate data for duels analysis
-    const duelosData = useMemo(() => {
-        const duelosTags = playerTags.filter(tag => tag.accion.toLowerCase().includes('1 vs 1'));
-        
-        if (duelosTags.length === 0) return [];
+        return Object.values(byJornada)
+            .map(stats => ({
+                jornada: `J${stats.jornada}`,
+                logrados: stats.logrados,
+                fallados: stats.fallados
+            }))
+            .sort((a, b) => parseInt(a.jornada.slice(1)) - parseInt(b.jornada.slice(1)));
+    };
 
-        const duelosLogrados = duelosTags.filter(t => t.resultado === 'logrado').length;
-        const duelosFallados = duelosTags.filter(t => t.resultado === 'fallado').length;
+    // PASES - Cortos (TOTAL: ofensivos + defensivos)
+    const pasesCortosData = useMemo(() => 
+        getActionDataByJornada(accion => accion.includes('pase') && accion.includes('corto'))
+    , [playerTags, matches]);
 
-        return [
-            { tipo: 'Ganados', cantidad: duelosLogrados },
-            { tipo: 'Perdidos', cantidad: duelosFallados }
-        ];
-    }, [playerTags]);
+    // PASES - Largos (TOTAL: ofensivos + defensivos)
+    const pasesLargosData = useMemo(() => 
+        getActionDataByJornada(accion => accion.includes('pase') && accion.includes('largo'))
+    , [playerTags, matches]);
+
+    // DUELOS - 1v1 (TOTAL: ofensivos + defensivos)
+    const duelos1v1Data = useMemo(() => 
+        getActionDataByJornada(accion => accion.includes('1 vs 1'))
+    , [playerTags, matches]);
+
+    // DUELOS - Aéreos (TOTAL: ofensivos + defensivos, normalize accents)
+    const duelosAereosData = useMemo(() => 
+        getActionDataByJornada(accion => accion.includes('aereo') || accion.includes('aéreo'))
+    , [playerTags, matches]);
+
+    // FINALIZACIÓN - Tiros a Gol
+    const tirosGolData = useMemo(() => 
+        getActionDataByJornada(accion => accion.includes('tiro a gol'))
+    , [playerTags, matches]);
+
+    // FINALIZACIÓN - Goles
+    const golesData = useMemo(() => 
+        getActionDataByJornada(accion => accion === 'gol')
+    , [playerTags, matches]);
+
+    // DEFENSA - Atajadas
+    const atajadasData = useMemo(() => 
+        getActionDataByJornada(accion => accion.includes('atajada'))
+    , [playerTags, matches]);
+
+    // DEFENSA - Goles Recibidos
+    const golesRecibidosData = useMemo(() => 
+        getActionDataByJornada(accion => accion.includes('gol recibido'))
+    , [playerTags, matches]);
+
+    // DEFENSA - Recuperaciones de Balón (normalize accents)
+    const recuperacionesData = useMemo(() => 
+        getActionDataByJornada(accion => accion.includes('recuperación') || accion.includes('recuperacion'))
+    , [playerTags, matches]);
 
     // Table data
     const tablaRendimiento = useMemo(() => {
@@ -357,50 +399,242 @@ const RendimientoPage: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* Passes and Duels Charts */}
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-                        {/* Passes Analysis */}
-                        <div className="bg-gray-800 rounded-lg p-6">
-                            <h3 className="text-xl font-semibold mb-4 text-white">Análisis de Pases</h3>
-                            {pasesData.length === 0 ? (
-                                <p className="text-gray-400 text-center py-8">Sin datos de pases</p>
-                            ) : (
-                                <ResponsiveContainer width="100%" height={300}>
-                                    <BarChart data={pasesData}>
-                                        <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                        <XAxis dataKey="categoria" stroke="#9CA3AF" />
-                                        <YAxis stroke="#9CA3AF" />
-                                        <Tooltip
-                                            contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
-                                            labelStyle={{ color: '#F3F4F6' }}
-                                        />
-                                        <Legend wrapperStyle={{ color: '#F3F4F6' }} />
-                                        <Bar dataKey="cantidad" fill="#3B82F6" name="Cantidad" />
-                                    </BarChart>
-                                </ResponsiveContainer>
-                            )}
-                        </div>
+                    {/* SECTION 1: ANÁLISIS DE PASES */}
+                    <div className="mb-8">
+                        <h2 className="text-2xl font-bold mb-6 text-white border-b border-gray-700 pb-3">
+                            🎯 ANÁLISIS DE PASES
+                        </h2>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            {/* Pases Cortos */}
+                            <div className="bg-gray-800 rounded-lg p-6">
+                                <h3 className="text-lg font-semibold mb-4 text-white">Pases Cortos</h3>
+                                {pasesCortosData.length === 0 ? (
+                                    <p className="text-gray-400 text-center py-8">Sin datos de pases cortos</p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height={300}>
+                                        <BarChart data={pasesCortosData}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
+                                            <YAxis stroke="#9CA3AF" />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
+                                                labelStyle={{ color: '#F3F4F6' }}
+                                            />
+                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
+                                            <Bar dataKey="logrados" stackId="a" fill="#10B981" name="Logrados" />
+                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="Fallados" />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </div>
 
-                        {/* Duels Analysis */}
-                        <div className="bg-gray-800 rounded-lg p-6">
-                            <h3 className="text-xl font-semibold mb-4 text-white">Análisis de Duelos 1v1</h3>
-                            {duelosData.length === 0 ? (
-                                <p className="text-gray-400 text-center py-8">Sin datos de duelos</p>
-                            ) : (
-                                <ResponsiveContainer width="100%" height={300}>
-                                    <BarChart data={duelosData}>
-                                        <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                        <XAxis dataKey="tipo" stroke="#9CA3AF" />
-                                        <YAxis stroke="#9CA3AF" />
-                                        <Tooltip
-                                            contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
-                                            labelStyle={{ color: '#F3F4F6' }}
-                                        />
-                                        <Legend wrapperStyle={{ color: '#F3F4F6' }} />
-                                        <Bar dataKey="cantidad" fill="#8B5CF6" name="Cantidad" />
-                                    </BarChart>
-                                </ResponsiveContainer>
-                            )}
+                            {/* Pases Largos */}
+                            <div className="bg-gray-800 rounded-lg p-6">
+                                <h3 className="text-lg font-semibold mb-4 text-white">Pases Largos</h3>
+                                {pasesLargosData.length === 0 ? (
+                                    <p className="text-gray-400 text-center py-8">Sin datos de pases largos</p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height={300}>
+                                        <BarChart data={pasesLargosData}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
+                                            <YAxis stroke="#9CA3AF" />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
+                                                labelStyle={{ color: '#F3F4F6' }}
+                                            />
+                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
+                                            <Bar dataKey="logrados" stackId="a" fill="#10B981" name="Logrados" />
+                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="Fallados" />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* SECTION 2: ANÁLISIS DE DUELOS */}
+                    <div className="mb-8">
+                        <h2 className="text-2xl font-bold mb-6 text-white border-b border-gray-700 pb-3">
+                            ⚔️ ANÁLISIS DE DUELOS
+                        </h2>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            {/* Duelos 1v1 */}
+                            <div className="bg-gray-800 rounded-lg p-6">
+                                <h3 className="text-lg font-semibold mb-4 text-white">Duelos 1v1</h3>
+                                {duelos1v1Data.length === 0 ? (
+                                    <p className="text-gray-400 text-center py-8">Sin datos de duelos 1v1</p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height={300}>
+                                        <BarChart data={duelos1v1Data}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
+                                            <YAxis stroke="#9CA3AF" />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
+                                                labelStyle={{ color: '#F3F4F6' }}
+                                            />
+                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
+                                            <Bar dataKey="logrados" stackId="a" fill="#8B5CF6" name="Ganados" />
+                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="Perdidos" />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </div>
+
+                            {/* Duelos Aéreos */}
+                            <div className="bg-gray-800 rounded-lg p-6">
+                                <h3 className="text-lg font-semibold mb-4 text-white">Duelos Aéreos</h3>
+                                {duelosAereosData.length === 0 ? (
+                                    <p className="text-gray-400 text-center py-8">Sin datos de duelos aéreos</p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height={300}>
+                                        <BarChart data={duelosAereosData}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
+                                            <YAxis stroke="#9CA3AF" />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
+                                                labelStyle={{ color: '#F3F4F6' }}
+                                            />
+                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
+                                            <Bar dataKey="logrados" stackId="a" fill="#8B5CF6" name="Ganados" />
+                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="Perdidos" />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* SECTION 3: FINALIZACIÓN Y ATAQUE */}
+                    <div className="mb-8">
+                        <h2 className="text-2xl font-bold mb-6 text-white border-b border-gray-700 pb-3">
+                            ⚽ FINALIZACIÓN Y ATAQUE
+                        </h2>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            {/* Tiros a Gol */}
+                            <div className="bg-gray-800 rounded-lg p-6">
+                                <h3 className="text-lg font-semibold mb-4 text-white">Tiros a Gol</h3>
+                                {tirosGolData.length === 0 ? (
+                                    <p className="text-gray-400 text-center py-8">Sin datos de tiros a gol</p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height={300}>
+                                        <BarChart data={tirosGolData}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
+                                            <YAxis stroke="#9CA3AF" />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
+                                                labelStyle={{ color: '#F3F4F6' }}
+                                            />
+                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
+                                            <Bar dataKey="logrados" stackId="a" fill="#10B981" name="Logrados" />
+                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="Fallados" />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </div>
+
+                            {/* Goles */}
+                            <div className="bg-gray-800 rounded-lg p-6">
+                                <h3 className="text-lg font-semibold mb-4 text-white">Goles</h3>
+                                {golesData.length === 0 ? (
+                                    <p className="text-gray-400 text-center py-8">Sin datos de goles</p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height={300}>
+                                        <BarChart data={golesData}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
+                                            <YAxis stroke="#9CA3AF" />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
+                                                labelStyle={{ color: '#F3F4F6' }}
+                                            />
+                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
+                                            <Bar dataKey="logrados" stackId="a" fill="#F59E0B" name="Goles" />
+                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="Fallados" />
+                                        </BarChart>
+                                        </ResponsiveContainer>
+                                )}
+                            </div>
+
+                            {/* Recuperaciones */}
+                            <div className="bg-gray-800 rounded-lg p-6">
+                                <h3 className="text-lg font-semibold mb-4 text-white">Recuperaciones de Balón</h3>
+                                {recuperacionesData.length === 0 ? (
+                                    <p className="text-gray-400 text-center py-8">Sin datos de recuperaciones</p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height={300}>
+                                        <BarChart data={recuperacionesData}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
+                                            <YAxis stroke="#9CA3AF" />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
+                                                labelStyle={{ color: '#F3F4F6' }}
+                                            />
+                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
+                                            <Bar dataKey="logrados" stackId="a" fill="#10B981" name="Logradas" />
+                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="Falladas" />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* SECTION 4: DEFENSA Y PORTERÍA */}
+                    <div className="mb-8">
+                        <h2 className="text-2xl font-bold mb-6 text-white border-b border-gray-700 pb-3">
+                            🛡️ DEFENSA Y PORTERÍA
+                        </h2>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            {/* Atajadas */}
+                            <div className="bg-gray-800 rounded-lg p-6">
+                                <h3 className="text-lg font-semibold mb-4 text-white">Atajadas</h3>
+                                {atajadasData.length === 0 ? (
+                                    <p className="text-gray-400 text-center py-8">Sin datos de atajadas</p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height={300}>
+                                        <BarChart data={atajadasData}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
+                                            <YAxis stroke="#9CA3AF" />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
+                                                labelStyle={{ color: '#F3F4F6' }}
+                                            />
+                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
+                                            <Bar dataKey="logrados" stackId="a" fill="#3B82F6" name="Logradas" />
+                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="Falladas" />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </div>
+
+                            {/* Goles Recibidos */}
+                            <div className="bg-gray-800 rounded-lg p-6">
+                                <h3 className="text-lg font-semibold mb-4 text-white">Goles Recibidos</h3>
+                                {golesRecibidosData.length === 0 ? (
+                                    <p className="text-gray-400 text-center py-8">Sin datos de goles recibidos</p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height={300}>
+                                        <BarChart data={golesRecibidosData}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
+                                            <YAxis stroke="#9CA3AF" />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
+                                                labelStyle={{ color: '#F3F4F6' }}
+                                            />
+                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
+                                            <Bar dataKey="logrados" stackId="a" fill="#EF4444" name="Logrados" />
+                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="Fallados" />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </div>
                         </div>
                     </div>
 
@@ -441,3 +675,4 @@ const RendimientoPage: React.FC = () => {
 };
 
 export default RendimientoPage;
+
