@@ -13,24 +13,29 @@ const RendimientoPage: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [selectedPlayerId, setSelectedPlayerId] = useState<string>('');
 
+    // Fetch data on mount
     useEffect(() => {
         const fetchData = async () => {
             setLoading(true);
             try {
+                // Get user's team_id
                 const userTeamId = profile?.team_id;
 
+                // Fetch matches for user's team
                 let matchesQuery = supabase.from('matches').select('*').order('jornada', { ascending: true });
                 if (profile?.rol !== 'admin' && userTeamId) {
                     matchesQuery = matchesQuery.eq('team_id', userTeamId);
                 }
                 const { data: matchesData } = await matchesQuery;
 
+                // Fetch players for user's team
                 let playersQuery = supabase.from('players').select('*').order('nombre', { ascending: true });
                 if (profile?.rol !== 'admin' && userTeamId) {
                     playersQuery = playersQuery.eq('team_id', userTeamId);
                 }
                 const { data: playersData } = await playersQuery;
 
+                // Fetch all tags for user's team
                 let tagsQuery = supabase.from('tags').select('*');
                 if (profile?.rol !== 'admin' && userTeamId) {
                     tagsQuery = tagsQuery.eq('team_id', userTeamId);
@@ -41,6 +46,7 @@ const RendimientoPage: React.FC = () => {
                 setPlayers(playersData || []);
                 setTags(tagsData || []);
 
+                // Set first player as selected by default
                 if (playersData && playersData.length > 0) {
                     setSelectedPlayerId(playersData[0].id);
                 }
@@ -53,11 +59,13 @@ const RendimientoPage: React.FC = () => {
         fetchData();
     }, [profile]);
 
+    // Filter tags for selected player
     const playerTags = useMemo(() => {
         if (!selectedPlayerId) return [];
         return tags.filter(tag => tag.player_id === selectedPlayerId);
     }, [tags, selectedPlayerId]);
 
+    // Calculate KPIs
     const kpis = useMemo(() => {
         if (playerTags.length === 0) {
             return {
@@ -72,6 +80,7 @@ const RendimientoPage: React.FC = () => {
         const accionesLogradas = playerTags.filter(tag => tag.resultado === 'logrado').length;
         const efectividadGlobal = Math.round((accionesLogradas / totalAcciones) * 100);
 
+        // Group by jornada
         const byJornada = playerTags.reduce((acc, tag) => {
             const match = matches.find(m => m.id === tag.match_id);
             if (!match) return acc;
@@ -87,6 +96,7 @@ const RendimientoPage: React.FC = () => {
             return acc;
         }, {} as Record<number, { logradas: number; total: number }>);
 
+        // Find best and worst jornada
         let mejorJornada: { jornada: number; efectividad: number } | null = null;
         let peorJornada: { jornada: number; efectividad: number } | null = null;
 
@@ -108,9 +118,11 @@ const RendimientoPage: React.FC = () => {
         };
     }, [playerTags, matches]);
 
+    // Calculate data for effectiveness chart (by jornada)
     const efectividadPorJornadaData = useMemo(() => {
         if (playerTags.length === 0) return [];
 
+        // Group by jornada
         const byJornada = playerTags.reduce((acc, tag) => {
             const match = matches.find(m => m.id === tag.match_id);
             if (!match) return acc;
@@ -138,6 +150,7 @@ const RendimientoPage: React.FC = () => {
             .sort((a, b) => parseInt(a.jornada.slice(1)) - parseInt(b.jornada.slice(1)));
     }, [playerTags, matches]);
 
+    // Calculate data for volume chart (stacked bar)
     const volumenPorJornadaData = useMemo(() => {
         if (playerTags.length === 0) return [];
 
@@ -166,6 +179,41 @@ const RendimientoPage: React.FC = () => {
             .sort((a, b) => parseInt(a.jornada.slice(1)) - parseInt(b.jornada.slice(1)));
     }, [playerTags, matches]);
 
+    // Calculate data for passes analysis
+    const pasesData = useMemo(() => {
+        const pasesTags = playerTags.filter(tag => tag.accion.toLowerCase().includes('pase'));
+        
+        if (pasesTags.length === 0) return [];
+
+        const pasesCortos = pasesTags.filter(t => t.accion.toLowerCase().includes('corto')).length;
+        const pasesLargos = pasesTags.filter(t => t.accion.toLowerCase().includes('largo')).length;
+        const pasesDefensivos = pasesTags.filter(t => t.accion.toLowerCase().includes('defensivo')).length;
+        const pasesOfensivos = pasesTags.filter(t => t.accion.toLowerCase().includes('ofensivo')).length;
+
+        return [
+            { categoria: 'Cortos', cantidad: pasesCortos },
+            { categoria: 'Largos', cantidad: pasesLargos },
+            { categoria: 'Defensivos', cantidad: pasesDefensivos },
+            { categoria: 'Ofensivos', cantidad: pasesOfensivos }
+        ];
+    }, [playerTags]);
+
+    // Calculate data for duels analysis
+    const duelosData = useMemo(() => {
+        const duelosTags = playerTags.filter(tag => tag.accion.toLowerCase().includes('1 vs 1'));
+        
+        if (duelosTags.length === 0) return [];
+
+        const duelosLogrados = duelosTags.filter(t => t.resultado === 'logrado').length;
+        const duelosFallados = duelosTags.filter(t => t.resultado === 'fallado').length;
+
+        return [
+            { tipo: 'Ganados', cantidad: duelosLogrados },
+            { tipo: 'Perdidos', cantidad: duelosFallados }
+        ];
+    }, [playerTags]);
+
+    // Table data
     const tablaRendimiento = useMemo(() => {
         if (playerTags.length === 0) return [];
 
@@ -200,6 +248,8 @@ const RendimientoPage: React.FC = () => {
             .sort((a, b) => a.jornada - b.jornada);
     }, [playerTags, matches]);
 
+    const selectedPlayer = players.find(p => p.id === selectedPlayerId);
+
     if (loading) {
         return (
             <div className="flex items-center justify-center min-h-screen">
@@ -212,6 +262,7 @@ const RendimientoPage: React.FC = () => {
         <div className="p-6 max-w-7xl mx-auto">
             <h1 className="text-3xl font-bold mb-6 text-white">Rendimiento Individual</h1>
 
+            {/* Player Selector */}
             <div className="mb-6">
                 <label className="block text-sm font-medium mb-2 text-gray-300">Seleccionar Jugador</label>
                 <select
@@ -235,6 +286,7 @@ const RendimientoPage: React.FC = () => {
                 </div>
             ) : (
                 <>
+                    {/* KPIs */}
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
                         <div className="bg-gradient-to-br from-cyan-600 to-cyan-700 rounded-lg p-6 shadow-lg">
                             <p className="text-cyan-100 text-sm mb-1">Total Acciones</p>
@@ -258,7 +310,9 @@ const RendimientoPage: React.FC = () => {
                         </div>
                     </div>
 
+                    {/* Charts */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+                        {/* Effectiveness by Jornada */}
                         <div className="bg-gray-800 rounded-lg p-6">
                             <h3 className="text-xl font-semibold mb-4 text-white">Efectividad por Jornada</h3>
                             <ResponsiveContainer width="100%" height={300}>
@@ -283,6 +337,7 @@ const RendimientoPage: React.FC = () => {
                             </ResponsiveContainer>
                         </div>
 
+                        {/* Volume by Jornada */}
                         <div className="bg-gray-800 rounded-lg p-6">
                             <h3 className="text-xl font-semibold mb-4 text-white">Volumen de Acciones por Jornada</h3>
                             <ResponsiveContainer width="100%" height={300}>
@@ -302,6 +357,54 @@ const RendimientoPage: React.FC = () => {
                         </div>
                     </div>
 
+                    {/* Passes and Duels Charts */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+                        {/* Passes Analysis */}
+                        <div className="bg-gray-800 rounded-lg p-6">
+                            <h3 className="text-xl font-semibold mb-4 text-white">Análisis de Pases</h3>
+                            {pasesData.length === 0 ? (
+                                <p className="text-gray-400 text-center py-8">Sin datos de pases</p>
+                            ) : (
+                                <ResponsiveContainer width="100%" height={300}>
+                                    <BarChart data={pasesData}>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                        <XAxis dataKey="categoria" stroke="#9CA3AF" />
+                                        <YAxis stroke="#9CA3AF" />
+                                        <Tooltip
+                                            contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
+                                            labelStyle={{ color: '#F3F4F6' }}
+                                        />
+                                        <Legend wrapperStyle={{ color: '#F3F4F6' }} />
+                                        <Bar dataKey="cantidad" fill="#3B82F6" name="Cantidad" />
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            )}
+                        </div>
+
+                        {/* Duels Analysis */}
+                        <div className="bg-gray-800 rounded-lg p-6">
+                            <h3 className="text-xl font-semibold mb-4 text-white">Análisis de Duelos 1v1</h3>
+                            {duelosData.length === 0 ? (
+                                <p className="text-gray-400 text-center py-8">Sin datos de duelos</p>
+                            ) : (
+                                <ResponsiveContainer width="100%" height={300}>
+                                    <BarChart data={duelosData}>
+                                        <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                        <XAxis dataKey="tipo" stroke="#9CA3AF" />
+                                        <YAxis stroke="#9CA3AF" />
+                                        <Tooltip
+                                            contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
+                                            labelStyle={{ color: '#F3F4F6' }}
+                                        />
+                                        <Legend wrapperStyle={{ color: '#F3F4F6' }} />
+                                        <Bar dataKey="cantidad" fill="#8B5CF6" name="Cantidad" />
+                                    </BarChart>
+                                </ResponsiveContainer>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* Performance Table */}
                     <div className="bg-gray-800 rounded-lg p-6">
                         <h3 className="text-xl font-semibold mb-4 text-white">Desglose por Jornada</h3>
                         <div className="overflow-x-auto">
