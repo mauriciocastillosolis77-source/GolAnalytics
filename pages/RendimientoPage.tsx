@@ -315,14 +315,14 @@ const RendimientoPage: React.FC = () => {
             .sort((a, b) => parseInt(a.jornada.slice(1)) - parseInt(b.jornada.slice(1)));
     }, [tirosGolData, golesData]);
 
-    // DEFENSA - Atajadas
+    // DEFENSA - Atajadas (solo cuenta total, no hay logrado/fallado)
     const atajadasData = useMemo(() => 
-        getActionDataByJornada(ACTION_GROUPS.ATAJADAS)
+        getActionCountByJornada(ACTION_GROUPS.ATAJADAS)
     , [playerTags, matches]);
 
-    // DEFENSA - Goles Recibidos
+    // DEFENSA - Goles Recibidos (solo cuenta total, no hay logrado/fallado)
     const golesRecibidosData = useMemo(() => 
-        getActionDataByJornada(ACTION_GROUPS.GOLES_RECIBIDOS)
+        getActionCountByJornada(ACTION_GROUPS.GOLES_RECIBIDOS)
     , [playerTags, matches]);
 
     // DEFENSA - Recuperaciones de Balón (solo cuenta total, no hay logrado/fallado)
@@ -657,8 +657,7 @@ const RendimientoPage: React.FC = () => {
                                                 labelStyle={{ color: '#F3F4F6' }}
                                             />
                                             <Legend wrapperStyle={{ color: '#F3F4F6' }} />
-                                            <Bar dataKey="logrados" stackId="a" fill="#3B82F6" name="Logradas" />
-                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="Falladas" />
+                                            <Bar dataKey="total" fill="#10B981" name="Atajadas" />
                                         </BarChart>
                                     </ResponsiveContainer>
                                 )}
@@ -680,8 +679,7 @@ const RendimientoPage: React.FC = () => {
                                                 labelStyle={{ color: '#F3F4F6' }}
                                             />
                                             <Legend wrapperStyle={{ color: '#F3F4F6' }} />
-                                            <Bar dataKey="logrados" stackId="a" fill="#EF4444" name="Logrados" />
-                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="Fallados" />
+                                            <Bar dataKey="total" fill="#10B981" name="Goles Recibidos" />
                                         </BarChart>
                                     </ResponsiveContainer>
                                 )}
@@ -725,7 +723,7 @@ const RendimientoPage: React.FC = () => {
     );
 };
 
-export default RendimientoPage;
+export default RendimientoPage
 
 
 
