@@ -239,6 +239,32 @@ const RendimientoPage: React.FC = () => {
             .sort((a, b) => parseInt(a.jornada.slice(1)) - parseInt(b.jornada.slice(1)));
     };
 
+    // Helper function for actions that only count total (no logrado/fallado distinction)
+    const getActionCountByJornada = (actionNames: readonly string[]) => {
+        const filteredTags = playerTags.filter(tag => actionNames.includes(tag.accion));
+        
+        if (filteredTags.length === 0) return [];
+
+        const byJornada = filteredTags.reduce((acc, tag) => {
+            const match = matches.find(m => m.id === tag.match_id);
+            if (!match) return acc;
+
+            const jornada = match.jornada;
+            if (!acc[jornada]) {
+                acc[jornada] = { jornada, total: 0 };
+            }
+            acc[jornada].total++;
+            return acc;
+        }, {} as Record<number, { jornada: number; total: number }>);
+
+        return Object.values(byJornada)
+            .map(stats => ({
+                jornada: `J${stats.jornada}`,
+                total: stats.total
+            }))
+            .sort((a, b) => parseInt(a.jornada.slice(1)) - parseInt(b.jornada.slice(1)));
+    };
+
     // PASES - Cortos (TOTAL: ofensivos + defensivos)
     const pasesCortosData = useMemo(() => 
         getActionDataByJornada(ACTION_GROUPS.PASES_CORTOS)
@@ -259,15 +285,35 @@ const RendimientoPage: React.FC = () => {
         getActionDataByJornada(ACTION_GROUPS.DUELOS_AEREOS)
     , [playerTags, matches]);
 
-    // FINALIZACIÓN - Tiros a Gol
+    // FINALIZACIÓN - Tiros a portería (solo cuenta total, no hay logrado/fallado)
     const tirosGolData = useMemo(() => 
-        getActionDataByJornada(ACTION_GROUPS.TIROS_GOL)
+        getActionCountByJornada(ACTION_GROUPS.TIROS_GOL)
     , [playerTags, matches]);
 
-    // FINALIZACIÓN - Goles
+    // FINALIZACIÓN - Goles (solo cuenta total, no hay logrado/fallado)
     const golesData = useMemo(() => 
-        getActionDataByJornada(ACTION_GROUPS.GOLES)
+        getActionCountByJornada(ACTION_GROUPS.GOLES)
     , [playerTags, matches]);
+
+    // FINALIZACIÓN - Gráfica combinada Tiros + Goles (apilada)
+    const tirosYGolesData = useMemo(() => {
+        // Obtener todas las jornadas únicas de ambas métricas
+        const allJornadas = new Set<string>();
+        tirosGolData.forEach(d => allJornadas.add(d.jornada));
+        golesData.forEach(d => allJornadas.add(d.jornada));
+
+        return Array.from(allJornadas)
+            .map(jornada => {
+                const tiros = tirosGolData.find(d => d.jornada === jornada)?.total || 0;
+                const goles = golesData.find(d => d.jornada === jornada)?.total || 0;
+                return {
+                    jornada,
+                    tiros,
+                    goles
+                };
+            })
+            .sort((a, b) => parseInt(a.jornada.slice(1)) - parseInt(b.jornada.slice(1)));
+    }, [tirosGolData, golesData]);
 
     // DEFENSA - Atajadas
     const atajadasData = useMemo(() => 
@@ -279,9 +325,9 @@ const RendimientoPage: React.FC = () => {
         getActionDataByJornada(ACTION_GROUPS.GOLES_RECIBIDOS)
     , [playerTags, matches]);
 
-    // DEFENSA - Recuperaciones de Balón
+    // DEFENSA - Recuperaciones de Balón (solo cuenta total, no hay logrado/fallado)
     const recuperacionesData = useMemo(() => 
-        getActionDataByJornada(ACTION_GROUPS.RECUPERACIONES)
+        getActionCountByJornada(ACTION_GROUPS.RECUPERACIONES)
     , [playerTags, matches]);
 
     // Table data
@@ -542,14 +588,14 @@ const RendimientoPage: React.FC = () => {
                             ⚽ FINALIZACIÓN Y ATAQUE
                         </h2>
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                            {/* Tiros a Gol */}
+                            {/* Tiros a Portería y Goles (Combinado) */}
                             <div className="bg-gray-800 rounded-lg p-6">
-                                <h3 className="text-lg font-semibold mb-4 text-white">Tiros a Gol</h3>
-                                {tirosGolData.length === 0 ? (
-                                    <p className="text-gray-400 text-center py-8">Sin datos de tiros a gol</p>
+                                <h3 className="text-lg font-semibold mb-4 text-white">Tiros a Portería y Goles</h3>
+                                {tirosYGolesData.length === 0 ? (
+                                    <p className="text-gray-400 text-center py-8">Sin datos de tiros y goles</p>
                                 ) : (
                                     <ResponsiveContainer width="100%" height={300}>
-                                        <BarChart data={tirosGolData}>
+                                        <BarChart data={tirosYGolesData}>
                                             <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                                             <XAxis dataKey="jornada" stroke="#9CA3AF" />
                                             <YAxis stroke="#9CA3AF" />
@@ -558,37 +604,14 @@ const RendimientoPage: React.FC = () => {
                                                 labelStyle={{ color: '#F3F4F6' }}
                                             />
                                             <Legend wrapperStyle={{ color: '#F3F4F6' }} />
-                                            <Bar dataKey="logrados" stackId="a" fill="#10B981" name="Logrados" />
-                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="Fallados" />
+                                            <Bar dataKey="tiros" stackId="conversion" fill="#10B981" name="Tiros a Portería" />
+                                            <Bar dataKey="goles" stackId="conversion" fill="#06B6D4" name="Goles" />
                                         </BarChart>
                                     </ResponsiveContainer>
                                 )}
                             </div>
 
-                            {/* Goles */}
-                            <div className="bg-gray-800 rounded-lg p-6">
-                                <h3 className="text-lg font-semibold mb-4 text-white">Goles</h3>
-                                {golesData.length === 0 ? (
-                                    <p className="text-gray-400 text-center py-8">Sin datos de goles</p>
-                                ) : (
-                                    <ResponsiveContainer width="100%" height={300}>
-                                        <BarChart data={golesData}>
-                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
-                                            <YAxis stroke="#9CA3AF" />
-                                            <Tooltip
-                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
-                                                labelStyle={{ color: '#F3F4F6' }}
-                                            />
-                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
-                                            <Bar dataKey="logrados" stackId="a" fill="#F59E0B" name="Goles" />
-                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="Fallados" />
-                                        </BarChart>
-                                        </ResponsiveContainer>
-                                )}
-                            </div>
-
-                            {/* Recuperaciones */}
+                            {/* Recuperaciones de Balón */}
                             <div className="bg-gray-800 rounded-lg p-6">
                                 <h3 className="text-lg font-semibold mb-4 text-white">Recuperaciones de Balón</h3>
                                 {recuperacionesData.length === 0 ? (
@@ -604,8 +627,7 @@ const RendimientoPage: React.FC = () => {
                                                 labelStyle={{ color: '#F3F4F6' }}
                                             />
                                             <Legend wrapperStyle={{ color: '#F3F4F6' }} />
-                                            <Bar dataKey="logrados" stackId="a" fill="#10B981" name="Logradas" />
-                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="Falladas" />
+                                            <Bar dataKey="total" fill="#10B981" name="Recuperaciones" />
                                         </BarChart>
                                     </ResponsiveContainer>
                                 )}
@@ -704,5 +726,6 @@ const RendimientoPage: React.FC = () => {
 };
 
 export default RendimientoPage;
+
 
 
