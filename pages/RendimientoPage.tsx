@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { supabase } from '../services/supabaseClient';
 import type { Match, Tag, Player } from '../types';
 import { Spinner } from '../components/ui/Spinner';
@@ -13,6 +13,13 @@ const RendimientoPage: React.FC = () => {
     const [players, setPlayers] = useState<Player[]>([]);
     const [loading, setLoading] = useState(true);
     const [selectedPlayerId, setSelectedPlayerId] = useState<string>('');
+    const [filters, setFilters] = useState<{
+        torneo?: string;
+        categoria?: string;
+        jornadaMin?: number;
+        jornadaMax?: number;
+    }>({});
+    const [showFilters, setShowFilters] = useState(false);
 
     // Fetch data on mount
     useEffect(() => {
@@ -88,11 +95,63 @@ const RendimientoPage: React.FC = () => {
         fetchData();
     }, [profile]);
 
-    // Filter tags for selected player
+    // Get unique torneos and categorias for filter dropdowns
+    const availableTorneos = useMemo(() => {
+        const unique = Array.from(new Set(matches.map(m => m.torneo))).filter(Boolean).sort();
+        return unique;
+    }, [matches]);
+
+    const availableCategorias = useMemo(() => {
+        const unique = Array.from(new Set(matches.map(m => m.categoria))).filter(Boolean).sort();
+        return unique;
+    }, [matches]);
+
+    // Get global jornada bounds
+    const jornadaBounds = useMemo(() => {
+        if (matches.length === 0) return { min: 1, max: 1 };
+        const jornadas = matches.map(m => m.jornada);
+        return {
+            min: Math.min(...jornadas),
+            max: Math.max(...jornadas)
+        };
+    }, [matches]);
+
+    // Apply filters to matches
+    const filteredMatches = useMemo(() => {
+        return matches.filter(match => {
+            if (filters.torneo && match.torneo !== filters.torneo) return false;
+            if (filters.categoria && match.categoria !== filters.categoria) return false;
+            if (filters.jornadaMin !== undefined && match.jornada < filters.jornadaMin) return false;
+            if (filters.jornadaMax !== undefined && match.jornada > filters.jornadaMax) return false;
+            return true;
+        });
+    }, [matches, filters]);
+
+    // Get filtered match IDs for efficient tag filtering
+    const filteredMatchIds = useMemo(() => {
+        return new Set(filteredMatches.map(m => m.id));
+    }, [filteredMatches]);
+
+    // Create match lookup map for performance
+    const matchLookup = useMemo(() => {
+        const map = new Map<string, Match>();
+        matches.forEach(match => map.set(match.id, match));
+        return map;
+    }, [matches]);
+
+    // Filter tags for selected player AND filtered matches
     const playerTags = useMemo(() => {
         if (!selectedPlayerId) return [];
-        return tags.filter(tag => tag.player_id === selectedPlayerId);
-    }, [tags, selectedPlayerId]);
+        return tags.filter(tag => 
+            tag.player_id === selectedPlayerId && 
+            filteredMatchIds.has(tag.match_id)
+        );
+    }, [tags, selectedPlayerId, filteredMatchIds]);
+
+    // Clear all filters
+    const clearFilters = () => {
+        setFilters({});
+    };
 
     // Calculate KPIs
     const kpis = useMemo(() => {
@@ -111,7 +170,7 @@ const RendimientoPage: React.FC = () => {
 
         // Group by jornada
         const byJornada = playerTags.reduce((acc, tag) => {
-            const match = matches.find(m => m.id === tag.match_id);
+            const match = matchLookup.get(tag.match_id);
             if (!match) return acc;
 
             const jornada = match.jornada;
@@ -145,7 +204,7 @@ const RendimientoPage: React.FC = () => {
             mejorJornada,
             peorJornada
         };
-    }, [playerTags, matches]);
+    }, [playerTags, matchLookup]);
 
     // Calculate data for effectiveness chart (by jornada)
     const efectividadPorJornadaData = useMemo(() => {
@@ -153,7 +212,7 @@ const RendimientoPage: React.FC = () => {
 
         // Group by jornada
         const byJornada = playerTags.reduce((acc, tag) => {
-            const match = matches.find(m => m.id === tag.match_id);
+            const match = matchLookup.get(tag.match_id);
             if (!match) return acc;
 
             const jornada = match.jornada;
@@ -177,14 +236,14 @@ const RendimientoPage: React.FC = () => {
                 falladas: stats.falladas
             }))
             .sort((a, b) => parseInt(a.jornada.slice(1)) - parseInt(b.jornada.slice(1)));
-    }, [playerTags, matches]);
+    }, [playerTags, matchLookup]);
 
     // Calculate data for volume chart (stacked bar)
     const volumenPorJornadaData = useMemo(() => {
         if (playerTags.length === 0) return [];
 
         const byJornada = playerTags.reduce((acc, tag) => {
-            const match = matches.find(m => m.id === tag.match_id);
+            const match = matchLookup.get(tag.match_id);
             if (!match) return acc;
 
             const jornada = match.jornada;
@@ -206,7 +265,7 @@ const RendimientoPage: React.FC = () => {
                 falladas: stats.falladas
             }))
             .sort((a, b) => parseInt(a.jornada.slice(1)) - parseInt(b.jornada.slice(1)));
-    }, [playerTags, matches]);
+    }, [playerTags, matchLookup]);
 
     // Helper function to aggregate tags by jornada for specific action types (using exact action names)
     const getActionDataByJornada = (actionNames: readonly string[]) => {
@@ -215,7 +274,7 @@ const RendimientoPage: React.FC = () => {
         if (filteredTags.length === 0) return [];
 
         const byJornada = filteredTags.reduce((acc, tag) => {
-            const match = matches.find(m => m.id === tag.match_id);
+            const match = matchLookup.get(tag.match_id);
             if (!match) return acc;
 
             const jornada = match.jornada;
@@ -246,7 +305,7 @@ const RendimientoPage: React.FC = () => {
         if (filteredTags.length === 0) return [];
 
         const byJornada = filteredTags.reduce((acc, tag) => {
-            const match = matches.find(m => m.id === tag.match_id);
+            const match = matchLookup.get(tag.match_id);
             if (!match) return acc;
 
             const jornada = match.jornada;
@@ -268,32 +327,32 @@ const RendimientoPage: React.FC = () => {
     // PASES - Cortos (TOTAL: ofensivos + defensivos)
     const pasesCortosData = useMemo(() => 
         getActionDataByJornada(ACTION_GROUPS.PASES_CORTOS)
-    , [playerTags, matches]);
+    , [playerTags, matchLookup]);
 
     // PASES - Largos (TOTAL: ofensivos + defensivos)
     const pasesLargosData = useMemo(() => 
         getActionDataByJornada(ACTION_GROUPS.PASES_LARGOS)
-    , [playerTags, matches]);
+    , [playerTags, matchLookup]);
 
     // DUELOS - 1v1 (TOTAL: ofensivos + defensivos)
     const duelos1v1Data = useMemo(() => 
         getActionDataByJornada(ACTION_GROUPS.DUELOS_1V1)
-    , [playerTags, matches]);
+    , [playerTags, matchLookup]);
 
     // DUELOS - Aéreos (TOTAL: ofensivos + defensivos)
     const duelosAereosData = useMemo(() => 
         getActionDataByJornada(ACTION_GROUPS.DUELOS_AEREOS)
-    , [playerTags, matches]);
+    , [playerTags, matchLookup]);
 
     // FINALIZACIÓN - Tiros a portería (solo cuenta total, no hay logrado/fallado)
     const tirosGolData = useMemo(() => 
         getActionCountByJornada(ACTION_GROUPS.TIROS_GOL)
-    , [playerTags, matches]);
+    , [playerTags, matchLookup]);
 
     // FINALIZACIÓN - Goles (solo cuenta total, no hay logrado/fallado)
     const golesData = useMemo(() => 
         getActionCountByJornada(ACTION_GROUPS.GOLES)
-    , [playerTags, matches]);
+    , [playerTags, matchLookup]);
 
     // FINALIZACIÓN - Gráfica combinada Tiros + Goles (apilada)
     const tirosYGolesData = useMemo(() => {
@@ -318,24 +377,24 @@ const RendimientoPage: React.FC = () => {
     // DEFENSA - Atajadas (solo cuenta total, no hay logrado/fallado)
     const atajadasData = useMemo(() => 
         getActionCountByJornada(ACTION_GROUPS.ATAJADAS)
-    , [playerTags, matches]);
+    , [playerTags, matchLookup]);
 
     // DEFENSA - Goles Recibidos (solo cuenta total, no hay logrado/fallado)
     const golesRecibidosData = useMemo(() => 
         getActionCountByJornada(ACTION_GROUPS.GOLES_RECIBIDOS)
-    , [playerTags, matches]);
+    , [playerTags, matchLookup]);
 
     // DEFENSA - Recuperaciones de Balón (solo cuenta total, no hay logrado/fallado)
     const recuperacionesData = useMemo(() => 
         getActionCountByJornada(ACTION_GROUPS.RECUPERACIONES)
-    , [playerTags, matches]);
+    , [playerTags, matchLookup]);
 
     // Table data
     const tablaRendimiento = useMemo(() => {
         if (playerTags.length === 0) return [];
 
         const byJornada = playerTags.reduce((acc, tag) => {
-            const match = matches.find(m => m.id === tag.match_id);
+            const match = matchLookup.get(tag.match_id);
             if (!match) return acc;
 
             const jornada = match.jornada;
@@ -363,9 +422,51 @@ const RendimientoPage: React.FC = () => {
                 efectividad: Math.round((stats.logradas / stats.total) * 100)
             }))
             .sort((a, b) => a.jornada - b.jornada);
-    }, [playerTags, matches]);
+    }, [playerTags, matchLookup]);
 
     const selectedPlayer = players.find(p => p.id === selectedPlayerId);
+
+    // Excel Export Function
+    const exportToExcel = useCallback(() => {
+        // Guard against empty data or missing XLSX library
+        if (!tablaRendimiento || tablaRendimiento.length === 0) {
+            alert('No hay datos para exportar');
+            return;
+        }
+
+        if (!(window as any).XLSX) {
+            alert('Error: Biblioteca XLSX no disponible');
+            return;
+        }
+
+        const XLSX = (window as any).XLSX;
+
+        // Map data to Excel rows with Spanish headers
+        const excelData = [
+            ['Jornada', 'Rival', 'Acciones Logradas', 'Acciones Falladas', 'Total Acciones', 'Efectividad (%)'],
+            ...tablaRendimiento.map(row => [
+                `Jornada ${row.jornada}`,
+                row.rival,
+                row.logradas,
+                row.falladas,
+                row.total,
+                `${row.efectividad}%`
+            ])
+        ];
+
+        // Create worksheet and workbook
+        const worksheet = XLSX.utils.aoa_to_sheet(excelData);
+        const workbook = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'Rendimiento');
+
+        // Generate filename with player name and date
+        const playerName = selectedPlayer?.nombre?.replace(/\s+/g, '_') || 'Jugador';
+        const currentDate = new Date().toISOString().slice(0, 10);
+        const filename = `Rendimiento_${playerName}_${currentDate}.xlsx`;
+
+        // Download file
+        XLSX.writeFile(workbook, filename);
+    }, [tablaRendimiento, selectedPlayer]);
 
     if (loading) {
         return (
@@ -395,10 +496,108 @@ const RendimientoPage: React.FC = () => {
                 </select>
             </div>
 
+            {/* Filters Panel */}
+            <div className="mb-6">
+                <button
+                    onClick={() => setShowFilters(!showFilters)}
+                    className="flex items-center gap-2 text-cyan-400 hover:text-cyan-300 font-medium mb-3"
+                >
+                    <span>{showFilters ? '▼' : '▶'}</span>
+                    <span>Filtros Avanzados</span>
+                </button>
+                
+                {showFilters && (
+                    <div className="bg-gray-800 rounded-lg p-6 space-y-4">
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                            {/* Torneo Filter */}
+                            <div>
+                                <label className="block text-sm font-medium mb-2 text-gray-300">Torneo</label>
+                                <select
+                                    value={filters.torneo || ''}
+                                    onChange={(e) => setFilters({ ...filters, torneo: e.target.value || undefined })}
+                                    className="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                >
+                                    <option value="">Todos</option>
+                                    {availableTorneos.map(torneo => (
+                                        <option key={torneo} value={torneo}>{torneo}</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            {/* Categoría Filter */}
+                            <div>
+                                <label className="block text-sm font-medium mb-2 text-gray-300">Categoría</label>
+                                <select
+                                    value={filters.categoria || ''}
+                                    onChange={(e) => setFilters({ ...filters, categoria: e.target.value || undefined })}
+                                    className="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                >
+                                    <option value="">Todas</option>
+                                    {availableCategorias.map(categoria => (
+                                        <option key={categoria} value={categoria}>{categoria}</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            {/* Jornada Min Filter */}
+                            <div>
+                                <label className="block text-sm font-medium mb-2 text-gray-300">Jornada Desde</label>
+                                <input
+                                    type="number"
+                                    min={jornadaBounds.min}
+                                    max={jornadaBounds.max}
+                                    value={filters.jornadaMin ?? ''}
+                                    onChange={(e) => setFilters({ ...filters, jornadaMin: e.target.value ? parseInt(e.target.value) : undefined })}
+                                    placeholder={`Min: ${jornadaBounds.min}`}
+                                    className={`w-full bg-gray-700 text-white p-2 rounded border ${
+                                        filters.jornadaMin && filters.jornadaMax && filters.jornadaMin > filters.jornadaMax 
+                                            ? 'border-red-500' 
+                                            : 'border-gray-600'
+                                    } focus:outline-none focus:ring-2 focus:ring-cyan-500`}
+                                />
+                                {filters.jornadaMin && filters.jornadaMax && filters.jornadaMin > filters.jornadaMax && (
+                                    <p className="text-red-400 text-xs mt-1">El valor mínimo no puede ser mayor al máximo</p>
+                                )}
+                            </div>
+
+                            {/* Jornada Max Filter */}
+                            <div>
+                                <label className="block text-sm font-medium mb-2 text-gray-300">Jornada Hasta</label>
+                                <input
+                                    type="number"
+                                    min={jornadaBounds.min}
+                                    max={jornadaBounds.max}
+                                    value={filters.jornadaMax ?? ''}
+                                    onChange={(e) => setFilters({ ...filters, jornadaMax: e.target.value ? parseInt(e.target.value) : undefined })}
+                                    placeholder={`Max: ${jornadaBounds.max}`}
+                                    className={`w-full bg-gray-700 text-white p-2 rounded border ${
+                                        filters.jornadaMin && filters.jornadaMax && filters.jornadaMin > filters.jornadaMax 
+                                            ? 'border-red-500' 
+                                            : 'border-gray-600'
+                                    } focus:outline-none focus:ring-2 focus:ring-cyan-500`}
+                                />
+                            </div>
+                        </div>
+
+                        {/* Clear Filters Button */}
+                        <div className="flex justify-end">
+                            <button
+                                onClick={clearFilters}
+                                className="px-4 py-2 bg-red-600 hover:bg-red-500 text-white rounded font-medium"
+                            >
+                                Limpiar Filtros
+                            </button>
+                        </div>
+                    </div>
+                )}
+            </div>
+
             {playerTags.length === 0 ? (
                 <div className="bg-gray-800 rounded-lg p-8 text-center">
                     <p className="text-gray-400 text-lg">
-                        Este jugador no tiene datos registrados aún.
+                        {filteredMatches.length === 0 && (filters.torneo || filters.categoria || filters.jornadaMin || filters.jornadaMax) 
+                            ? 'Sin datos con los filtros actuales. Intenta limpiar los filtros.' 
+                            : 'Este jugador no tiene datos registrados aún.'}
                     </p>
                 </div>
             ) : (
@@ -689,7 +888,24 @@ const RendimientoPage: React.FC = () => {
 
                     {/* Performance Table */}
                     <div className="bg-gray-800 rounded-lg p-6">
-                        <h3 className="text-xl font-semibold mb-4 text-white">Desglose por Jornada</h3>
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-xl font-semibold text-white">Desglose por Jornada</h3>
+                            <button
+                                onClick={exportToExcel}
+                                disabled={tablaRendimiento.length === 0}
+                                className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+                                    tablaRendimiento.length === 0
+                                        ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                                        : 'bg-green-600 hover:bg-green-700 text-white'
+                                }`}
+                                title={tablaRendimiento.length === 0 ? 'No hay datos para exportar' : 'Exportar tabla a Excel'}
+                            >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                                </svg>
+                                <span>Exportar a Excel</span>
+                            </button>
+                        </div>
                         <div className="overflow-x-auto">
                             <table className="w-full text-left text-white">
                                 <thead className="bg-gray-700">
@@ -723,7 +939,7 @@ const RendimientoPage: React.FC = () => {
     );
 };
 
-export default RendimientoPage
+export default RendimientoPage;
 
 
 
