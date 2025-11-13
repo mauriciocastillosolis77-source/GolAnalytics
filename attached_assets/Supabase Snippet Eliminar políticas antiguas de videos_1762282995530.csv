@@ -1,0 +1,5 @@
+schemaname,tablename,policyname,cmd
+public,videos,videos_delete_admins,DELETE
+public,videos,videos_insert_admins,INSERT
+public,videos,videos_select_admins_aux,SELECT
+public,videos,videos_update_admins,UPDATE

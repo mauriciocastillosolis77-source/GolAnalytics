@@ -8,6 +8,7 @@ export interface Match {
   fecha: string;
   rival: string;
   jornada: number;
+  team_id?: string;
   created_at?: string;
 }
 
@@ -20,13 +21,13 @@ export interface Player {
 }
 
 export interface Tag {
-  id: string | number;
+  id: string;
   match_id: string;
+  team_id?: string;
   player_id: string;
   accion: string;
   resultado: string;
   timestamp: number;
-  // Nuevos campos añadidos para soportar videos y timestamps absolutos
   video_file?: string;
   timestamp_absolute?: number;
   created_at?: string;

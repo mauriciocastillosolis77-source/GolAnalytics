@@ -34,14 +34,14 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
             .select('*')
             .eq('id', currentUser.id)
             .single();
-          if (profileError) throw profileError;
-          setProfile(profileData || null);
+          if (profileError) {
+            console.error("Error fetching initial profile:", profileError);
+            setProfile(null);
+          } else {
+            setProfile(profileData || null);
+          }
         } catch (error) {
            console.error("Error fetching initial profile:", error);
-           // If profile fails, log out the user to prevent inconsistent state
-           await supabase.auth.signOut();
-           setUser(null);
-           setSession(null);
            setProfile(null);
         }
       }
@@ -53,23 +53,53 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
     initializeAuth();
 
     // 4. Listen for future auth changes
-    const { data: authListener } = supabase.auth.onAuthStateChange(async (_event, newSession) => {
+    const { data: authListener } = supabase.auth.onAuthStateChange(async (event, newSession) => {
+      // CRITICAL FIX: Only show spinner for actual sign-in/sign-out events
+      // Ignore TOKEN_REFRESHED and other background events to prevent freezing when window loses focus
+      console.log('[AuthContext] Auth event:', event, 'Session exists:', !!newSession);
+      
+      // Only process significant auth events, ignore token refreshes
+      const shouldProcessEvent = event === 'SIGNED_IN' || event === 'SIGNED_OUT';
+      
+      if (!shouldProcessEvent) {
+        // Update session silently without showing spinner
+        setSession(newSession);
+        setUser(newSession?.user ?? null);
+        console.log('[AuthContext] Ignoring event:', event);
+        return;
+      }
+
+      // Only show loading spinner for actual sign-in/sign-out
+      console.log('[AuthContext] Processing significant event:', event);
       setLoading(true);
       setSession(newSession);
       const newCurrentUser = newSession?.user ?? null;
       setUser(newCurrentUser);
 
       if (newCurrentUser) {
-         const { data: profileData } = await supabase
+        try {
+          // Add timeout protection for profile fetch
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Profile fetch timeout')), 5000)
+          );
+          
+          const profilePromise = supabase
             .from('profiles')
             .select('*')
             .eq('id', newCurrentUser.id)
             .single();
-         setProfile(profileData || null);
+
+          const { data: profileData } = await Promise.race([profilePromise, timeoutPromise]) as any;
+          setProfile(profileData || null);
+        } catch (error) {
+          console.error('[AuthContext] Error fetching profile after auth event:', error);
+          setProfile(null);
+        }
       } else {
         setProfile(null);
       }
       setLoading(false);
+      console.log('[AuthContext] Event processing complete');
     });
 
     return () => {
