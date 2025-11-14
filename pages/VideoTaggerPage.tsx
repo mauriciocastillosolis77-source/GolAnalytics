@@ -54,8 +54,7 @@ const VideoTaggerPage: React.FC = () => {
     const [selectedAction, setSelectedAction] = useState<string>(METRICS[0]);
 
     // Section 4: AI Analysis
-    const [isGeminiAnalyzing, setIsGeminiAnalyzing] = useState(false);
-    const [isCustomAnalyzing, setIsCustomAnalyzing] = useState(false);
+    const [isAnalyzingAI, setIsAnalyzingAI] = useState(false);
     const [aiSuggestions, setAiSuggestions] = useState<AISuggestion[]>([]);
     const [isSuggestionsModalOpen, setIsSuggestionsModalOpen] = useState(false);
     
@@ -383,7 +382,7 @@ const VideoTaggerPage: React.FC = () => {
     // Handler for AI-assisted analysis
     const handleAIAssistedAnalysis = async () => {
         if (!videoRef.current || !canvasRef.current) return;
-        setIsGeminiAnalyzing(true);
+        setIsAnalyzingAI(true);
         try {
             const video = videoRef.current;
             const canvas = canvasRef.current;
@@ -417,7 +416,7 @@ const VideoTaggerPage: React.FC = () => {
             console.error("Error during AI analysis:", error);
             alert("Ocurrió un error durante el análisis de IA.");
         } finally {
-            setIsGeminiAnalyzing(false);
+            setIsAnalyzingAI(false);
             videoRef.current?.play();
         }
     };
@@ -425,17 +424,13 @@ const VideoTaggerPage: React.FC = () => {
     const handleCustomModelAnalysis = async () => {
         if (!videoRef.current) return;
         
-        setIsCustomAnalyzing(true);
+        setIsAnalyzingAI(true);
         
         try {
             const video = videoRef.current;
             const canvas = canvasRef.current;
             const context = canvas?.getContext('2d');
-            
-            if (!context) {
-                setIsCustomAnalyzing(false);
-                return;
-            }
+            if (!context) return;
             
             // Capture current frame
             video.pause();
@@ -447,14 +442,12 @@ const VideoTaggerPage: React.FC = () => {
             const blob: Blob | null = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.9));
             if (!blob) {
                 alert("No se pudo capturar el frame");
-                setIsCustomAnalyzing(false);
                 return;
             }
             
             const base64 = await blobToBase64(blob);
             if (!base64) {
                 alert("Error al procesar la imagen");
-                setIsCustomAnalyzing(false);
                 return;
             }
             
@@ -466,7 +459,7 @@ const VideoTaggerPage: React.FC = () => {
                 },
                 body: JSON.stringify({
                     image: base64,
-                    timestamp: formatTime(video.currentTime)
+                    timestamp: video.currentTime
                 })
             });
             
@@ -498,7 +491,7 @@ const VideoTaggerPage: React.FC = () => {
             console.error("Error during custom model analysis:", error);
             alert("Ocurrió un error durante el análisis con el modelo personalizado.");
         } finally {
-            setIsCustomAnalyzing(false);
+            setIsAnalyzingAI(false);
         }
     };
     // Handler for Batch Analysis (analyze entire video)
@@ -592,7 +585,7 @@ const VideoTaggerPage: React.FC = () => {
             
             // Filter for high-confidence predictions
             const suggestions = allResults
-                .filter(r => r.predictions && r.predictions.length > 0 && r.predictions[0].probability > 0.20)
+                .filter(r => r.predictions && r.predictions.length > 0 && r.predictions[0].probability > 0.2)
                 .map(r => ({
                     timestamp: r.timestamp,
                     action: r.predictions[0].action,
@@ -897,15 +890,8 @@ const VideoTaggerPage: React.FC = () => {
                         </div>
                     )}
                     
-                    <button onClick={handleAIAssistedAnalysis} disabled={!activeVideoUrl && !selectedVideo || isGeminiAnalyzing || !selectedMatchId} className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
-                        {isGeminiAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Sugerir Acciones</>}
-                    </button>
-<button 
-                        onClick={handleCustomModelAnalysis} 
-                        disabled={!activeVideoUrl && !selectedVideo || isCustomAnalyzing || !selectedMatchId} 
-                        className="w-full mt-2 bg-indigo-600 hover:bg-indigo-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed"
-                    >
-                        {isCustomAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Modelo Personalizado (74% Top-3)</>}
+                    <button onClick={handleAIAssistedAnalysis} disabled={!activeVideoUrl && !selectedVideo || isAnalyzingAI || !selectedMatchId} className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
+                        {isAnalyzingAI ? <><Spinner /> Analizando...</> : <><SparklesIcon />Sugerir Acciones</>}
                     </button>
 <button 
                         onClick={handleCustomModelAnalysis} 
