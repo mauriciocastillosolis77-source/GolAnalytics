@@ -54,7 +54,8 @@ const VideoTaggerPage: React.FC = () => {
     const [selectedAction, setSelectedAction] = useState<string>(METRICS[0]);
 
     // Section 4: AI Analysis
-    const [isAnalyzingAI, setIsAnalyzingAI] = useState(false);
+    const [isGeminiAnalyzing, setIsGeminiAnalyzing] = useState(false);
+    const [isCustomAnalyzing, setIsCustomAnalyzing] = useState(false);
     const [aiSuggestions, setAiSuggestions] = useState<AISuggestion[]>([]);
     const [isSuggestionsModalOpen, setIsSuggestionsModalOpen] = useState(false);
     
@@ -281,11 +282,9 @@ const VideoTaggerPage: React.FC = () => {
         const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
         const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
 
-              const selectedMatch = matches.find(m => m.id === selectedMatchId);
         const newTag: Tag = {
             id: `temp-${Date.now()}`,
             match_id: selectedMatchId,
-            team_id: selectedMatch?.team_id || '',
             player_id: selectedPlayerId,
             accion: accion,
             resultado: resultado,
@@ -350,7 +349,7 @@ const VideoTaggerPage: React.FC = () => {
         }
     };
 
-        // Handler to create a new video metadata record
+    // Handler to create a new video metadata record
     const handleCreateVideo = async () => {
         if (!newVideoFileName || !selectedMatchId) {
             alert('Ingrese nombre del archivo y seleccione un partido.');
@@ -379,10 +378,11 @@ const VideoTaggerPage: React.FC = () => {
             setIsCreatingVideo(false);
         }
     };
+
     // Handler for AI-assisted analysis
     const handleAIAssistedAnalysis = async () => {
         if (!videoRef.current || !canvasRef.current) return;
-        setIsAnalyzingAI(true);
+        setIsGeminiAnalyzing(true);
         try {
             const video = videoRef.current;
             const canvas = canvasRef.current;
@@ -416,7 +416,7 @@ const VideoTaggerPage: React.FC = () => {
             console.error("Error during AI analysis:", error);
             alert("Ocurrió un error durante el análisis de IA.");
         } finally {
-            setIsAnalyzingAI(false);
+            setIsGeminiAnalyzing(false);
             videoRef.current?.play();
         }
     };
@@ -424,7 +424,7 @@ const VideoTaggerPage: React.FC = () => {
     const handleCustomModelAnalysis = async () => {
         if (!videoRef.current) return;
         
-        setIsAnalyzingAI(true);
+        setIsCustomAnalyzing(true);
         
         try {
             const video = videoRef.current;
@@ -491,7 +491,7 @@ const VideoTaggerPage: React.FC = () => {
             console.error("Error during custom model analysis:", error);
             alert("Ocurrió un error durante el análisis con el modelo personalizado.");
         } finally {
-            setIsAnalyzingAI(false);
+            setIsCustomAnalyzing(false);
         }
     };
     // Handler for Batch Analysis (analyze entire video)
@@ -585,7 +585,7 @@ const VideoTaggerPage: React.FC = () => {
             
             // Filter for high-confidence predictions
             const suggestions = allResults
-                .filter(r => r.predictions && r.predictions.length > 0 && r.predictions[0].probability > 0.2)
+                .filter(r => r.predictions && r.predictions.length > 0 && r.predictions[0].probability > 0.20)
                 .map(r => ({
                     timestamp: r.timestamp,
                     action: r.predictions[0].action,
@@ -890,15 +890,15 @@ const VideoTaggerPage: React.FC = () => {
                         </div>
                     )}
                     
-                    <button onClick={handleAIAssistedAnalysis} disabled={!activeVideoUrl && !selectedVideo || isAnalyzingAI || !selectedMatchId} className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
-                        {isAnalyzingAI ? <><Spinner /> Analizando...</> : <><SparklesIcon />Sugerir Acciones</>}
+                    <button onClick={handleAIAssistedAnalysis} disabled={!activeVideoUrl && !selectedVideo || isGeminiAnalyzing || !selectedMatchId} className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
+                        {isGeminiAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Sugerir Acciones</>}
                     </button>
 <button 
                         onClick={handleCustomModelAnalysis} 
-                        disabled={!activeVideoUrl && !selectedVideo || isAnalyzingAI || !selectedMatchId} 
+                        disabled={!activeVideoUrl && !selectedVideo || isCustomAnalyzing || !selectedMatchId} 
                         className="w-full mt-2 bg-indigo-600 hover:bg-indigo-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed"
                     >
-                        {isAnalyzingAI ? <><Spinner /> Analizando...</> : <><SparklesIcon />Modelo Personalizado (74% Top-3)</>}
+                        {isCustomAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Modelo Personalizado (74% Top-3)</>}
                     </button>
                 </div>
             </div>
