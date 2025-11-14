@@ -7,44 +7,41 @@
     <meta name="description" content="GolAnalytics nació de la pasión por el fútbol, la tecnología y los datos.">
     
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-        
         body {
-            font-family: 'Inter', sans-serif;
+            font-family: 'IBM Plex Sans Condensed', ui-sans-serif, system-ui, sans-serif;
         }
         
-        .gradient-bg {
-            background: linear-gradient(135deg, #0a1128 0%, #1a2332 100%);
-        }
-        
-        .dark-navy-bg {
-            background-color: #0a1128;
+        .font-serif {
+            font-family: 'IBM Plex Sans', ui-serif, Georgia, serif;
         }
     </style>
 </head>
-<body class="bg-gray-50">
+<body class="bg-slate-950 text-white">
     
     <!-- Navigation -->
-    <nav class="dark-navy-bg shadow-sm fixed w-full top-0 z-50">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between items-center h-16">
+    <nav class="absolute inset-x-0 top-0 z-10">
+        <div class="px-6 py-6 md:px-8">
+            <div class="flex items-center justify-between">
                 <div class="flex items-center space-x-3">
                     <a href="index.html" class="flex items-center space-x-3">
-                        <span class="text-3xl">⚽</span>
+                        <img src="https://storage.googleapis.com/mixo-sites/images/file-47edda7f-4f29-48fe-9538-e4250127b450.jpg" alt="GolAnalytics" class="h-12 w-12 rounded-full">
                         <span class="text-2xl font-bold text-white">GolAnalytics</span>
                     </a>
                 </div>
                 <div class="hidden md:flex space-x-8">
-                    <a href="index.html" class="text-white hover:text-blue-400 font-medium">Inicio</a>
-                    <a href="service.html" class="text-white hover:text-blue-400 font-medium">Servicios</a>
-                    <a href="about-us.html" class="text-blue-400 font-medium border-b-2 border-blue-400">Sobre Nosotros</a>
-                    <a href="testimonials.html" class="text-white hover:text-blue-400 font-medium">Nuestros Clientes</a>
-                    <a href="contact.html" class="text-white hover:text-blue-400 font-medium">Contacto</a>
+                    <a href="index.html" class="text-slate-300 hover:text-white font-medium">Inicio</a>
+                    <a href="service.html" class="text-slate-300 hover:text-white font-medium">Servicios</a>
+                    <a href="about-us.html" class="text-white hover:text-indigo-400 font-medium">Sobre Nosotros</a>
+                    <a href="testimonials.html" class="text-slate-300 hover:text-white font-medium">Nuestros Clientes</a>
+                    <a href="contact.html" class="text-slate-300 hover:text-white font-medium">Contacto</a>
                 </div>
                 <div class="flex items-center space-x-4">
-                    <a href="https://app.golanalytics.com" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-semibold transition">
+                    <a href="https://app.golanalytics.com" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-semibold transition">
                         Iniciar Sesión
                     </a>
                 </div>
@@ -53,140 +50,64 @@
     </nav>
 
     <!-- Hero Section -->
-    <section class="pt-24 pb-16 gradient-bg">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="text-center">
-                <h1 class="text-5xl md:text-6xl font-bold text-white mb-6">
+    <div class="relative isolate px-6 pt-14 lg:px-8">
+        <div class="absolute inset-x-0 -top-40 -z-10 transform-gpu overflow-hidden blur-3xl sm:-top-80" aria-hidden="true">
+            <div class="relative left-[calc(50%-11rem)] aspect-[1155/678] w-[36.125rem] -translate-x-1/2 rotate-[30deg] bg-gradient-to-tr from-indigo-600 to-indigo-400 opacity-30 sm:left-[calc(50%-30rem)] sm:w-[72.1875rem]" 
+                 style="clip-path:polygon(74.1% 44.1%, 100% 61.6%, 97.5% 26.9%, 85.5% 0.1%, 80.7% 2%, 72.5% 32.5%, 60.2% 62.4%, 52.4% 68.1%, 47.5% 58.3%, 45.2% 34.5%, 27.5% 76.7%, 0.1% 64.9%, 17.9% 100%, 27.6% 76.8%, 76.1% 97.7%, 74.1% 44.1%)">
+            </div>
+        </div>
+        
+        <div class="py-32">
+            <div class="mx-auto max-w-2xl text-center">
+                <h1 class="text-4xl font-black tracking-tight sm:text-6xl xl:text-7xl text-white">
                     Sobre Nosotros
                 </h1>
             </div>
         </div>
-    </section>
+    </div>
 
-    <!-- Story Section -->
-    <section class="py-16 bg-white">
-        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="text-lg text-gray-700 leading-relaxed space-y-6">
+    <!-- About Content -->
+    <section class="bg-slate-950 py-24">
+        <div class="mx-auto max-w-3xl px-6 lg:px-8">
+            <div class="space-y-8 text-slate-300 font-serif text-lg">
                 <p>
-                    GolAnalytics nació de la pasión por el fútbol, la tecnología y los datos. Soy un jugador amateur que siempre buscó entender más allá del marcador: ¿cómo evoluciona un jugador?, ¿cómo se mide el progreso real?, ¿qué impulsa el rendimiento? Esa curiosidad se unió a mi amor por la innovación y la inteligencia artificial. Así nació GolAnalytics: una plataforma que ayuda a academias, entrenadores y jugadores a transformar la información de cada entrenamiento en conocimiento útil y accionable.
+                    GolAnalytics nació de la pasión por el fútbol, la tecnología y los datos.
+                </p>
+                <p>
+                    Como entrenador, me frustró ver tanto talento sin explotar simplemente porque no teníamos herramientas para medirlo objetivamente.
+                </p>
+                <p>
+                    Decidí crear una solución que ayudara a academias y entrenadores a tomar decisiones basadas en datos reales, no solo en intuiciones.
                 </p>
                 <p>
                     Hoy, impulsamos el crecimiento deportivo de cientos de jóvenes con herramientas simples, visuales y basadas en datos.
                 </p>
-                <p class="font-semibold text-xl text-gray-900">
+                <p class="text-xl font-semibold text-white">
                     Somos tecnología con alma futbolera.
                 </p>
-                <p class="font-semibold text-xl text-gray-900">
+                <p class="text-xl font-semibold text-white">
                     Y como padre de dos niños que aman el fútbol, sueño con un futuro donde cada jugador pueda ver su progreso y alcanzar su máximo potencial.
                 </p>
             </div>
         </div>
     </section>
 
-    <!-- Image Section -->
-    <section class="py-8 bg-gray-50">
-        <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="rounded-2xl overflow-hidden shadow-2xl">
-                <img src="https://storage.googleapis.com/mixo-sites/images/file-9ca42b98-6289-4fe3-8111-9f8badb91165.jpg" alt="GolAnalytics" class="w-full h-auto">
-            </div>
-        </div>
-    </section>
-
-    <!-- Trust Section -->
-    <section class="py-16 bg-white">
-        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-            <h2 class="text-4xl font-bold text-gray-900 mb-6">
-                Confiado por Muchos
-            </h2>
-            <p class="text-lg text-gray-700 leading-relaxed">
-                GolAnalytics es reconocido por su efectividad en el análisis deportivo, ayudando a academias a mejorar el rendimiento de sus jugadores con tecnología avanzada y fácil de usar.
-            </p>
-        </div>
-    </section>
-
-    <!-- Principles Section -->
-    <section class="py-16 bg-gray-50">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="text-center mb-12">
-                <h2 class="text-4xl font-bold text-gray-900 mb-6">Nuestros Principios</h2>
-                <p class="text-lg text-gray-700 max-w-3xl mx-auto">
-                    GolAnalytics se enfoca en proporcionar herramientas tecnológicas que faciliten el análisis deportivo.
-                </p>
-                <p class="text-lg text-gray-700 max-w-3xl mx-auto mt-4">
-                    Creemos en el poder de los datos para transformar el rendimiento deportivo y estamos comprometidos a hacer que esta tecnología sea accesible para todos.
-                </p>
-            </div>
-
-            <!-- Image Grid -->
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <img src="https://images.pexels.com/photos/6077789/pexels-photo-6077789.jpeg?auto=compress&cs=tinysrgb&h=650&w=800&dpr=1.5&fit=crop&ar=9%3A6" alt="Principios" class="rounded-xl shadow-lg w-full h-48 object-cover">
-                <img src="https://images.pexels.com/photos/6077809/pexels-photo-6077809.jpeg?auto=compress&cs=tinysrgb&h=650&w=800&dpr=1.5&fit=crop&ar=9%3A6" alt="Tecnología" class="rounded-xl shadow-lg w-full h-48 object-cover">
-                <img src="https://images.pexels.com/photos/8941623/pexels-photo-8941623.jpeg?auto=compress&cs=tinysrgb&h=650&w=800&dpr=1.5&fit=crop&ar=9%3A6" alt="Datos" class="rounded-xl shadow-lg w-full h-48 object-cover">
-                <img src="https://images.pexels.com/photos/8941640/pexels-photo-8941640.jpeg?auto=compress&cs=tinysrgb&h=650&w=800&dpr=1.5&fit=crop&ar=9%3A6" alt="Análisis" class="rounded-xl shadow-lg w-full h-48 object-cover">
-            </div>
-        </div>
-    </section>
-
-    <!-- Team Section -->
-    <section class="py-16 bg-white">
-        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-            <h2 class="text-4xl font-bold text-gray-900 mb-6">Nuestro Equipo</h2>
-            <p class="text-lg text-gray-700 leading-relaxed">
-                Detrás de GolAnalytics hay un esfuerzo individual, pero también una comunidad de entrenadores, jugadores y familias que comparten la misma meta: mejorar el fútbol desde la base. Cada academia y cada jugador que confía en nuestra Plataforma es parte del equipo que impulsa este proyecto hacia el siguiente nivel
-            </p>
-        </div>
-    </section>
-
     <!-- CTA Section -->
-    <section class="py-20 gradient-bg">
-        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-            <h2 class="text-4xl md:text-5xl font-bold text-white mb-6">
-                Solicita tu demo gratis.
-            </h2>
-            <blockquote class="text-xl text-white/90 italic mb-8">
-                "GolAnalytics es una herramienta imprescindible para cualquier academia de fútbol que busque mejorar el rendimiento de sus jugadores. No incluyas el nombre del cliente." <br>- Uri Thomas
-            </blockquote>
-            <a href="contact.html" class="bg-white text-purple-600 px-8 py-4 rounded-lg font-bold text-lg hover:bg-gray-100 transition shadow-lg inline-block">
-                Solicita tu demo gratis
+    <section class="bg-slate-900 py-16">
+        <div class="mx-auto max-w-2xl text-center px-6">
+            <h2 class="text-3xl font-bold text-white mb-6">¿Quieres ser parte de esta historia?</h2>
+            <a href="contact.html" class="inline-block rounded-lg bg-indigo-600 px-8 py-4 text-lg font-semibold text-white shadow-sm hover:bg-indigo-700 transition">
+                Contáctanos
             </a>
         </div>
     </section>
 
     <!-- Footer -->
-    <footer class="bg-gray-900 text-white py-12">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="grid md:grid-cols-3 gap-8">
-                <div>
-                    <h3 class="text-2xl font-bold mb-4">⚽ GolAnalytics</h3>
-                    <p class="text-gray-400">
-                        Plataforma de análisis de fútbol para coaches profesionales
-                    </p>
-                </div>
-                <div>
-                    <h4 class="font-semibold mb-4">Enlaces</h4>
-                    <ul class="space-y-2 text-gray-400">
-                        <li><a href="index.html" class="hover:text-white transition">Inicio</a></li>
-                        <li><a href="service.html" class="hover:text-white transition">Servicios</a></li>
-                        <li><a href="about-us.html" class="hover:text-white transition">Sobre Nosotros</a></li>
-                        <li><a href="testimonials.html" class="hover:text-white transition">Nuestros Clientes</a></li>
-                        <li><a href="contact.html" class="hover:text-white transition">Contacto</a></li>
-                        <li><a href="https://app.golanalytics.com" class="hover:text-white transition">Iniciar Sesión</a></li>
-                    </ul>
-                </div>
-                <div>
-                    <h4 class="font-semibold mb-4">Contacto</h4>
-                    <ul class="space-y-2 text-gray-400">
-                        <li>
-                            <a href="mailto:contacto@golanalytics.com" class="hover:text-white transition">
-                                contacto@golanalytics.com
-                            </a>
-                        </li>
-                    </ul>
-                </div>
-            </div>
-            <div class="mt-8 pt-8 border-t border-gray-800 text-center text-gray-400">
-                <p>&copy; 2025 GolAnalytics. Todos los derechos reservados.</p>
-            </div>
+    <footer class="bg-slate-900 py-8">
+        <div class="mx-auto max-w-7xl px-6 lg:px-8">
+            <p class="text-center text-slate-400 text-sm">
+                © 2024 GolAnalytics. Todos los derechos reservados.
+            </p>
         </div>
     </footer>
 
