@@ -1,4 +1,4 @@
-   <!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="es">
 <head>
     <meta charset="UTF-8">
@@ -7,44 +7,41 @@
     <meta name="description" content="Lo que dicen nuestros usuarios satisfechos">
     
     <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Condensed:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
     
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-        
         body {
-            font-family: 'Inter', sans-serif;
+            font-family: 'IBM Plex Sans Condensed', ui-sans-serif, system-ui, sans-serif;
         }
         
-        .gradient-bg {
-            background: linear-gradient(135deg, #0a1128 0%, #1a2332 100%);
-        }
-        
-        .dark-navy-bg {
-            background-color: #0a1128;
+        .font-serif {
+            font-family: 'IBM Plex Sans', ui-serif, Georgia, serif;
         }
     </style>
 </head>
-<body class="bg-gray-50">
+<body class="bg-slate-950 text-white">
     
     <!-- Navigation -->
-    <nav class="dark-navy-bg shadow-sm fixed w-full top-0 z-50">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="flex justify-between items-center h-16">
+    <nav class="absolute inset-x-0 top-0 z-10">
+        <div class="px-6 py-6 md:px-8">
+            <div class="flex items-center justify-between">
                 <div class="flex items-center space-x-3">
                     <a href="index.html" class="flex items-center space-x-3">
-                        <span class="text-3xl">⚽</span>
+                        <img src="https://storage.googleapis.com/mixo-sites/images/file-47edda7f-4f29-48fe-9538-e4250127b450.jpg" alt="GolAnalytics" class="h-12 w-12 rounded-full">
                         <span class="text-2xl font-bold text-white">GolAnalytics</span>
                     </a>
                 </div>
                 <div class="hidden md:flex space-x-8">
-                    <a href="index.html" class="text-white hover:text-blue-400 font-medium">Inicio</a>
-                    <a href="service.html" class="text-white hover:text-blue-400 font-medium">Servicios</a>
-                    <a href="about-us.html" class="text-white hover:text-blue-400 font-medium">Sobre Nosotros</a>
-                    <a href="testimonials.html" class="text-blue-400 font-medium border-b-2 border-blue-400">Nuestros Clientes</a>
-                    <a href="contact.html" class="text-white hover:text-blue-400 font-medium">Contacto</a>
+                    <a href="index.html" class="text-slate-300 hover:text-white font-medium">Inicio</a>
+                    <a href="service.html" class="text-slate-300 hover:text-white font-medium">Servicios</a>
+                    <a href="about-us.html" class="text-slate-300 hover:text-white font-medium">Sobre Nosotros</a>
+                    <a href="testimonials.html" class="text-white hover:text-indigo-400 font-medium">Nuestros Clientes</a>
+                    <a href="contact.html" class="text-slate-300 hover:text-white font-medium">Contacto</a>
                 </div>
                 <div class="flex items-center space-x-4">
-                    <a href="https://app.golanalytics.com" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-2 rounded-lg font-semibold transition">
+                    <a href="https://app.golanalytics.com" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-semibold transition">
                         Iniciar Sesión
                     </a>
                 </div>
@@ -53,134 +50,106 @@
     </nav>
 
     <!-- Hero Section -->
-    <section class="pt-24 pb-16 gradient-bg">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="text-center">
-                <h1 class="text-5xl md:text-6xl font-bold text-white mb-6">
+    <div class="relative isolate px-6 pt-14 lg:px-8">
+        <div class="absolute inset-x-0 -top-40 -z-10 transform-gpu overflow-hidden blur-3xl sm:-top-80" aria-hidden="true">
+            <div class="relative left-[calc(50%-11rem)] aspect-[1155/678] w-[36.125rem] -translate-x-1/2 rotate-[30deg] bg-gradient-to-tr from-indigo-600 to-indigo-400 opacity-30 sm:left-[calc(50%-30rem)] sm:w-[72.1875rem]" 
+                 style="clip-path:polygon(74.1% 44.1%, 100% 61.6%, 97.5% 26.9%, 85.5% 0.1%, 80.7% 2%, 72.5% 32.5%, 60.2% 62.4%, 52.4% 68.1%, 47.5% 58.3%, 45.2% 34.5%, 27.5% 76.7%, 0.1% 64.9%, 17.9% 100%, 27.6% 76.8%, 76.1% 97.7%, 74.1% 44.1%)">
+            </div>
+        </div>
+        
+        <div class="py-32">
+            <div class="mx-auto max-w-2xl text-center">
+                <h1 class="text-4xl font-black tracking-tight sm:text-6xl xl:text-7xl text-white">
                     Nuestros Clientes
                 </h1>
-                <p class="text-xl text-white/90">
+                <p class="mt-6 text-lg sm:text-xl font-serif text-slate-300">
                     Lo que dicen nuestros usuarios satisfechos
                 </p>
             </div>
         </div>
-    </section>
+    </div>
 
-    <!-- Main Testimonials -->
-    <section class="py-16 bg-white">
-        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="grid md:grid-cols-2 gap-12">
+    <!-- Testimonials Section -->
+    <section class="bg-slate-950 py-24">
+        <div class="mx-auto max-w-7xl px-6 lg:px-8">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
                 
                 <!-- Testimonial 1 -->
-                <div class="bg-gray-50 rounded-2xl p-8 shadow-lg">
-                    <svg class="w-12 h-12 text-purple-600 mb-4" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M14.017 21v-7.391c0-5.704 3.731-9.57 8.983-10.609l.995 2.151c-2.432.917-3.995 3.638-3.995 5.849h4v10h-9.983zm-14.017 0v-7.391c0-5.704 3.748-9.57 9-10.609l.996 2.151c-2.433.917-3.996 3.638-3.996 5.849h3.983v10h-9.983z"/>
-                    </svg>
-                    <blockquote class="text-xl text-gray-800 mb-6">
-                        GolAnalytics ha revolucionado la forma en que entrenamos a nuestros jugadores. Los datos son precisos y nos ayudan a mejorar cada día.
-                    </blockquote>
-                    <div class="flex items-center">
-                        <div class="w-12 h-12 bg-purple-600 rounded-full flex items-center justify-center text-white font-bold mr-4">
-                            CP
-                        </div>
+                <div class="bg-slate-900 rounded-xl p-8 border border-slate-800">
+                    <div class="flex items-center gap-4 mb-6">
+                        <img src="https://storage.googleapis.com/mixo-files/public/img/avatars/male-24.png" alt="Xavier Clark" class="w-12 h-12 rounded-full">
                         <div>
-                            <div class="font-bold text-gray-900">Carlos Pérez</div>
-                            <div class="text-gray-600">Entrenador de Fútbol</div>
+                            <div class="font-semibold text-white">Xavier Clark</div>
+                            <div class="text-sm text-slate-400">Director Técnico</div>
                         </div>
                     </div>
+                    <p class="text-slate-300 font-serif italic">
+                        "GolAnalytics ha revolucionado la forma en que entrenamos a nuestros jugadores. Los datos precisos nos permiten tomar decisiones informadas sobre el desarrollo de cada atleta."
+                    </p>
                 </div>
 
                 <!-- Testimonial 2 -->
-                <div class="bg-gray-50 rounded-2xl p-8 shadow-lg">
-                    <svg class="w-12 h-12 text-purple-600 mb-4" fill="currentColor" viewBox="0 0 24 24">
-                        <path d="M14.017 21v-7.391c0-5.704 3.731-9.57 8.983-10.609l.995 2.151c-2.432.917-3.995 3.638-3.995 5.849h4v10h-9.983zm-14.017 0v-7.391c0-5.704 3.748-9.57 9-10.609l.996 2.151c-2.433.917-3.996 3.638-3.996 5.849h3.983v10h-9.983z"/>
-                    </svg>
-                    <blockquote class="text-xl text-gray-800 mb-6">
-                        La inteligencia deportiva de GolAnalytics nos proporciona insights que antes eran imposibles de obtener. Es un cambio de juego total.
-                    </blockquote>
-                    <div class="flex items-center">
-                        <div class="w-12 h-12 bg-purple-600 rounded-full flex items-center justify-center text-white font-bold mr-4">
-                            LM
-                        </div>
+                <div class="bg-slate-900 rounded-xl p-8 border border-slate-800">
+                    <div class="flex items-center gap-4 mb-6">
+                        <img src="https://storage.googleapis.com/mixo-files/public/img/avatars/male-25.png" alt="Entrenador" class="w-12 h-12 rounded-full">
                         <div>
-                            <div class="font-bold text-gray-900">Luis Martínez</div>
-                            <div class="text-gray-600">Analista Deportivo</div>
+                            <div class="font-semibold text-white">Zane Nguyen</div>
+                            <div class="text-sm text-slate-400">Academia Juvenil</div>
                         </div>
                     </div>
+                    <p class="text-slate-300 font-serif italic">
+                        "La inteligencia deportiva de GolAnalytics nos proporciona insights que antes eran imposibles de detectar. Es una herramienta imprescindible para cualquier academia seria."
+                    </p>
                 </div>
 
-            </div>
-        </div>
-    </section>
+                <!-- Testimonial 3 -->
+                <div class="bg-slate-900 rounded-xl p-8 border border-slate-800">
+                    <div class="flex items-center gap-4 mb-6">
+                        <img src="https://storage.googleapis.com/mixo-files/public/img/avatars/male-26.png" alt="Coach" class="w-12 h-12 rounded-full">
+                        <div>
+                            <div class="font-semibold text-white">Entrenador Profesional</div>
+                            <div class="text-sm text-slate-400">Club Elite</div>
+                        </div>
+                    </div>
+                    <p class="text-slate-300 font-serif italic">
+                        "Gracias a GolAnalytics, hemos podido identificar áreas específicas de mejora para cada jugador, lo que ha resultado en un rendimiento significativamente mejorado en el campo."
+                    </p>
+                </div>
 
-    <!-- User Photos Grid -->
-    <section class="py-16 bg-gray-50">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="grid grid-cols-3 md:grid-cols-6 lg:grid-cols-13 gap-4">
-                <img src="https://www.golanalytics.com/assets/ben-7656dd36.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
-                <img src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&h=150&fit=crop" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
-                <img src="https://www.golanalytics.com/assets/claire-bfdbc161.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
-                <img src="https://www.golanalytics.com/assets/iwan-70e1c572.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
-                <img src="https://www.golanalytics.com/assets/lori-07099057.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
-                <img src="https://www.golanalytics.com/assets/mali-a8248c71.webp" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
-                <img src="https://www.golanalytics.com/assets/mi-68a0f720.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
-                <img src="https://www.golanalytics.com/assets/nim-d6bbfb63.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
-                <img src="https://www.golanalytics.com/assets/san-3b86301b.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
-                <img src="https://www.golanalytics.com/assets/sanjid-2d7a907f.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
-                <img src="https://www.golanalytics.com/assets/steph-68f47994.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
-                <img src="https://www.golanalytics.com/assets/zak-be2e6aeb.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
-                <img src="https://www.golanalytics.com/assets/judith-8d0417f0.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
+                <!-- Testimonial 4 -->
+                <div class="bg-slate-900 rounded-xl p-8 border border-slate-800">
+                    <div class="flex items-center gap-4 mb-6">
+                        <img src="https://storage.googleapis.com/mixo-files/public/img/avatars/male-27.png" alt="Director" class="w-12 h-12 rounded-full">
+                        <div>
+                            <div class="font-semibold text-white">Director Deportivo</div>
+                            <div class="text-sm text-slate-400">Academia Premier</div>
+                        </div>
+                    </div>
+                    <p class="text-slate-300 font-serif italic">
+                        "Los reportes visuales son increíblemente útiles. Nuestros padres de familia ahora pueden ver el progreso real de sus hijos, lo cual ha mejorado enormemente la confianza en nuestro programa."
+                    </p>
+                </div>
+
             </div>
         </div>
     </section>
 
     <!-- CTA Section -->
-    <section class="py-20 gradient-bg">
-        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
-            <h2 class="text-4xl md:text-5xl font-bold text-white mb-6">
-                Tu decisión marcará la diferencia en el desarrollo de tus jugadores..
-            </h2>
-            <a href="contact.html" class="bg-white text-purple-600 px-8 py-4 rounded-lg font-bold text-lg hover:bg-gray-100 transition shadow-lg inline-block">
-                Únete a Nosotros
+    <section class="bg-slate-900 py-16">
+        <div class="mx-auto max-w-2xl text-center px-6">
+            <h2 class="text-3xl font-bold text-white mb-6">¿Listo para unirte a ellos?</h2>
+            <a href="contact.html" class="inline-block rounded-lg bg-indigo-600 px-8 py-4 text-lg font-semibold text-white shadow-sm hover:bg-indigo-700 transition">
+                Solicita tu demo gratis
             </a>
         </div>
     </section>
 
     <!-- Footer -->
-    <footer class="bg-gray-900 text-white py-12">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div class="grid md:grid-cols-3 gap-8">
-                <div>
-                    <h3 class="text-2xl font-bold mb-4">⚽ GolAnalytics</h3>
-                    <p class="text-gray-400">
-                        Plataforma de análisis de fútbol para coaches profesionales
-                    </p>
-                </div>
-                <div>
-                    <h4 class="font-semibold mb-4">Enlaces</h4>
-                    <ul class="space-y-2 text-gray-400">
-                        <li><a href="index.html" class="hover:text-white transition">Inicio</a></li>
-                        <li><a href="service.html" class="hover:text-white transition">Servicios</a></li>
-                        <li><a href="about-us.html" class="hover:text-white transition">Sobre Nosotros</a></li>
-                        <li><a href="testimonials.html" class="hover:text-white transition">Nuestros Clientes</a></li>
-                        <li><a href="contact.html" class="hover:text-white transition">Contacto</a></li>
-                        <li><a href="https://app.golanalytics.com" class="hover:text-white transition">Iniciar Sesión</a></li>
-                    </ul>
-                </div>
-                <div>
-                    <h4 class="font-semibold mb-4">Contacto</h4>
-                    <ul class="space-y-2 text-gray-400">
-                        <li>
-                            <a href="mailto:contacto@golanalytics.com" class="hover:text-white transition">
-                                contacto@golanalytics.com
-                            </a>
-                        </li>
-                    </ul>
-                </div>
-            </div>
-            <div class="mt-8 pt-8 border-t border-gray-800 text-center text-gray-400">
-                <p>&copy; 2025 GolAnalytics. Todos los derechos reservados.</p>
-            </div>
+    <footer class="bg-slate-900 py-8">
+        <div class="mx-auto max-w-7xl px-6 lg:px-8">
+            <p class="text-center text-slate-400 text-sm">
+                © 2024 GolAnalytics. Todos los derechos reservados.
+            </p>
         </div>
     </footer>
 
