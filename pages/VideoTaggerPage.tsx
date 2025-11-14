@@ -282,9 +282,11 @@ const VideoTaggerPage: React.FC = () => {
         const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
         const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
 
+              const selectedMatch = matches.find(m => m.id === selectedMatchId);
         const newTag: Tag = {
             id: `temp-${Date.now()}`,
             match_id: selectedMatchId,
+            team_id: selectedMatch?.team_id || '',
             player_id: selectedPlayerId,
             accion: accion,
             resultado: resultado,
@@ -349,7 +351,7 @@ const VideoTaggerPage: React.FC = () => {
         }
     };
 
-    // Handler to create a new video metadata record
+        // Handler to create a new video metadata record
     const handleCreateVideo = async () => {
         if (!newVideoFileName || !selectedMatchId) {
             alert('Ingrese nombre del archivo y seleccione un partido.');
@@ -378,7 +380,6 @@ const VideoTaggerPage: React.FC = () => {
             setIsCreatingVideo(false);
         }
     };
-
     // Handler for AI-assisted analysis
     const handleAIAssistedAnalysis = async () => {
         if (!videoRef.current || !canvasRef.current) return;
@@ -905,6 +906,13 @@ const VideoTaggerPage: React.FC = () => {
                         className="w-full mt-2 bg-indigo-600 hover:bg-indigo-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed"
                     >
                         {isCustomAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Modelo Personalizado (74% Top-3)</>}
+                    </button>
+<button 
+                        onClick={handleCustomModelAnalysis} 
+                        disabled={!activeVideoUrl && !selectedVideo || isAnalyzingAI || !selectedMatchId} 
+                        className="w-full mt-2 bg-indigo-600 hover:bg-indigo-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed"
+                    >
+                        {isAnalyzingAI ? <><Spinner /> Analizando...</> : <><SparklesIcon />Modelo Personalizado (74% Top-3)</>}
                     </button>
                 </div>
             </div>
