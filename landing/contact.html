@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contacto - GolAnalytics</title>
+    <meta name="description" content="Reserva una reunión o llamada con nuestro equipo.">
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    
+    <!-- Navigation -->
+    <nav class="bg-white shadow-sm fixed w-full top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-16">
+                <div class="flex items-center">
+                    <a href="index.html" class="text-2xl font-bold gradient-bg bg-clip-text text-transparent">⚽ GolAnalytics</a>
+                </div>
+                <div class="hidden md:flex space-x-8">
+                    <a href="index.html" class="text-gray-700 hover:text-purple-600 font-medium">Inicio</a>
+                    <a href="service.html" class="text-gray-700 hover:text-purple-600 font-medium">Servicios</a>
+                    <a href="about-us.html" class="text-gray-700 hover:text-purple-600 font-medium">Sobre Nosotros</a>
+                    <a href="testimonials.html" class="text-gray-700 hover:text-purple-600 font-medium">Nuestros Clientes</a>
+                    <a href="contact.html" class="text-purple-600 font-medium border-b-2 border-purple-600">Contacto</a>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <a href="https://app.golanalytics.com" class="bg-purple-600 hover:bg-purple-700 text-white px-6 py-2 rounded-lg font-semibold transition">
+                        Iniciar Sesión
+                    </a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="pt-24 pb-16 gradient-bg">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center">
+                <h1 class="text-5xl md:text-6xl font-bold text-white mb-6">
+                    Contáctanos
+                </h1>
+                <p class="text-xl text-white/90">
+                    Reserva una reunión o llamada con nuestro equipo.
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Contact Form Section -->
+    <section class="py-16 bg-white">
+        <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8">
+            <form class="space-y-6" action="mailto:contacto@golanalytics.com" method="POST" enctype="text/plain">
+                
+                <div class="grid md:grid-cols-2 gap-6">
+                    <div>
+                        <label for="nombre" class="block text-sm font-medium text-gray-700 mb-2">
+                            Nombre<span class="text-red-500">*</span>
+                        </label>
+                        <input type="text" id="nombre" name="nombre" required class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-600 focus:border-transparent">
+                    </div>
+                    
+                    <div>
+                        <label for="apellido" class="block text-sm font-medium text-gray-700 mb-2">
+                            Apellido<span class="text-red-500">*</span>
+                        </label>
+                        <input type="text" id="apellido" name="apellido" required class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-600 focus:border-transparent">
+                    </div>
+                </div>
+
+                <div>
+                    <label for="email" class="block text-sm font-medium text-gray-700 mb-2">
+                        Correo electrónico<span class="text-red-500">*</span>
+                    </label>
+                    <input type="email" id="email" name="email" required class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-600 focus:border-transparent">
+                </div>
+
+                <div>
+                    <label for="celular" class="block text-sm font-medium text-gray-700 mb-2">
+                        Celular
+                    </label>
+                    <input type="tel" id="celular" name="celular" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-600 focus:border-transparent">
+                </div>
+
+                <div>
+                    <label for="pregunta" class="block text-sm font-medium text-gray-700 mb-2">
+                        Tu pregunta
+                    </label>
+                    <textarea id="pregunta" name="pregunta" rows="5" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-600 focus:border-transparent"></textarea>
+                </div>
+
+                <div class="flex items-start">
+                    <input type="checkbox" id="privacy" name="privacy" required class="mt-1 mr-3 h-4 w-4 text-purple-600 focus:ring-purple-500 border-gray-300 rounded">
+                    <label for="privacy" class="text-sm text-gray-700">
+                        I agree to the privacy policy
+                    </label>
+                </div>
+
+                <div>
+                    <button type="submit" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-4 px-8 rounded-lg transition shadow-lg">
+                        Submit
+                    </button>
+                </div>
+                
+            </form>
+        </div>
+    </section>
+
+    <!-- Office Location Section -->
+    <section class="py-16 bg-gray-50">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+            <h2 class="text-3xl font-bold text-gray-900 mb-4">Ubicación de la Oficina</h2>
+            <p class="text-lg text-gray-700">Aquí se encuentran nuestras oficinas</p>
+        </div>
+    </section>
+
+    <!-- FAQ Section -->
+    <section class="py-16 bg-white">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
+            <h2 class="text-3xl font-bold text-gray-900 mb-8">¿Preguntas</h2>
+            
+            <div class="space-y-6">
+                <div class="border-b border-gray-200 pb-6">
+                    <h3 class="text-xl font-semibold text-gray-900 mb-2">¿Cómo puedo solicitar un demo gratis?</h3>
+                    <p class="text-gray-700">Puedes solicitar un demo gratis contactándonos a través del formulario en nuestra página de contacto.</p>
+                </div>
+                
+                <div class="border-b border-gray-200 pb-6">
+                    <h3 class="text-xl font-semibold text-gray-900 mb-2">¿Ofrecen soporte técnico continuo?</h3>
+                    <p class="text-gray-700">Sí, ofrecemos soporte técnico continuo para resolver cualquier duda o problema que puedas tener.</p>
+                </div>
+                
+                <div class="border-b border-gray-200 pb-6">
+                    <h3 class="text-xl font-semibold text-gray-900 mb-2">¿Cómo puedo agendar una reunión con su equipo?</h3>
+                    <p class="text-gray-700">Para agendar una reunión, simplemente utiliza el botón de contacto en nuestra página y selecciona una fecha y hora conveniente.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="bg-gray-900 text-white py-12">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="grid md:grid-cols-3 gap-8">
+                <div>
+                    <h3 class="text-2xl font-bold mb-4">⚽ GolAnalytics</h3>
+                    <p class="text-gray-400">
+                        Plataforma de análisis de fútbol para coaches profesionales
+                    </p>
+                </div>
+                <div>
+                    <h4 class="font-semibold mb-4">Enlaces</h4>
+                    <ul class="space-y-2 text-gray-400">
+                        <li><a href="index.html" class="hover:text-white transition">Inicio</a></li>
+                        <li><a href="service.html" class="hover:text-white transition">Servicios</a></li>
+                        <li><a href="about-us.html" class="hover:text-white transition">Sobre Nosotros</a></li>
+                        <li><a href="testimonials.html" class="hover:text-white transition">Nuestros Clientes</a></li>
+                        <li><a href="contact.html" class="hover:text-white transition">Contacto</a></li>
+                        <li><a href="https://app.golanalytics.com" class="hover:text-white transition">Iniciar Sesión</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="font-semibold mb-4">Contacto</h4>
+                    <ul class="space-y-2 text-gray-400">
+                        <li>
+                            <a href="mailto:contacto@golanalytics.com" class="hover:text-white transition">
+                                contacto@golanalytics.com
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+            <div class="mt-8 pt-8 border-t border-gray-800 text-center text-gray-400">
+                <p>&copy; 2025 GolAnalytics. Todos los derechos reservados.</p>
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>
