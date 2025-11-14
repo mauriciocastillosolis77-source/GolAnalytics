@@ -2,9 +2,14 @@ import { GoogleGenAI, Type } from "@google/genai";
 import type { AISuggestion, Tag } from '../types';
 import { METRICS } from '../constants';
 
-// CRITICAL FIX: In Vite, client-side environment variables must be accessed via `import.meta.env`
-// and must be prefixed with `VITE_`. Use optional chaining (?.) to prevent crashes if `env` is not defined.
-const apiKey = (import.meta as any)?.env?.VITE_API_KEY;
+// Read API key from multiple possible sources for compatibility
+// Priority: VITE_API_KEY > VITE_GEMINI_API_KEY > GEMINI_API_KEY
+// Vite automatically inlines all these during build
+const env = (import.meta as any).env;
+const apiKey = env.VITE_API_KEY 
+    || env.VITE_GEMINI_API_KEY 
+    || env.GEMINI_API_KEY 
+    || '';
 
 // Initialize AI client only if the API key exists.
 const ai = apiKey ? new GoogleGenAI({apiKey: apiKey}) : null;
