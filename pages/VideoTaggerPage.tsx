@@ -430,7 +430,11 @@ const VideoTaggerPage: React.FC = () => {
             const video = videoRef.current;
             const canvas = canvasRef.current;
             const context = canvas?.getContext('2d');
-            if (!context) return;
+            
+            if (!context) {
+                setIsCustomAnalyzing(false);
+                return;
+            }
             
             // Capture current frame
             video.pause();
@@ -442,12 +446,14 @@ const VideoTaggerPage: React.FC = () => {
             const blob: Blob | null = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.9));
             if (!blob) {
                 alert("No se pudo capturar el frame");
+                setIsCustomAnalyzing(false);
                 return;
             }
             
             const base64 = await blobToBase64(blob);
             if (!base64) {
                 alert("Error al procesar la imagen");
+                setIsCustomAnalyzing(false);
                 return;
             }
             
@@ -459,7 +465,7 @@ const VideoTaggerPage: React.FC = () => {
                 },
                 body: JSON.stringify({
                     image: base64,
-                    timestamp: video.currentTime
+                    timestamp: formatTime(video.currentTime)
                 })
             });
             
