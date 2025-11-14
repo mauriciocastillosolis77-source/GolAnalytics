@@ -13,11 +13,9 @@ export default defineConfig(({ mode }) => {
           clientPort: 443,
         },
       },
+      // Expose both VITE_* and GEMINI_* prefixed variables to client
+      envPrefix: ['VITE_', 'GEMINI_'],
       plugins: [react()],
-      define: {
-        'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-        'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
-      },
       resolve: {
         alias: {
           '@': path.resolve(__dirname, '.'),
