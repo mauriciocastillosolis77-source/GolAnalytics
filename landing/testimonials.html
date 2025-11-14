@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Nuestros Clientes - GolAnalytics</title>
+    <meta name="description" content="Lo que dicen nuestros usuarios satisfechos">
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        
+        .gradient-bg {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        }
+    </style>
+</head>
+<body class="bg-gray-50">
+    
+    <!-- Navigation -->
+    <nav class="bg-white shadow-sm fixed w-full top-0 z-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="flex justify-between items-center h-16">
+                <div class="flex items-center">
+                    <a href="index.html" class="text-2xl font-bold gradient-bg bg-clip-text text-transparent">⚽ GolAnalytics</a>
+                </div>
+                <div class="hidden md:flex space-x-8">
+                    <a href="index.html" class="text-gray-700 hover:text-purple-600 font-medium">Inicio</a>
+                    <a href="service.html" class="text-gray-700 hover:text-purple-600 font-medium">Servicios</a>
+                    <a href="about-us.html" class="text-gray-700 hover:text-purple-600 font-medium">Sobre Nosotros</a>
+                    <a href="testimonials.html" class="text-purple-600 font-medium border-b-2 border-purple-600">Nuestros Clientes</a>
+                    <a href="contact.html" class="text-gray-700 hover:text-purple-600 font-medium">Contacto</a>
+                </div>
+                <div class="flex items-center space-x-4">
+                    <a href="https://app.golanalytics.com" class="bg-purple-600 hover:bg-purple-700 text-white px-6 py-2 rounded-lg font-semibold transition">
+                        Iniciar Sesión
+                    </a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Hero Section -->
+    <section class="pt-24 pb-16 gradient-bg">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="text-center">
+                <h1 class="text-5xl md:text-6xl font-bold text-white mb-6">
+                    Nuestros Clientes
+                </h1>
+                <p class="text-xl text-white/90">
+                    Lo que dicen nuestros usuarios satisfechos
+                </p>
+            </div>
+        </div>
+    </section>
+
+    <!-- Main Testimonials -->
+    <section class="py-16 bg-white">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="grid md:grid-cols-2 gap-12">
+                
+                <!-- Testimonial 1 -->
+                <div class="bg-gray-50 rounded-2xl p-8 shadow-lg">
+                    <svg class="w-12 h-12 text-purple-600 mb-4" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M14.017 21v-7.391c0-5.704 3.731-9.57 8.983-10.609l.995 2.151c-2.432.917-3.995 3.638-3.995 5.849h4v10h-9.983zm-14.017 0v-7.391c0-5.704 3.748-9.57 9-10.609l.996 2.151c-2.433.917-3.996 3.638-3.996 5.849h3.983v10h-9.983z"/>
+                    </svg>
+                    <blockquote class="text-xl text-gray-800 mb-6">
+                        GolAnalytics ha revolucionado la forma en que entrenamos a nuestros jugadores. Los datos son precisos y nos ayudan a mejorar cada día.
+                    </blockquote>
+                    <div class="flex items-center">
+                        <div class="w-12 h-12 bg-purple-600 rounded-full flex items-center justify-center text-white font-bold mr-4">
+                            CP
+                        </div>
+                        <div>
+                            <div class="font-bold text-gray-900">Carlos Pérez</div>
+                            <div class="text-gray-600">Entrenador de Fútbol</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Testimonial 2 -->
+                <div class="bg-gray-50 rounded-2xl p-8 shadow-lg">
+                    <svg class="w-12 h-12 text-purple-600 mb-4" fill="currentColor" viewBox="0 0 24 24">
+                        <path d="M14.017 21v-7.391c0-5.704 3.731-9.57 8.983-10.609l.995 2.151c-2.432.917-3.995 3.638-3.995 5.849h4v10h-9.983zm-14.017 0v-7.391c0-5.704 3.748-9.57 9-10.609l.996 2.151c-2.433.917-3.996 3.638-3.996 5.849h3.983v10h-9.983z"/>
+                    </svg>
+                    <blockquote class="text-xl text-gray-800 mb-6">
+                        La inteligencia deportiva de GolAnalytics nos proporciona insights que antes eran imposibles de obtener. Es un cambio de juego total.
+                    </blockquote>
+                    <div class="flex items-center">
+                        <div class="w-12 h-12 bg-purple-600 rounded-full flex items-center justify-center text-white font-bold mr-4">
+                            LM
+                        </div>
+                        <div>
+                            <div class="font-bold text-gray-900">Luis Martínez</div>
+                            <div class="text-gray-600">Analista Deportivo</div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </section>
+
+    <!-- User Photos Grid -->
+    <section class="py-16 bg-gray-50">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="grid grid-cols-3 md:grid-cols-6 lg:grid-cols-13 gap-4">
+                <img src="https://www.golanalytics.com/assets/ben-7656dd36.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
+                <img src="https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150&h=150&fit=crop" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
+                <img src="https://www.golanalytics.com/assets/claire-bfdbc161.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
+                <img src="https://www.golanalytics.com/assets/iwan-70e1c572.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
+                <img src="https://www.golanalytics.com/assets/lori-07099057.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
+                <img src="https://www.golanalytics.com/assets/mali-a8248c71.webp" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
+                <img src="https://www.golanalytics.com/assets/mi-68a0f720.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
+                <img src="https://www.golanalytics.com/assets/nim-d6bbfb63.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
+                <img src="https://www.golanalytics.com/assets/san-3b86301b.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
+                <img src="https://www.golanalytics.com/assets/sanjid-2d7a907f.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
+                <img src="https://www.golanalytics.com/assets/steph-68f47994.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
+                <img src="https://www.golanalytics.com/assets/zak-be2e6aeb.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
+                <img src="https://www.golanalytics.com/assets/judith-8d0417f0.jpeg" alt="User" class="rounded-full w-20 h-20 object-cover shadow-lg">
+            </div>
+        </div>
+    </section>
+
+    <!-- CTA Section -->
+    <section class="py-20 gradient-bg">
+        <div class="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 text-center">
+            <h2 class="text-4xl md:text-5xl font-bold text-white mb-6">
+                Tu decisión marcará la diferencia en el desarrollo de tus jugadores..
+            </h2>
+            <a href="contact.html" class="bg-white text-purple-600 px-8 py-4 rounded-lg font-bold text-lg hover:bg-gray-100 transition shadow-lg inline-block">
+                Únete a Nosotros
+            </a>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="bg-gray-900 text-white py-12">
+        <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div class="grid md:grid-cols-3 gap-8">
+                <div>
+                    <h3 class="text-2xl font-bold mb-4">⚽ GolAnalytics</h3>
+                    <p class="text-gray-400">
+                        Plataforma de análisis de fútbol para coaches profesionales
+                    </p>
+                </div>
+                <div>
+                    <h4 class="font-semibold mb-4">Enlaces</h4>
+                    <ul class="space-y-2 text-gray-400">
+                        <li><a href="index.html" class="hover:text-white transition">Inicio</a></li>
+                        <li><a href="service.html" class="hover:text-white transition">Servicios</a></li>
+                        <li><a href="about-us.html" class="hover:text-white transition">Sobre Nosotros</a></li>
+                        <li><a href="testimonials.html" class="hover:text-white transition">Nuestros Clientes</a></li>
+                        <li><a href="contact.html" class="hover:text-white transition">Contacto</a></li>
+                        <li><a href="https://app.golanalytics.com" class="hover:text-white transition">Iniciar Sesión</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h4 class="font-semibold mb-4">Contacto</h4>
+                    <ul class="space-y-2 text-gray-400">
+                        <li>
+                            <a href="mailto:contacto@golanalytics.com" class="hover:text-white transition">
+                                contacto@golanalytics.com
+                            </a>
+                        </li>
+                    </ul>
+                </div>
+            </div>
+            <div class="mt-8 pt-8 border-t border-gray-800 text-center text-gray-400">
+                <p>&copy; 2025 GolAnalytics. Todos los derechos reservados.</p>
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>
