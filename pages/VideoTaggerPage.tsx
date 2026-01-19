@@ -307,6 +307,7 @@ const VideoTaggerPage: React.FC = () => {
         const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
         const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
 
+        const selectedMatchForTag = matches.find(m => m.id === selectedMatchId);
         const newTag: Tag = {
             id: `temp-${Date.now()}`,
             match_id: selectedMatchId,
@@ -315,7 +316,8 @@ const VideoTaggerPage: React.FC = () => {
             resultado: resultado,
             timestamp: relativeTime,
             video_file: videoFileName ?? undefined,
-            timestamp_absolute: timestamp_absolute as any
+            timestamp_absolute: timestamp_absolute as any,
+            team_id: selectedMatchForTag?.team_id || null
         };
         setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
     };
@@ -356,6 +358,7 @@ const VideoTaggerPage: React.FC = () => {
                 // normalize undefined timestamp_absolute to null if needed
                 return {
                     ...tag,
+                    video_file: tag.video_file || null,
                     timestamp_absolute: (typeof tag.timestamp_absolute === 'number') ? tag.timestamp_absolute : null
                 };
             });
