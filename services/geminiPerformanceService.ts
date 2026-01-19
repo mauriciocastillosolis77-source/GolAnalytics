@@ -114,39 +114,7 @@ export const analyzePlayerPerformance = async (
             parts: [{ text: prompt }]
         }],
         generationConfig: {
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: "OBJECT",
-                properties: {
-                    tendencia: { 
-                        type: "STRING",
-                        enum: ["mejorando", "estable", "bajando"]
-                    },
-                    tendenciaDescripcion: { type: "STRING" },
-                    fortalezas: { 
-                        type: "ARRAY",
-                        items: { type: "STRING" }
-                    },
-                    areasDeMejora: { 
-                        type: "ARRAY",
-                        items: { type: "STRING" }
-                    },
-                    comparativoProfesional: {
-                        type: "OBJECT",
-                        properties: {
-                            posicion: { type: "STRING" },
-                            metricasReferencia: {
-                                type: "ARRAY",
-                                items: { type: "STRING" }
-                            },
-                            analisis: { type: "STRING" }
-                        },
-                        required: ["posicion", "metricasReferencia", "analisis"]
-                    },
-                    resumenGeneral: { type: "STRING" }
-                },
-                required: ["tendencia", "tendenciaDescripcion", "fortalezas", "areasDeMejora", "comparativoProfesional", "resumenGeneral"]
-            }
+            responseMimeType: "application/json"
         }
     };
 
