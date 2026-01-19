@@ -155,9 +155,9 @@ const VideoTaggerPage: React.FC = () => {
 
     // Filtrar jugadores por el equipo del partido seleccionado
     const selectedMatch = matches.find(m => m.id === selectedMatchId);
-    const filteredPlayers = selectedMatch?.team_id 
+    const filteredPlayers = (selectedMatch?.team_id 
         ? players.filter(p => p.team_id === selectedMatch.team_id)
-        : players;
+        : players).sort((a, b) => a.numero - b.numero);
     // Handlers for creating a match
     const handleCreateMatch = async () => {
         setIsSavingMatch(true);
