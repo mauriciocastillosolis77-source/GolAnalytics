@@ -152,6 +152,12 @@ const VideoTaggerPage: React.FC = () => {
         setSelectedVideo(v);
     }, [selectedVideoId, videos]);
 
+
+    // Filtrar jugadores por el equipo del partido seleccionado
+    const selectedMatch = matches.find(m => m.id === selectedMatchId);
+    const filteredPlayers = selectedMatch?.team_id 
+        ? players.filter(p => p.team_id === selectedMatch.team_id)
+        : players;
     // Handlers for creating a match
     const handleCreateMatch = async () => {
         setIsSavingMatch(true);
@@ -933,8 +939,8 @@ const VideoTaggerPage: React.FC = () => {
                 <div className="bg-gray-800 rounded-lg p-4">
                     <h3 className="text-lg font-semibold mb-2 text-white">3. Etiquetar Jugada</h3>
                     <label className="block text-sm text-gray-400 mb-1">Jugador</label>
-                    <select value={selectedPlayerId} onChange={e => setSelectedPlayerId(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-2" disabled={players.length === 0}>
-                        {players.length > 0 ? players.map(p => (
+                    <select value={selectedPlayerId} onChange={e => setSelectedPlayerId(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-2" disabled={filteredPlayers.length === 0}>
+                        {filteredPlayers.length > 0 ? filteredPlayers.map(p => (
                             <option key={p.id} value={p.id}>{p.numero} - {p.nombre}</option>
                         )) : <option>Cargue archivo de jugadores</option>}
                     </select>
@@ -1196,4 +1202,3 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
-
