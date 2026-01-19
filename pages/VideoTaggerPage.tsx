@@ -218,9 +218,20 @@ const VideoTaggerPage: React.FC = () => {
                     posicion: String(row[headers.indexOf('posicion')] || '').trim()
                 }));
 
-                const newPlayers = parsedPlayers.filter(p => p.nombre && !players.some(existing => existing.nombre === p.nombre && existing.numero === p.numero));
-                if (newPlayers.length > 0) {
-                    const { data: inserted, error } = await supabase.from('players').insert(newPlayers).select();
+                // Obtener team_id del partido seleccionado
+                const selectedMatch = matches.find(m => m.id === selectedMatchId);
+                if (!selectedMatch?.team_id) {
+                    throw new Error("Primero selecciona un partido para asociar los jugadores al equipo.");
+                }
+                const teamId = selectedMatch.team_id;
+
+                const newPlayers = parsedPlayers.filter(p => p.nombre && !players.some(existing => existing.nombre === p.nombre && existing.numero === p.numero && existing.team_id === teamId));
+                
+                // Agregar team_id a cada jugador
+                const playersWithTeam = newPlayers.map(p => ({ ...p, team_id: teamId }));
+                
+                if (playersWithTeam.length > 0) {
+                    const { data: inserted, error } = await supabase.from('players').insert(playersWithTeam).select();
                     if (error) throw error;
                     setPlayerUploadStatus('success');
                     setPlayerUploadMessage(`✅ ${inserted?.length || 0} nuevos jugadores cargados. ${parsedPlayers.length - newPlayers.length} ya existían.`);
@@ -1185,3 +1196,4 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
