@@ -1,14 +1,19 @@
-import { GoogleGenAI, Type } from "@google/genai";
 import type { AISuggestion, Tag } from '../types';
 import { METRICS } from '../constants';
 
-const env = (import.meta as any).env;
-const apiKey = env.VITE_API_KEY 
-    || env.VITE_GEMINI_API_KEY 
-    || env.GEMINI_API_KEY 
-    || '';
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
-const ai = apiKey ? new GoogleGenAI({apiKey: apiKey}) : null;
+function getApiKey(): string {
+    if (typeof window === 'undefined') {
+        throw new Error('Gemini client can only be used in browser');
+    }
+    const env = (import.meta as any).env;
+    const apiKey = env.VITE_API_KEY || env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY || '';
+    if (!apiKey) {
+        throw new Error('La clave de API de Gemini no está configurada. Verifica VITE_API_KEY.');
+    }
+    return apiKey;
+}
 
 const getSegmentPrompt = (startTime: number, endTime: number, existingTags: Tag[] = []) => `Eres un analista experto de fútbol. Analiza la siguiente secuencia de frames de un partido de fútbol.
 
@@ -53,16 +58,10 @@ export const analyzeVideoSegment = async (
     existingTags: Tag[],
     onProgress?: (progress: SegmentAnalysisProgress) => void
 ): Promise<AISuggestion[]> => {
-    if (!ai) {
-        const message = "La clave de API de Gemini no está configurada. Verifica tu variable VITE_API_KEY.";
-        console.error(message);
-        alert(message);
-        return [];
-    }
+    const apiKey = getApiKey();
     
     if (base64Frames.length === 0) {
-        alert("No se pudieron extraer frames del segmento seleccionado.");
-        return [];
+        throw new Error("No se pudieron extraer frames del segmento seleccionado.");
     }
     
     onProgress?.({
@@ -72,52 +71,63 @@ export const analyzeVideoSegment = async (
         message: `Analizando ${base64Frames.length} frames con Gemini...`
     });
     
-    try {
-        const imageParts = base64Frames.map(frame => ({
-            inlineData: {
-                mimeType: frame.mimeType,
-                data: frame.data,
-            },
-        }));
-        
-        const prompt = getSegmentPrompt(startTime, endTime, existingTags);
+    const imageParts = base64Frames.map(frame => ({
+        inline_data: {
+            mime_type: frame.mimeType,
+            data: frame.data,
+        },
+    }));
+    
+    const prompt = getSegmentPrompt(startTime, endTime, existingTags);
 
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: { parts: [{ text: prompt }, ...imageParts] },
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                    type: Type.ARRAY,
-                    items: {
-                        type: Type.OBJECT,
-                        properties: {
-                            timestamp: { type: Type.STRING },
-                            action: { type: Type.STRING },
-                            description: { type: Type.STRING },
-                        },
-                        required: ["timestamp", "action", "description"]
-                    }
+    const requestBody = {
+        contents: [{
+            parts: [
+                { text: prompt },
+                ...imageParts
+            ]
+        }],
+        generationConfig: {
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: "ARRAY",
+                items: {
+                    type: "OBJECT",
+                    properties: {
+                        timestamp: { type: "STRING" },
+                        action: { type: "STRING" },
+                        description: { type: "STRING" },
+                    },
+                    required: ["timestamp", "action", "description"]
                 }
             }
-        });
+        }
+    };
 
-        const jsonString = response.text.trim();
-        const suggestions: AISuggestion[] = JSON.parse(jsonString);
-        
-        onProgress?.({
-            phase: 'complete',
-            framesExtracted: base64Frames.length,
-            totalFrames: base64Frames.length,
-            message: `Análisis completado. ${suggestions.length} jugadas encontradas.`
-        });
-        
-        return suggestions;
-    } catch (error) {
-        console.error('Error analyzing segment with Gemini:', error);
-        alert(`Error durante el análisis: ${error instanceof Error ? error.message : String(error)}`);
-        return [];
+    const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Gemini API error:', errorText);
+        throw new Error(`Error de Gemini API: ${response.status}`);
     }
+
+    const data = await response.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+    const suggestions: AISuggestion[] = JSON.parse(text.trim());
+    
+    onProgress?.({
+        phase: 'complete',
+        framesExtracted: base64Frames.length,
+        totalFrames: base64Frames.length,
+        message: `Análisis completado. ${suggestions.length} jugadas encontradas.`
+    });
+    
+    return suggestions;
 };
 
 export const extractFramesFromSegment = async (
