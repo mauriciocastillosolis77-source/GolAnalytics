@@ -1034,7 +1034,7 @@ const RendimientoPage: React.FC = () => {
                     {/* AI Performance Analysis Section */}
                     <div className="bg-gray-800 rounded-lg p-6">
                         <div className="flex justify-between items-center mb-4">
-                            <h3 className="text-xl font-semibold text-white">Analisis de Rendimiento por IA</h3>
+                            <h3 className="text-xl font-semibold text-white">Analisis especializado GolAnalytics</h3>
                             <button
                                 onClick={runAIAnalysis}
                                 disabled={isAnalyzing || playerTags.length === 0}
@@ -1054,7 +1054,7 @@ const RendimientoPage: React.FC = () => {
                                         <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                                             <path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" />
                                         </svg>
-                                        <span>Generar Analisis IA</span>
+                                        <span>Generar Analisis</span>
                                     </>
                                 )}
                             </button>
@@ -1159,6 +1159,3 @@ const RendimientoPage: React.FC = () => {
 };
 
 export default RendimientoPage;
-
-
-
