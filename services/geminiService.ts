@@ -1,18 +1,19 @@
-import { GoogleGenAI, Type } from "@google/genai";
 import type { AISuggestion, Tag } from '../types';
 import { METRICS } from '../constants';
 
-// Read API key from multiple possible sources for compatibility
-// Priority: VITE_API_KEY > VITE_GEMINI_API_KEY > GEMINI_API_KEY
-// Vite automatically inlines all these during build
-const env = (import.meta as any).env;
-const apiKey = env.VITE_API_KEY 
-    || env.VITE_GEMINI_API_KEY 
-    || env.GEMINI_API_KEY 
-    || '';
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
-// Initialize AI client only if the API key exists.
-const ai = apiKey ? new GoogleGenAI({apiKey: apiKey}) : null;
+function getApiKey(): string {
+    if (typeof window === 'undefined') {
+        throw new Error('Gemini client can only be used in browser');
+    }
+    const env = (import.meta as any).env;
+    const apiKey = env.VITE_API_KEY || env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY || '';
+    if (!apiKey) {
+        throw new Error('Gemini API key not configured. Check VITE_API_KEY.');
+    }
+    return apiKey;
+}
 
 const getPrompt = (existingTags: Tag[] = []) => `You are an expert soccer analyst. Analyze the following sequence of frames from a soccer match.
 The frames represent the last 15-20 seconds of play. Your task is to identify key plays and tag them according to a predefined list of metrics.
@@ -35,49 +36,55 @@ export const analyzeVideoFrames = async (
     base64Frames: { data: string; mimeType: string }[],
     existingTags: Tag[]
 ): Promise<AISuggestion[]> => {
-    if (!ai) {
-        const message = "Gemini API key is not configured. Please check your VITE_API_KEY environment variable.";
-        console.error(message);
-        alert(message);
-        return [];
-    }
+    const apiKey = getApiKey();
     
-    try {
-        const imageParts = base64Frames.map(frame => ({
-            inlineData: {
-                mimeType: frame.mimeType,
-                data: frame.data,
-            },
-        }));
-        
-        const prompt = getPrompt(existingTags);
+    const imageParts = base64Frames.map(frame => ({
+        inline_data: {
+            mime_type: frame.mimeType,
+            data: frame.data,
+        },
+    }));
+    
+    const prompt = getPrompt(existingTags);
 
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: { parts: [{ text: prompt }, ...imageParts] },
-            config: {
-                responseMimeType: "application/json",
-                responseSchema: {
-                    type: Type.ARRAY,
-                    items: {
-                        type: Type.OBJECT,
-                        properties: {
-                            timestamp: { type: Type.STRING },
-                            action: { type: Type.STRING },
-                            description: { type: Type.STRING },
-                        },
-                        required: ["timestamp", "action", "description"]
-                    }
+    const requestBody = {
+        contents: [{
+            parts: [
+                { text: prompt },
+                ...imageParts
+            ]
+        }],
+        generationConfig: {
+            responseMimeType: "application/json",
+            responseSchema: {
+                type: "ARRAY",
+                items: {
+                    type: "OBJECT",
+                    properties: {
+                        timestamp: { type: "STRING" },
+                        action: { type: "STRING" },
+                        description: { type: "STRING" },
+                    },
+                    required: ["timestamp", "action", "description"]
                 }
             }
-        });
+        }
+    };
 
-        const jsonString = response.text.trim();
-        const suggestions: AISuggestion[] = JSON.parse(jsonString);
-        return suggestions;
-    } catch (error) {
-        console.error('Error analyzing video with Gemini:', error);
-        alert(`An error occurred during AI analysis: ${error instanceof Error ? error.message : String(error)}`);
-        return [];
+    const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Gemini API error:', errorText);
+        throw new Error(`Gemini API error: ${response.status}`);
     }
+
+    const data = await response.json();
+    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+    const suggestions: AISuggestion[] = JSON.parse(text.trim());
+    return suggestions;
 };

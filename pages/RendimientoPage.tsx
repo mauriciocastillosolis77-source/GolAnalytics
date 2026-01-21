@@ -5,6 +5,7 @@ import { Spinner } from '../components/ui/Spinner';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, BarChart, Bar } from 'recharts';
 import { useAuth } from '../contexts/AuthContext';
 import { ACTION_GROUPS } from '../constants/actionGroups';
+import { analyzePlayerPerformance, type PerformanceAnalysis } from '../services/geminiPerformanceService';
 
 const RendimientoPage: React.FC = () => {
     const { profile } = useAuth();
@@ -16,10 +17,14 @@ const RendimientoPage: React.FC = () => {
     const [filters, setFilters] = useState<{
         torneo?: string;
         categoria?: string;
+        equipo?: string;
         jornadaMin?: number;
         jornadaMax?: number;
     }>({});
     const [showFilters, setShowFilters] = useState(false);
+    const [aiAnalysis, setAiAnalysis] = useState<PerformanceAnalysis | null>(null);
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const [analysisError, setAnalysisError] = useState<string | null>(null);
 
     // Fetch data on mount
     useEffect(() => {
@@ -106,6 +111,11 @@ const RendimientoPage: React.FC = () => {
         return unique;
     }, [matches]);
 
+    const availableEquipos = useMemo(() => {
+        const unique = Array.from(new Set(matches.map(m => m.nombre_equipo))).filter(Boolean).sort();
+        return unique;
+    }, [matches]);
+
     // Get global jornada bounds
     const jornadaBounds = useMemo(() => {
         if (matches.length === 0) return { min: 1, max: 1 };
@@ -121,6 +131,7 @@ const RendimientoPage: React.FC = () => {
         return matches.filter(match => {
             if (filters.torneo && match.torneo !== filters.torneo) return false;
             if (filters.categoria && match.categoria !== filters.categoria) return false;
+            if (filters.equipo && match.nombre_equipo !== filters.equipo) return false;
             if (filters.jornadaMin !== undefined && match.jornada < filters.jornadaMin) return false;
             if (filters.jornadaMax !== undefined && match.jornada > filters.jornadaMax) return false;
             return true;
@@ -188,7 +199,7 @@ const RendimientoPage: React.FC = () => {
         let mejorJornada: { jornada: number; efectividad: number } | null = null;
         let peorJornada: { jornada: number; efectividad: number } | null = null;
 
-        Object.entries(byJornada).forEach(([jornada, stats]) => {
+        (Object.entries(byJornada) as [string, { logradas: number; total: number }][]).forEach(([jornada, stats]) => {
             const efectividad = Math.round((stats.logradas / stats.total) * 100);
             if (!mejorJornada || efectividad > mejorJornada.efectividad) {
                 mejorJornada = { jornada: parseInt(jornada), efectividad };
@@ -228,7 +239,7 @@ const RendimientoPage: React.FC = () => {
             return acc;
         }, {} as Record<number, { jornada: number; logradas: number; falladas: number; total: number }>);
 
-        return Object.values(byJornada)
+        return (Object.values(byJornada) as { jornada: number; logradas: number; falladas: number; total: number }[])
             .map(stats => ({
                 jornada: `J${stats.jornada}`,
                 efectividad: Math.round((stats.logradas / stats.total) * 100),
@@ -258,7 +269,7 @@ const RendimientoPage: React.FC = () => {
             return acc;
         }, {} as Record<number, { jornada: number; logradas: number; falladas: number }>);
 
-        return Object.values(byJornada)
+        return (Object.values(byJornada) as { jornada: number; logradas: number; falladas: number }[])
             .map(stats => ({
                 jornada: `J${stats.jornada}`,
                 logradas: stats.logradas,
@@ -289,7 +300,7 @@ const RendimientoPage: React.FC = () => {
             return acc;
         }, {} as Record<number, { jornada: number; logrados: number; fallados: number }>);
 
-        return Object.values(byJornada)
+        return (Object.values(byJornada) as { jornada: number; logrados: number; fallados: number }[])
             .map(stats => ({
                 jornada: `J${stats.jornada}`,
                 logrados: stats.logrados,
@@ -316,7 +327,7 @@ const RendimientoPage: React.FC = () => {
             return acc;
         }, {} as Record<number, { jornada: number; total: number }>);
 
-        return Object.values(byJornada)
+        return (Object.values(byJornada) as { jornada: number; total: number }[])
             .map(stats => ({
                 jornada: `J${stats.jornada}`,
                 total: stats.total
@@ -416,7 +427,7 @@ const RendimientoPage: React.FC = () => {
             return acc;
         }, {} as Record<number, { jornada: number; rival: string; logradas: number; falladas: number; total: number }>);
 
-        return Object.values(byJornada)
+        return (Object.values(byJornada) as { jornada: number; rival: string; logradas: number; falladas: number; total: number }[])
             .map(stats => ({
                 ...stats,
                 efectividad: Math.round((stats.logradas / stats.total) * 100)
@@ -424,7 +435,78 @@ const RendimientoPage: React.FC = () => {
             .sort((a, b) => a.jornada - b.jornada);
     }, [playerTags, matchLookup]);
 
+    // Filter players by selected equipo filter
+    const filteredPlayers = useMemo(() => {
+        if (!filters.equipo) return players;
+        // Find matches for this equipo to get team_id
+        const equipoMatches = matches.filter(m => m.nombre_equipo === filters.equipo);
+        if (equipoMatches.length === 0) return players;
+        const teamIds = new Set(equipoMatches.map(m => m.team_id));
+        return players.filter(p => teamIds.has(p.team_id));
+    }, [players, matches, filters.equipo]);
+
+    // Reset selected player when equipo filter changes
+    useEffect(() => {
+        if (filteredPlayers.length > 0 && !filteredPlayers.find(p => p.id === selectedPlayerId)) {
+            setSelectedPlayerId(filteredPlayers[0].id);
+        }
+    }, [filteredPlayers, selectedPlayerId]);
+
     const selectedPlayer = players.find(p => p.id === selectedPlayerId);
+
+    // Calculate action stats for AI analysis
+    const actionStats = useMemo(() => {
+        const stats = new Map<string, { total: number; logradas: number }>();
+        playerTags.forEach(tag => {
+            const current = stats.get(tag.accion) || { total: 0, logradas: 0 };
+            current.total++;
+            if (tag.resultado === 'logrado') current.logradas++;
+            stats.set(tag.accion, current);
+        });
+        return Array.from(stats.entries()).map(([accion, data]) => ({
+            accion,
+            total: data.total,
+            logradas: data.logradas,
+            efectividad: data.total > 0 ? Math.round((data.logradas / data.total) * 100) : 0
+        })).sort((a, b) => b.total - a.total);
+    }, [playerTags]);
+
+    // Jornada stats for AI analysis
+    const jornadaStatsForAI = useMemo(() => {
+        return tablaRendimiento.map(row => ({
+            jornada: row.jornada,
+            total: row.total,
+            logradas: row.logradas,
+            falladas: row.falladas,
+            efectividad: row.efectividad,
+            rival: row.rival
+        }));
+    }, [tablaRendimiento]);
+
+    // Function to run AI analysis
+    const runAIAnalysis = async () => {
+        if (!selectedPlayer || playerTags.length === 0) return;
+        
+        setIsAnalyzing(true);
+        setAnalysisError(null);
+        setAiAnalysis(null);
+        
+        try {
+            const analysis = await analyzePlayerPerformance(
+                selectedPlayer,
+                jornadaStatsForAI,
+                actionStats,
+                kpis.totalAcciones,
+                kpis.efectividadGlobal
+            );
+            setAiAnalysis(analysis);
+        } catch (err) {
+            console.error('Error analyzing performance:', err);
+            setAnalysisError('Error al generar el analisis. Intenta de nuevo.');
+        } finally {
+            setIsAnalyzing(false);
+        }
+    };
 
     // Excel Export Function
     const exportToExcel = useCallback(() => {
@@ -488,7 +570,7 @@ const RendimientoPage: React.FC = () => {
                     onChange={(e) => setSelectedPlayerId(e.target.value)}
                     className="w-full md:w-96 bg-gray-700 text-white p-3 rounded-lg border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500"
                 >
-                    {players.map(player => (
+                    {filteredPlayers.map(player => (
                         <option key={player.id} value={player.id}>
                             {player.nombre} - #{player.numero} - {player.posicion}
                         </option>
@@ -535,6 +617,21 @@ const RendimientoPage: React.FC = () => {
                                     <option value="">Todas</option>
                                     {availableCategorias.map(categoria => (
                                         <option key={categoria} value={categoria}>{categoria}</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            {/* Equipo Filter */}
+                            <div>
+                                <label className="block text-sm font-medium mb-2 text-gray-300">Equipo</label>
+                                <select
+                                    value={filters.equipo || ''}
+                                    onChange={(e) => setFilters({ ...filters, equipo: e.target.value || undefined })}
+                                    className="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                                >
+                                    <option value="">Todos</option>
+                                    {availableEquipos.map(equipo => (
+                                        <option key={equipo} value={equipo}>{equipo}</option>
                                     ))}
                                 </select>
                             </div>
@@ -595,7 +692,7 @@ const RendimientoPage: React.FC = () => {
             {playerTags.length === 0 ? (
                 <div className="bg-gray-800 rounded-lg p-8 text-center">
                     <p className="text-gray-400 text-lg">
-                        {filteredMatches.length === 0 && (filters.torneo || filters.categoria || filters.jornadaMin || filters.jornadaMax) 
+                        {filteredMatches.length === 0 && (filters.torneo || filters.categoria || filters.equipo || filters.jornadaMin || filters.jornadaMax) 
                             ? 'Sin datos con los filtros actuales. Intenta limpiar los filtros.' 
                             : 'Este jugador no tiene datos registrados aún.'}
                     </p>
@@ -932,6 +1029,128 @@ const RendimientoPage: React.FC = () => {
                                 </tbody>
                             </table>
                         </div>
+                    </div>
+
+                    {/* AI Performance Analysis Section */}
+                    <div className="bg-gray-800 rounded-lg p-6">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-xl font-semibold text-white">Analisis de Rendimiento por IA</h3>
+                            <button
+                                onClick={runAIAnalysis}
+                                disabled={isAnalyzing || playerTags.length === 0}
+                                className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+                                    isAnalyzing || playerTags.length === 0
+                                        ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                                        : 'bg-gradient-to-r from-purple-600 to-cyan-600 hover:from-purple-700 hover:to-cyan-700 text-white'
+                                }`}
+                            >
+                                {isAnalyzing ? (
+                                    <>
+                                        <Spinner size="h-4 w-4" />
+                                        <span>Analizando...</span>
+                                    </>
+                                ) : (
+                                    <>
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                            <path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" />
+                                        </svg>
+                                        <span>Generar Analisis IA</span>
+                                    </>
+                                )}
+                            </button>
+                        </div>
+
+                        {analysisError && (
+                            <div className="bg-red-900/50 border border-red-500 rounded-lg p-4 mb-4">
+                                <p className="text-red-300">{analysisError}</p>
+                            </div>
+                        )}
+
+                        {playerTags.length === 0 && !aiAnalysis && (
+                            <div className="text-center py-8 text-gray-400">
+                                <p>Selecciona un jugador con datos de rendimiento para generar un analisis.</p>
+                            </div>
+                        )}
+
+                        {aiAnalysis && (
+                            <div className="space-y-6">
+                                {/* Tendencia */}
+                                <div className={`rounded-lg p-4 ${
+                                    aiAnalysis.tendencia === 'mejorando' ? 'bg-green-900/30 border border-green-500' :
+                                    aiAnalysis.tendencia === 'bajando' ? 'bg-red-900/30 border border-red-500' :
+                                    'bg-yellow-900/30 border border-yellow-500'
+                                }`}>
+                                    <div className="flex items-center gap-3 mb-2">
+                                        <span className="text-2xl">
+                                            {aiAnalysis.tendencia === 'mejorando' ? '📈' : 
+                                             aiAnalysis.tendencia === 'bajando' ? '📉' : '📊'}
+                                        </span>
+                                        <h4 className="text-lg font-semibold text-white">
+                                            Tendencia: {aiAnalysis.tendencia === 'mejorando' ? 'Mejorando' : 
+                                                        aiAnalysis.tendencia === 'bajando' ? 'Bajando' : 'Estable'}
+                                        </h4>
+                                    </div>
+                                    <p className="text-gray-300">{aiAnalysis.tendenciaDescripcion}</p>
+                                </div>
+
+                                {/* Fortalezas y Areas de Mejora */}
+                                <div className="grid md:grid-cols-2 gap-4">
+                                    <div className="bg-green-900/20 rounded-lg p-4 border border-green-700">
+                                        <h4 className="text-lg font-semibold text-green-400 mb-3 flex items-center gap-2">
+                                            <span>💪</span> Fortalezas
+                                        </h4>
+                                        <ul className="space-y-2">
+                                            {aiAnalysis.fortalezas.map((f, i) => (
+                                                <li key={i} className="text-gray-300 flex items-start gap-2">
+                                                    <span className="text-green-400 mt-1">✓</span>
+                                                    <span>{f}</span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+
+                                    <div className="bg-orange-900/20 rounded-lg p-4 border border-orange-700">
+                                        <h4 className="text-lg font-semibold text-orange-400 mb-3 flex items-center gap-2">
+                                            <span>🎯</span> Areas de Mejora
+                                        </h4>
+                                        <ul className="space-y-2">
+                                            {aiAnalysis.areasDeMejora.map((a, i) => (
+                                                <li key={i} className="text-gray-300 flex items-start gap-2">
+                                                    <span className="text-orange-400 mt-1">→</span>
+                                                    <span>{a}</span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                </div>
+
+                                {/* Comparativo Profesional */}
+                                <div className="bg-cyan-900/20 rounded-lg p-4 border border-cyan-700">
+                                    <h4 className="text-lg font-semibold text-cyan-400 mb-3 flex items-center gap-2">
+                                        <span>⚽</span> Comparativo con Profesional ({aiAnalysis.comparativoProfesional.posicion})
+                                    </h4>
+                                    <div className="mb-3">
+                                        <p className="text-sm text-gray-400 mb-2">Metricas clave para esta posicion:</p>
+                                        <div className="flex flex-wrap gap-2">
+                                            {aiAnalysis.comparativoProfesional.metricasReferencia.map((m, i) => (
+                                                <span key={i} className="bg-cyan-800/50 text-cyan-300 px-3 py-1 rounded-full text-sm">
+                                                    {m}
+                                                </span>
+                                            ))}
+                                        </div>
+                                    </div>
+                                    <p className="text-gray-300">{aiAnalysis.comparativoProfesional.analisis}</p>
+                                </div>
+
+                                {/* Resumen General */}
+                                <div className="bg-gray-700/50 rounded-lg p-4 border border-gray-600">
+                                    <h4 className="text-lg font-semibold text-white mb-3 flex items-center gap-2">
+                                        <span>📋</span> Resumen y Recomendaciones
+                                    </h4>
+                                    <p className="text-gray-300">{aiAnalysis.resumenGeneral}</p>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </>
             )}

@@ -5,6 +5,7 @@ import { METRICS } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
 import { EditIcon, TrashIcon, SparklesIcon, CloudUploadIcon, CloudCheckIcon } from '../components/ui/Icons';
 import { analyzeVideoFrames } from '../services/geminiService';
+import { analyzeVideoSegment, extractFramesFromSegment, type SegmentAnalysisProgress } from '../services/geminiSegmentService';
 import { blobToBase64 } from '../utils/blob';
 import AISuggestionsModal from '../components/ai/AISuggestionsModal';
 import { fetchVideosForMatch, createVideoForMatch, Video as VideoMeta } from '../services/videosService';
@@ -54,7 +55,8 @@ const VideoTaggerPage: React.FC = () => {
     const [selectedAction, setSelectedAction] = useState<string>(METRICS[0]);
 
     // Section 4: AI Analysis
-    const [isAnalyzingAI, setIsAnalyzingAI] = useState(false);
+    const [isGeminiAnalyzing, setIsGeminiAnalyzing] = useState(false);
+    const [isCustomAnalyzing, setIsCustomAnalyzing] = useState(false);
     const [aiSuggestions, setAiSuggestions] = useState<AISuggestion[]>([]);
     const [isSuggestionsModalOpen, setIsSuggestionsModalOpen] = useState(false);
     
@@ -63,6 +65,13 @@ const VideoTaggerPage: React.FC = () => {
     const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
     const [batchSuggestions, setBatchSuggestions] = useState<any[]>([]);
     const [showBatchResultsModal, setShowBatchResultsModal] = useState(false);
+    
+    // Segment Analysis State (Gemini Video)
+    const [showSegmentModal, setShowSegmentModal] = useState(false);
+    const [segmentStartTime, setSegmentStartTime] = useState('00:00');
+    const [segmentEndTime, setSegmentEndTime] = useState('05:00');
+    const [isSegmentAnalyzing, setIsSegmentAnalyzing] = useState(false);
+    const [segmentProgress, setSegmentProgress] = useState<SegmentAnalysisProgress | null>(null);
 
     // UI State
     const [isLoading, setIsLoading] = useState(true);
@@ -143,6 +152,12 @@ const VideoTaggerPage: React.FC = () => {
         setSelectedVideo(v);
     }, [selectedVideoId, videos]);
 
+
+    // Filtrar jugadores por el equipo del partido seleccionado
+    const selectedMatch = matches.find(m => m.id === selectedMatchId);
+    const filteredPlayers = (selectedMatch?.team_id 
+        ? players.filter(p => p.team_id === selectedMatch.team_id)
+        : players).sort((a, b) => a.numero - b.numero);
     // Handlers for creating a match
     const handleCreateMatch = async () => {
         setIsSavingMatch(true);
@@ -209,9 +224,20 @@ const VideoTaggerPage: React.FC = () => {
                     posicion: String(row[headers.indexOf('posicion')] || '').trim()
                 }));
 
-                const newPlayers = parsedPlayers.filter(p => p.nombre && !players.some(existing => existing.nombre === p.nombre && existing.numero === p.numero));
-                if (newPlayers.length > 0) {
-                    const { data: inserted, error } = await supabase.from('players').insert(newPlayers).select();
+                // Obtener team_id del partido seleccionado
+                const selectedMatch = matches.find(m => m.id === selectedMatchId);
+                if (!selectedMatch?.team_id) {
+                    throw new Error("Primero selecciona un partido para asociar los jugadores al equipo.");
+                }
+                const teamId = selectedMatch.team_id;
+
+                const newPlayers = parsedPlayers.filter(p => p.nombre && !players.some(existing => existing.nombre === p.nombre && existing.numero === p.numero && existing.team_id === teamId));
+                
+                // Agregar team_id a cada jugador
+                const playersWithTeam = newPlayers.map(p => ({ ...p, team_id: teamId }));
+                
+                if (playersWithTeam.length > 0) {
+                    const { data: inserted, error } = await supabase.from('players').insert(playersWithTeam).select();
                     if (error) throw error;
                     setPlayerUploadStatus('success');
                     setPlayerUploadMessage(`✅ ${inserted?.length || 0} nuevos jugadores cargados. ${parsedPlayers.length - newPlayers.length} ya existían.`);
@@ -281,17 +307,17 @@ const VideoTaggerPage: React.FC = () => {
         const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
         const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
 
-              const selectedMatch = matches.find(m => m.id === selectedMatchId);
+        const selectedMatchForTag = matches.find(m => m.id === selectedMatchId);
         const newTag: Tag = {
             id: `temp-${Date.now()}`,
             match_id: selectedMatchId,
-            team_id: selectedMatch?.team_id || '',
             player_id: selectedPlayerId,
             accion: accion,
             resultado: resultado,
             timestamp: relativeTime,
             video_file: videoFileName ?? undefined,
-            timestamp_absolute: timestamp_absolute as any
+            timestamp_absolute: timestamp_absolute as any,
+            team_id: selectedMatchForTag?.team_id || null
         };
         setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
     };
@@ -332,6 +358,7 @@ const VideoTaggerPage: React.FC = () => {
                 // normalize undefined timestamp_absolute to null if needed
                 return {
                     ...tag,
+                    video_file: tag.video_file || null,
                     timestamp_absolute: (typeof tag.timestamp_absolute === 'number') ? tag.timestamp_absolute : null
                 };
             });
@@ -350,7 +377,7 @@ const VideoTaggerPage: React.FC = () => {
         }
     };
 
-        // Handler to create a new video metadata record
+    // Handler to create a new video metadata record
     const handleCreateVideo = async () => {
         if (!newVideoFileName || !selectedMatchId) {
             alert('Ingrese nombre del archivo y seleccione un partido.');
@@ -379,10 +406,11 @@ const VideoTaggerPage: React.FC = () => {
             setIsCreatingVideo(false);
         }
     };
+
     // Handler for AI-assisted analysis
     const handleAIAssistedAnalysis = async () => {
         if (!videoRef.current || !canvasRef.current) return;
-        setIsAnalyzingAI(true);
+        setIsGeminiAnalyzing(true);
         try {
             const video = videoRef.current;
             const canvas = canvasRef.current;
@@ -416,7 +444,7 @@ const VideoTaggerPage: React.FC = () => {
             console.error("Error during AI analysis:", error);
             alert("Ocurrió un error durante el análisis de IA.");
         } finally {
-            setIsAnalyzingAI(false);
+            setIsGeminiAnalyzing(false);
             videoRef.current?.play();
         }
     };
@@ -424,13 +452,17 @@ const VideoTaggerPage: React.FC = () => {
     const handleCustomModelAnalysis = async () => {
         if (!videoRef.current) return;
         
-        setIsAnalyzingAI(true);
+        setIsCustomAnalyzing(true);
         
         try {
             const video = videoRef.current;
             const canvas = canvasRef.current;
             const context = canvas?.getContext('2d');
-            if (!context) return;
+            
+            if (!context) {
+                setIsCustomAnalyzing(false);
+                return;
+            }
             
             // Capture current frame
             video.pause();
@@ -442,12 +474,14 @@ const VideoTaggerPage: React.FC = () => {
             const blob: Blob | null = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.9));
             if (!blob) {
                 alert("No se pudo capturar el frame");
+                setIsCustomAnalyzing(false);
                 return;
             }
             
             const base64 = await blobToBase64(blob);
             if (!base64) {
                 alert("Error al procesar la imagen");
+                setIsCustomAnalyzing(false);
                 return;
             }
             
@@ -459,17 +493,22 @@ const VideoTaggerPage: React.FC = () => {
                 },
                 body: JSON.stringify({
                     image: base64,
-                    timestamp: video.currentTime
+                    timestamp: formatTime(video.currentTime)
                 })
             });
             
-            if (!response.ok) {
-                throw new Error('Error en la API');
-            }
-            
             const result = await response.json();
             
-            if (result.success && result.predictions) {
+            if (!response.ok || !result.success) {
+                console.error('Railway API error - Status:', response.status, 'Response:', result);
+                const errorMsg = result.error && result.error !== "0" 
+                    ? result.error 
+                    : result.message 
+                    || `Error en el modelo de Railway (Status: ${response.status}). El modelo v1.0 tiene baja precisión (56%) y puede fallar. Se espera v2.0 con mejor entrenamiento.`;
+                throw new Error(errorMsg);
+            }
+            
+            if (result.predictions && result.predictions.length > 0) {
                 // Convert predictions to suggestions format
                 const suggestions: AISuggestion[] = result.predictions.map((pred: any) => ({
                     timestamp: formatTime(video.currentTime),
@@ -478,20 +517,16 @@ const VideoTaggerPage: React.FC = () => {
                 }));
                 
                 setAiSuggestions(suggestions);
-                if (suggestions.length > 0) {
-                    setIsSuggestionsModalOpen(true);
-                } else {
-                    alert("No se encontraron sugerencias");
-                }
+                setIsSuggestionsModalOpen(true);
             } else {
-                alert(result.message || "Error desconocido");
+                alert("El modelo no detectó acciones con suficiente confianza en este frame. Prueba con otro momento del video o usa el botón Gemini.");
             }
             
         } catch (error) {
             console.error("Error during custom model analysis:", error);
             alert("Ocurrió un error durante el análisis con el modelo personalizado.");
         } finally {
-            setIsAnalyzingAI(false);
+            setIsCustomAnalyzing(false);
         }
     };
     // Handler for Batch Analysis (analyze entire video)
@@ -585,7 +620,7 @@ const VideoTaggerPage: React.FC = () => {
             
             // Filter for high-confidence predictions
             const suggestions = allResults
-                .filter(r => r.predictions && r.predictions.length > 0 && r.predictions[0].probability > 0.2)
+                .filter(r => r.predictions && r.predictions.length > 0 && r.predictions[0].probability > 0.20)
                 .map(r => ({
                     timestamp: r.timestamp,
                     action: r.predictions[0].action,
@@ -607,6 +642,76 @@ const VideoTaggerPage: React.FC = () => {
         } finally {
             setIsBatchAnalyzing(false);
             setBatchProgress({ current: 0, total: 0 });
+        }
+    };
+
+    // Handler for Segment Analysis (Gemini Video)
+    const handleSegmentAnalysis = async () => {
+        if (!videoRef.current || !canvasRef.current) {
+            alert("No hay video cargado");
+            return;
+        }
+
+        const parseTime = (timeStr: string): number => {
+            const parts = timeStr.split(':').map(Number);
+            if (parts.length === 2) return parts[0] * 60 + parts[1];
+            if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+            return 0;
+        };
+
+        const startSeconds = parseTime(segmentStartTime);
+        const endSeconds = parseTime(segmentEndTime);
+        
+        if (endSeconds <= startSeconds) {
+            alert("El tiempo final debe ser mayor que el tiempo inicial");
+            return;
+        }
+        
+        const duration = endSeconds - startSeconds;
+        if (duration > 600) {
+            alert("El segmento no puede ser mayor a 10 minutos. Por favor, selecciona un rango más pequeño.");
+            return;
+        }
+
+        setIsSegmentAnalyzing(true);
+        setSegmentProgress({ phase: 'extracting', framesExtracted: 0, totalFrames: duration, message: 'Iniciando...' });
+        
+        try {
+            const frames = await extractFramesFromSegment(
+                videoRef.current,
+                canvasRef.current,
+                startSeconds,
+                endSeconds,
+                1,
+                setSegmentProgress
+            );
+            
+            if (frames.length === 0) {
+                alert("No se pudieron extraer frames del segmento");
+                return;
+            }
+            
+            const suggestions = await analyzeVideoSegment(
+                frames,
+                startSeconds,
+                endSeconds,
+                tags,
+                setSegmentProgress
+            );
+            
+            if (suggestions.length > 0) {
+                setAiSuggestions(suggestions);
+                setIsSuggestionsModalOpen(true);
+                setShowSegmentModal(false);
+            } else {
+                alert("Gemini no encontró jugadas significativas en este segmento. Intenta con otro rango de tiempo.");
+            }
+        } catch (error) {
+            console.error("Error durante análisis de segmento:", error);
+            alert(`Error: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+            setIsSegmentAnalyzing(false);
+            setSegmentProgress(null);
         }
     };
     
@@ -837,8 +942,8 @@ const VideoTaggerPage: React.FC = () => {
                 <div className="bg-gray-800 rounded-lg p-4">
                     <h3 className="text-lg font-semibold mb-2 text-white">3. Etiquetar Jugada</h3>
                     <label className="block text-sm text-gray-400 mb-1">Jugador</label>
-                    <select value={selectedPlayerId} onChange={e => setSelectedPlayerId(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-2" disabled={players.length === 0}>
-                        {players.length > 0 ? players.map(p => (
+                    <select value={selectedPlayerId} onChange={e => setSelectedPlayerId(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-2" disabled={filteredPlayers.length === 0}>
+                        {filteredPlayers.length > 0 ? filteredPlayers.map(p => (
                             <option key={p.id} value={p.id}>{p.numero} - {p.nombre}</option>
                         )) : <option>Cargue archivo de jugadores</option>}
                     </select>
@@ -865,6 +970,16 @@ const VideoTaggerPage: React.FC = () => {
                     <h3 className="text-lg font-semibold mb-2 text-white">Análisis Asistido por IA (Beta)</h3>
                     <p className="text-xs text-gray-400 mb-4">La IA puede sugerir jugadas. Puedes aceptar o rechazar las sugerencias.</p>
                     
+                    {/* Segment Analysis Button (Gemini) - RECOMMENDED */}
+                    <button 
+                        onClick={() => setShowSegmentModal(true)} 
+                        disabled={(!activeVideoUrl && !selectedVideo) || isSegmentAnalyzing || !selectedMatchId} 
+                        className="w-full bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 p-3 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed mb-3"
+                    >
+                        <SparklesIcon />Analizar Segmento (Gemini) ⚡
+                    </button>
+                    <p className="text-xs text-emerald-400 mb-4 text-center">Recomendado: Selecciona un rango de 5-10 min para análisis preciso</p>
+                    
                     {/* Batch Analysis Button */}
                     <button 
                         onClick={handleBatchAnalysis} 
@@ -890,15 +1005,15 @@ const VideoTaggerPage: React.FC = () => {
                         </div>
                     )}
                     
-                    <button onClick={handleAIAssistedAnalysis} disabled={!activeVideoUrl && !selectedVideo || isAnalyzingAI || !selectedMatchId} className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
-                        {isAnalyzingAI ? <><Spinner /> Analizando...</> : <><SparklesIcon />Sugerir Acciones</>}
+                    <button onClick={handleAIAssistedAnalysis} disabled={!activeVideoUrl && !selectedVideo || isGeminiAnalyzing || !selectedMatchId} className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
+                        {isGeminiAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Sugerir Acciones</>}
                     </button>
 <button 
                         onClick={handleCustomModelAnalysis} 
-                        disabled={!activeVideoUrl && !selectedVideo || isAnalyzingAI || !selectedMatchId} 
+                        disabled={!activeVideoUrl && !selectedVideo || isCustomAnalyzing || !selectedMatchId} 
                         className="w-full mt-2 bg-indigo-600 hover:bg-indigo-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed"
                     >
-                        {isAnalyzingAI ? <><Spinner /> Analizando...</> : <><SparklesIcon />Modelo Personalizado (74% Top-3)</>}
+                        {isCustomAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Modelo Personalizado (74% Top-3)</>}
                     </button>
                 </div>
             </div>
@@ -983,6 +1098,88 @@ const VideoTaggerPage: React.FC = () => {
                         <div className="mt-4 flex gap-2 justify-end">
                             <button onClick={() => setShowBatchResultsModal(false)} className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded">
                                 Cerrar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            
+            {/* Segment Analysis Modal */}
+            {showSegmentModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
+                    <div className="bg-gray-800 rounded-lg p-6 w-[450px]">
+                        <h3 className="text-xl font-semibold mb-4 text-white flex items-center gap-2">
+                            <SparklesIcon /> Analizar Segmento con Gemini
+                        </h3>
+                        
+                        <p className="text-sm text-gray-400 mb-4">
+                            Selecciona el rango de tiempo del video que quieres analizar. 
+                            Gemini extraerá 1 frame por segundo y detectará las jugadas.
+                        </p>
+                        
+                        <div className="grid grid-cols-2 gap-4 mb-4">
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-1">Tiempo Inicio (MM:SS)</label>
+                                <input 
+                                    type="text" 
+                                    value={segmentStartTime} 
+                                    onChange={e => setSegmentStartTime(e.target.value)}
+                                    placeholder="00:00"
+                                    className="w-full bg-gray-700 p-2 rounded text-white"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-1">Tiempo Fin (MM:SS)</label>
+                                <input 
+                                    type="text" 
+                                    value={segmentEndTime} 
+                                    onChange={e => setSegmentEndTime(e.target.value)}
+                                    placeholder="05:00"
+                                    className="w-full bg-gray-700 p-2 rounded text-white"
+                                />
+                            </div>
+                        </div>
+                        
+                        <div className="bg-gray-700 p-3 rounded mb-4">
+                            <p className="text-xs text-gray-300">
+                                <strong>Recomendaciones:</strong>
+                            </p>
+                            <ul className="text-xs text-gray-400 mt-1 list-disc list-inside">
+                                <li>Segmentos de 5 minutos: ~300 frames, alta precisión</li>
+                                <li>Segmentos de 10 minutos: ~600 frames, muy buena precisión</li>
+                                <li>Máximo permitido: 10 minutos por análisis</li>
+                            </ul>
+                        </div>
+                        
+                        {isSegmentAnalyzing && segmentProgress && (
+                            <div className="mb-4">
+                                <div className="flex justify-between text-xs text-gray-400 mb-1">
+                                    <span>{segmentProgress.message}</span>
+                                    <span>{segmentProgress.framesExtracted}/{segmentProgress.totalFrames}</span>
+                                </div>
+                                <div className="w-full bg-gray-700 rounded-full h-2">
+                                    <div 
+                                        className="bg-gradient-to-r from-emerald-600 to-cyan-600 h-2 rounded-full transition-all duration-300"
+                                        style={{ width: `${(segmentProgress.framesExtracted / segmentProgress.totalFrames) * 100}%` }}
+                                    ></div>
+                                </div>
+                            </div>
+                        )}
+                        
+                        <div className="flex gap-2 justify-end">
+                            <button 
+                                onClick={() => setShowSegmentModal(false)} 
+                                disabled={isSegmentAnalyzing}
+                                className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded disabled:opacity-50"
+                            >
+                                Cancelar
+                            </button>
+                            <button 
+                                onClick={handleSegmentAnalysis}
+                                disabled={isSegmentAnalyzing}
+                                className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 rounded text-white font-semibold flex items-center gap-2 disabled:opacity-50"
+                            >
+                                {isSegmentAnalyzing ? <><Spinner size="h-4 w-4" /> Analizando...</> : 'Iniciar Análisis'}
                             </button>
                         </div>
                     </div>
