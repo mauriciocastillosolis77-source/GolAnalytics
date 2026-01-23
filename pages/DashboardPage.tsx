@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../services/supabaseClient';
-import type { Match, Tag, Player } from '../types';
+import type { Match, Tag, Player, TeamAnalysis, TeamAnalysisHistory } from '../types';
 import { METRICS } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
+import { analyzeTeamPerformance } from '../services/geminiTeamAnalysisService';
+import { saveTeamAnalysis, getCachedTeamAnalysis, getTeamAnalysisHistory } from '../services/teamAnalysisHistoryService';
+import { useAuth } from '../contexts/AuthContext';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, Cell, Treemap, ScatterChart, Scatter } from 'recharts';
 
 type Filters = {
@@ -19,7 +22,7 @@ const COLORS = ['#06B6D4', '#3B82F6', '#8B5CF6', '#EC4899', '#F97316', '#10B981'
 
 const CustomizedContent = (props: any) => {
     const { depth, x, y, width, height, index, name, size } = props;
-    if (width < 35 || height < 20) return null; // Don't render text in very small boxes
+    if (width < 35 || height < 20) return null;
 
     return (
         <g>
@@ -41,7 +44,7 @@ const CustomizedContent = (props: any) => {
                 dominantBaseline="middle"
                 fill="#fff"
                 fontSize={14}
-                fontWeight="normal" // Ensure text is not bold
+                fontWeight="normal"
             >
                 {name}
             </text>
@@ -52,7 +55,7 @@ const CustomizedContent = (props: any) => {
                 dominantBaseline="middle"
                 fill="#fff"
                 fontSize={12}
-                fontWeight="normal" // Ensure text is not bold
+                fontWeight="normal"
             >
                 ({size})
             </text>
@@ -60,29 +63,14 @@ const CustomizedContent = (props: any) => {
     );
 };
 
-/*
-  Helper: parseTimeToSeconds
-  - Convierte números (segundos) y strings "mm:ss" o "m:ss" en segundos (number).
-  - También acepta formatos decimales con coma o punto, y objetos con campos comunes.
-  - Devuelve null si no puede parsear.
-*/
 const parseTimeToSeconds = (value: any): number | null => {
     if (value === null || value === undefined) return null;
-
-    // si ya viene como número
     if (typeof value === 'number' && !isNaN(value)) return value;
-
-    // si viene como string
     if (typeof value === 'string') {
         let s = value.trim();
-
-        // reemplazar coma decimal por punto (ej. "12,34")
         s = s.replace(',', '.');
-
-        // si formato mm:ss o hh:mm:ss -> tomar últimas dos partes como minutos:segundos o horas:minutos:segundos
         if (s.includes(':')) {
             const parts = s.split(':').map(p => p.trim());
-            // si vienen hh:mm:ss -> sumar horas
             if (parts.length === 3) {
                 const hours = parseFloat(parts[0]) || 0;
                 const mins = parseFloat(parts[1]) || 0;
@@ -95,29 +83,18 @@ const parseTimeToSeconds = (value: any): number | null => {
                 return mins * 60 + secs;
             }
         }
-
-        // si es un solo número en texto, interpretarlo como segundos
         const num = parseFloat(s);
         return isNaN(num) ? null : num;
     }
-
-    // si viene como objeto (ej. metadata)
     if (typeof value === 'object') {
-        // comprobar campos comunes
         const candidate = (value as any).tiempo ?? (value as any).time ?? (value as any).duration ?? (value as any).seconds;
         if (candidate !== undefined) {
             return parseTimeToSeconds(candidate);
         }
     }
-
     return null;
 };
 
-/*
-  Helper: getTagTime
-  - Extrae el tiempo (en segundos) de un tag probando varios campos y normalizando
-  - Si detecta valores extremadamente grandes (posible ms), divide por 1000
-*/
 const getTagTime = (tag: any): number | null => {
     if (!tag) return null;
     const raw = (tag as any).tiempo_transicion
@@ -132,26 +109,17 @@ const getTagTime = (tag: any): number | null => {
         ?? (tag as any).timestamp_seconds;
 
     let seconds = parseTimeToSeconds(raw);
-
-    // Si parse devolvió null, intentar leer directamente tag.timestamp numérico
     if (seconds === null) {
         const maybeNum = Number(raw);
         if (!isNaN(maybeNum)) seconds = maybeNum;
     }
-
     if (seconds === null) return null;
-
-    // Normalizar si parece estar en milisegundos (valores mayores a 10000 -> ms)
     if (seconds > 10000) {
         seconds = seconds / 1000;
     }
-
     return seconds;
 };
 
-/*
- Helper: formatear segundos a mm:ss o hh:mm:ss para mostrar en eje Y y tooltips
-*/
 const formatSecondsToMMSS = (value: number | null | undefined) => {
     if (value === null || value === undefined || isNaN(Number(value))) return '';
     const total = Math.floor(Number(value));
@@ -160,18 +128,37 @@ const formatSecondsToMMSS = (value: number | null | undefined) => {
     const seconds = total % 60;
     const pad = (n: number) => n.toString().padStart(2, '0');
     if (hours > 0) {
-        return `${hours}:${pad(minutes)}:${pad(seconds)}`; // hh:mm:ss
+        return `${hours}:${pad(minutes)}:${pad(seconds)}`;
     }
-    return `${minutes}:${pad(seconds)}`; // mm:ss
+    return `${minutes}:${pad(seconds)}`;
+};
+
+const formatHistoryDate = (dateStr: string): string => {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('es-MX', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+    });
 };
 
 const DashboardPage: React.FC = () => {
+    const { profile } = useAuth();
     const [matches, setMatches] = useState<Match[]>([]);
     const [tags, setTags] = useState<Tag[]>([]);
     const [players, setPlayers] = useState<Player[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState<'general' | 'player'>('general');
+    
+    const [teamAnalysis, setTeamAnalysis] = useState<TeamAnalysis | null>(null);
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const [analysisError, setAnalysisError] = useState<string | null>(null);
+    const [isFromCache, setIsFromCache] = useState(false);
+    const [showHistory, setShowHistory] = useState(false);
+    const [analysisHistory, setAnalysisHistory] = useState<TeamAnalysisHistory[]>([]);
     
     const [filters, setFilters] = useState<Filters>({
         matchId: 'all',
@@ -192,13 +179,7 @@ const DashboardPage: React.FC = () => {
                 if (matchesError) throw matchesError;
                 setMatches(matchesData || []);
 
-                // ---------- Reemplazo: obtener todos los tags en batches para evitar límite de 1000 filas ----------
-                /*
-                  Obtener todos los tags en páginas:
-                  - Primero pedimos count exacto (select ... { count: 'exact' })
-                  - Si hay más filas que la página inicial, hacemos requests con .range() en batches
-                */
-                const pageSize = 1000; // tamaño de batch: puedes reducirlo (p.ej. 500) si hay problemas de memoria
+                const pageSize = 1000;
                 const { data: firstPageData, count, error: firstError } = await supabase
                   .from('tags')
                   .select('*', { count: 'exact' })
@@ -207,10 +188,8 @@ const DashboardPage: React.FC = () => {
                 if (firstError) throw firstError;
 
                 let allTags = firstPageData || [];
-                console.log('[Dashboard] tags count (total reported):', count, 'firstPageRows:', allTags.length);
 
                 if (typeof count === 'number' && count > allTags.length) {
-                  // hay más filas: fetch por rangos
                   for (let from = allTags.length; from < count; from += pageSize) {
                     const to = Math.min(from + pageSize - 1, count - 1);
                     const { data: pageData, error: pageError } = await supabase
@@ -219,13 +198,10 @@ const DashboardPage: React.FC = () => {
                       .range(from, to);
                     if (pageError) throw pageError;
                     allTags = allTags.concat(pageData || []);
-                    console.log(`[Dashboard] fetched tags range ${from}-${to}, got ${pageData?.length || 0}`);
                   }
                 }
 
                 setTags(allTags || []);
-                console.log('[Dashboard] total tags loaded into state:', (allTags || []).length);
-                // ---------- fin reemplazo ----------
 
                 const { data: playersData, error: playersError } = await supabase.from('players').select('*');
                 if (playersError) throw playersError;
@@ -279,6 +255,98 @@ const DashboardPage: React.FC = () => {
         const efectividad = total > 0 ? (logrados / total) * 100 : 0;
         return { total, efectividad };
     }, [filteredTags]);
+
+    const selectedTeamName = useMemo(() => {
+        if (filters.equipo !== 'all') return filters.equipo;
+        const teamNames = [...new Set(filteredMatches.map(m => m.nombre_equipo).filter(Boolean))];
+        return teamNames.length === 1 ? teamNames[0] : teamNames.length > 1 ? 'Varios equipos' : 'Sin equipo';
+    }, [filters.equipo, filteredMatches]);
+
+    const selectedTeamId = useMemo(() => {
+        if (filters.equipo !== 'all') {
+            const match = matches.find(m => m.nombre_equipo === filters.equipo);
+            return match?.team_id || null;
+        }
+        const teamIds = [...new Set(filteredMatches.map(m => m.team_id).filter(Boolean))];
+        return teamIds.length === 1 ? teamIds[0] : null;
+    }, [filters.equipo, filteredMatches, matches]);
+
+    useEffect(() => {
+        if (selectedTeamId) {
+            getTeamAnalysisHistory(selectedTeamId).then(setAnalysisHistory);
+        } else {
+            setAnalysisHistory([]);
+        }
+    }, [selectedTeamId]);
+
+    const runTeamAIAnalysis = async (forceNew: boolean = false) => {
+        if (filteredTags.length === 0 || !selectedTeamId) return;
+
+        setIsAnalyzing(true);
+        setAnalysisError(null);
+
+        try {
+            const totalAcciones = filteredTags.length;
+            const totalLogradas = filteredTags.filter(t => t.resultado === 'logrado').length;
+            const efectividadGlobal = totalAcciones > 0 ? Math.round((totalLogradas / totalAcciones) * 100) : 0;
+
+            const currentFilters = {
+                torneo: filters.torneo !== 'all' ? filters.torneo : undefined,
+                categoria: filters.categoria !== 'all' ? filters.categoria : undefined,
+            };
+
+            if (!forceNew) {
+                const cached = await getCachedTeamAnalysis(
+                    selectedTeamId,
+                    filteredMatches.length,
+                    totalAcciones,
+                    efectividadGlobal,
+                    currentFilters
+                );
+
+                if (cached) {
+                    setTeamAnalysis(cached.analysis_data);
+                    setIsFromCache(true);
+                    setIsAnalyzing(false);
+                    return;
+                }
+            }
+
+            const filteredPlayers = players.filter(p => {
+                const playerTagIds = new Set(filteredTags.map(t => t.player_id));
+                return playerTagIds.has(p.id);
+            });
+
+            const analysis = await analyzeTeamPerformance(
+                selectedTeamName,
+                filteredMatches,
+                filteredTags,
+                filteredPlayers
+            );
+
+            setTeamAnalysis(analysis);
+            setIsFromCache(false);
+
+            await saveTeamAnalysis({
+                teamId: selectedTeamId,
+                teamName: selectedTeamName,
+                analysisData: analysis,
+                filtersUsed: currentFilters,
+                totalPartidos: filteredMatches.length,
+                totalAcciones,
+                efectividadGlobal
+            });
+
+            const updatedHistory = await getTeamAnalysisHistory(selectedTeamId);
+            setAnalysisHistory(updatedHistory);
+
+        } catch (err: any) {
+            console.error('Error in team AI analysis:', err);
+            setAnalysisError(err.message || 'Error al generar el analisis del equipo');
+        } finally {
+            setIsAnalyzing(false);
+        }
+    };
     
     const effectivenessByJornada = useMemo(() => {
         const dataByJornada: { [key: string]: { logradas: number, total: number } } = {};
@@ -432,7 +500,7 @@ const DashboardPage: React.FC = () => {
                 value: count,
             }))
             .sort((a, b) => b.value - a.value)
-            .slice(0, 10); // Top 10
+            .slice(0, 10);
     }, [filteredTags, players]);
 
     const pasesLargosLogradosData = useMemo(() => {
@@ -451,7 +519,7 @@ const DashboardPage: React.FC = () => {
                 value: count,
             }))
             .sort((a, b) => b.value - a.value)
-            .slice(0, 10); // Top 10
+            .slice(0, 10);
     }, [filteredTags, players]);
     
     const duelos1v1LogradosData = useMemo(() => {
@@ -492,9 +560,6 @@ const DashboardPage: React.FC = () => {
             .slice(0, 10);
     }, [filteredTags, players]);
 
-    // === NUEVAS GRAFICAS ===
-
-    // 1. Transiciones ofensivas logradas/no logradas (General)
     const transicionesOfensivasData = useMemo(() => {
         const logradas = filteredTags.filter(
             t => t.accion === 'Transición ofensiva lograda'
@@ -503,32 +568,24 @@ const DashboardPage: React.FC = () => {
             t => t.accion === 'Transición ofensiva no lograda'
         ).length;
         return [
-            { name: 'Logradas', value: logradas },
-            { name: 'No logradas', value: noLogradas }
+            { name: 'Logradas', value: logradas, fill: '#10B981' },
+            { name: 'No Logradas', value: noLogradas, fill: '#EF4444' },
         ];
     }, [filteredTags]);
 
-    // 2. Recuperación de balón por jornada (General)
-    const recuperacionBalonPorJornada = useMemo(() => {
-        const dataByJornada: { [jornada: string]: number } = {};
-        filteredTags.forEach(tag => {
-            if (tag.accion === 'Recuperación de balón') {
-                const match = matches.find(m => m.id === tag.match_id);
-                if (!match || !match.jornada) return;
-                const jornada = String(match.jornada);
-                if (!dataByJornada[jornada]) dataByJornada[jornada] = 0;
-                dataByJornada[jornada]++;
-            }
-        });
-        return Object.entries(dataByJornada)
-            .map(([jornada, count]) => ({
-                name: `Jornada ${jornada}`,
-                value: count
-            }))
-            .sort((a, b) => parseInt(a.name.split(' ')[1]) - parseInt(b.name.split(' ')[1]));
-    }, [filteredTags, matches]);
+    const transicionesDefensivasData = useMemo(() => {
+        const logradas = filteredTags.filter(
+            t => t.accion === 'Transición defensiva lograda'
+        ).length;
+        const noLogradas = filteredTags.filter(
+            t => t.accion === 'Transición defensiva no lograda'
+        ).length;
+        return [
+            { name: 'Logradas', value: logradas, fill: '#3B82F6' },
+            { name: 'No Logradas', value: noLogradas, fill: '#F97316' },
+        ];
+    }, [filteredTags]);
 
-    // 3. Recuperación de balón por jugador (Jugador)
     const recuperacionBalonPorJugador = useMemo(() => {
         const counts: { [playerId: string]: number } = {};
         filteredTags
@@ -543,72 +600,44 @@ const DashboardPage: React.FC = () => {
                 name: players.find(p => p.id === playerId)?.nombre || 'Desconocido',
                 value: count,
             }))
-            .sort((a, b) => b.value - a.value);
+            .sort((a, b) => b.value - a.value)
+            .slice(0, 10);
     }, [filteredTags, players]);
 
-    // === FIN NUEVAS GRAFICAS ===
-
-    // === SCATTER CHART DATOS (AGREGADOS) ===
-    // Grafica 1: Duración desde la recuperación hasta la transición ofensiva lograda
     const scatterTransicionesData = useMemo(() => {
-        // Agrupar tags por match (usar filteredTags para respetar filtros)
-        const tagsByMatch: Record<string, any[]> = {};
-        filteredTags.forEach(tag => {
-            if (!tag.match_id) return;
-            const tSeconds = getTagTime(tag);
-            if (tSeconds === null) return;
-            if (!tagsByMatch[tag.match_id]) tagsByMatch[tag.match_id] = [];
-            tagsByMatch[tag.match_id].push({
-                ...tag,
-                __timeSeconds: tSeconds
+        const transiciones = filteredTags.filter(t =>
+            t.accion === 'Transición ofensiva lograda' || t.accion === 'Transición ofensiva no lograda'
+        );
+
+        const pts: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId: string | number }[] = [];
+
+        transiciones.forEach(tag => {
+            const match = matches.find(m => m.id === tag.match_id);
+            if (!match || !match.jornada) return;
+            const time = getTagTime(tag);
+            if (time === null) return;
+            pts.push({
+                jornadaNum: match.jornada,
+                jornadaX: match.jornada,
+                jornadaLabel: `Jornada ${match.jornada}`,
+                tiempo: time,
+                tagId: tag.id
             });
         });
 
-        const points: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId?: string }[] = [];
-
-        Object.keys(tagsByMatch).forEach(matchId => {
-            const list = tagsByMatch[matchId].sort((a, b) => a.__timeSeconds - b.__timeSeconds);
-            const match = matches.find(m => m.id === matchId);
-            const jornadaNum = match && match.jornada ? Number(match.jornada) : null;
-            if (jornadaNum === null) return;
-
-            // obtener solo recoveries y transiciones logradas
-            const recoveries = list.filter((t: any) => t.accion === 'Recuperación de balón').map((r: any) => ({ time: r.__timeSeconds, id: r.id }));
-            const transitions = list.filter((t: any) => t.accion === 'Transición ofensiva lograda' && t.resultado === 'logrado').map((tr: any) => ({ time: tr.__timeSeconds, id: tr.id }));
-
-            if (transitions.length === 0 || recoveries.length === 0) return;
-
-            transitions.forEach(tr => {
-                // buscar la última recovery con tiempo < transition.time
-                const prevs = recoveries.filter(r => r.time < tr.time);
-                if (prevs.length === 0) return; // no contabilizar si no hay recovery previa
-                const lastRec = prevs[prevs.length - 1];
-                const duration = tr.time - lastRec.time;
-                if (duration < 0) return;
-                points.push({
-                    jornadaNum,
-                    jornadaX: jornadaNum, // jitter se aplicará luego
-                    jornadaLabel: `Jornada ${jornadaNum}`,
-                    tiempo: duration,
-                    tagId: tr.id
-                });
-            });
-        });
-
-        // aplicar jitter horizontal por jornada
-        const byJornada: Record<number, any[]> = {};
-        points.forEach(p => {
+        const byJornada: Record<number, typeof pts> = {};
+        pts.forEach(p => {
             if (!byJornada[p.jornadaNum]) byJornada[p.jornadaNum] = [];
             byJornada[p.jornadaNum].push(p);
         });
 
         const spread = 0.12;
-        const final: typeof points = [];
+        const final: typeof pts = [];
         Object.keys(byJornada).forEach(k => {
             const j = Number(k);
             const arr = byJornada[j];
             const count = arr.length;
-            arr.forEach((item: any, idx: number) => {
+            arr.forEach((item, idx) => {
                 const offset = (count === 1) ? 0 : ((idx - (count - 1) / 2) * spread);
                 final.push({
                     ...item,
@@ -620,48 +649,49 @@ const DashboardPage: React.FC = () => {
         return final.sort((a, b) => a.jornadaNum - b.jornadaNum || a.jornadaX - b.jornadaX);
     }, [filteredTags, matches]);
 
-    // Grafica 2: Tiempo absoluto (en segundos) de las recuperaciones de balón
-    // MODIFICADO: ahora calcula la duración desde la ÚLTIMA "Pérdida de balón" previa en el MISMO partido hasta la recuperación
     const scatterRecuperacionesData = useMemo(() => {
-        const pts: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId?: string; lossTime?: number; recoveryTime?: number }[] = [];
+        const perdidas = filteredTags.filter(t => t.accion === 'Perdida de balon');
+        const recuperaciones = filteredTags.filter(t => t.accion === 'Recuperación de balón');
 
-        // Agrupar tags por match y normalizar tiempo (usar getTagTime)
-        const tagsByMatch: Record<string, any[]> = {};
-        filteredTags.forEach(tag => {
-            if (!tag.match_id) return;
-            const tSeconds = getTagTime(tag);
-            if (tSeconds === null) return;
-            if (!tagsByMatch[tag.match_id]) tagsByMatch[tag.match_id] = [];
-            tagsByMatch[tag.match_id].push({
-                ...tag,
-                __timeSeconds: tSeconds
-            });
+        const pts: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId: string | number; lossTime: number; recoveryTime: number }[] = [];
+
+        const perdidasPorPartido: Record<string, { id: string | number; time: number }[]> = {};
+        const recuperacionesPorPartido: Record<string, { id: string | number; time: number }[]> = {};
+
+        perdidas.forEach(tag => {
+            const time = getTagTime(tag);
+            if (time === null) return;
+            if (!perdidasPorPartido[tag.match_id]) perdidasPorPartido[tag.match_id] = [];
+            perdidasPorPartido[tag.match_id].push({ id: tag.id, time });
         });
 
-        // Para cada partido, ordenar cronológicamente y emparejar: recovery -> última loss previa
-        Object.keys(tagsByMatch).forEach(matchId => {
-            const list = tagsByMatch[matchId].sort((a, b) => a.__timeSeconds - b.__timeSeconds);
-            const match = matches.find(m => m.id === matchId);
-            const jornadaNum = match && match.jornada ? Number(match.jornada) : null;
-            if (jornadaNum === null) return;
+        recuperaciones.forEach(tag => {
+            const time = getTagTime(tag);
+            if (time === null) return;
+            if (!recuperacionesPorPartido[tag.match_id]) recuperacionesPorPartido[tag.match_id] = [];
+            recuperacionesPorPartido[tag.match_id].push({ id: tag.id, time });
+        });
 
-            const losses = list.filter((t: any) => t.accion === 'Pérdida de balón').map((l: any) => ({ time: l.__timeSeconds, id: l.id }));
-            const recoveries = list.filter((t: any) => t.accion === 'Recuperación de balón').map((r: any) => ({ time: r.__timeSeconds, id: r.id }));
+        Object.keys(perdidasPorPartido).forEach(matchId => {
+            const match = matches.find(m => m.id === matchId);
+            if (!match || !match.jornada) return;
+            const jornadaNum = match.jornada;
+
+            const losses = perdidasPorPartido[matchId].sort((a, b) => a.time - b.time);
+            const recoveries = (recuperacionesPorPartido[matchId] || []).sort((a, b) => a.time - b.time);
 
             if (recoveries.length === 0 || losses.length === 0) return;
 
             recoveries.forEach(rec => {
-                // buscar la última pérdida con tiempo < recovery.time
                 const prevLosses = losses.filter(l => l.time < rec.time);
-                if (prevLosses.length === 0) return; // no hay pérdida previa -> no contabilizar
+                if (prevLosses.length === 0) return;
                 const lastLoss = prevLosses[prevLosses.length - 1];
                 const duration = rec.time - lastLoss.time;
                 if (duration < 0) return;
-                // Validación de rango (1s .. 65:59 = 3959s) para evitar outliers
                 if (duration < 1 || duration > 3959) return;
                 pts.push({
                     jornadaNum,
-                    jornadaX: jornadaNum, // jitter aplicado después
+                    jornadaX: jornadaNum,
                     jornadaLabel: `Jornada ${jornadaNum}`,
                     tiempo: duration,
                     tagId: rec.id,
@@ -671,7 +701,6 @@ const DashboardPage: React.FC = () => {
             });
         });
 
-        // aplicar jitter horizontal similar al otro scatter
         const byJornada: Record<number, any[]> = {};
         pts.forEach(p => {
             if (!byJornada[p.jornadaNum]) byJornada[p.jornadaNum] = [];
@@ -696,8 +725,8 @@ const DashboardPage: React.FC = () => {
         return final.sort((a, b) => a.jornadaNum - b.jornadaNum || a.jornadaX - b.jornadaX);
     }, [filteredTags, matches]);
 
-    const SCATTER_LINE_COLOR_1 = "#F97316"; // naranja intenso
-    const SCATTER_LINE_COLOR_2 = "#22D3EE"; // cyan brillante
+    const SCATTER_LINE_COLOR_1 = "#F97316";
+    const SCATTER_LINE_COLOR_2 = "#22D3EE";
 
     if (loading) return <div className="flex justify-center items-center h-full"><Spinner /></div>;
     if (error) return <div className="text-center text-red-400 p-8">{error}</div>;
@@ -741,108 +770,312 @@ const DashboardPage: React.FC = () => {
                 </div>
             </div>
 
+            {/* AI Team Analysis Section */}
+            {profile?.rol === 'admin' && (
+                <div className="bg-gray-800 rounded-lg p-6">
+                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
+                        <div>
+                            <h3 className="text-xl font-semibold text-white">Analisis IA del Equipo: {selectedTeamName}</h3>
+                            <p className="text-xs text-gray-400 mt-1">Genera un resumen ejecutivo del rendimiento colectivo con recomendaciones de entrenamiento.</p>
+                        </div>
+                        <div className="flex flex-col items-end gap-2">
+                            <div className="flex gap-2">
+                                <button
+                                    onClick={() => runTeamAIAnalysis(false)}
+                                    disabled={isAnalyzing || filteredTags.length === 0 || !selectedTeamId}
+                                    className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+                                        isAnalyzing || filteredTags.length === 0 || !selectedTeamId
+                                            ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                                            : 'bg-gradient-to-r from-purple-600 to-cyan-600 hover:from-purple-700 hover:to-cyan-700 text-white'
+                                    }`}
+                                >
+                                    {isAnalyzing ? (
+                                        <>
+                                            <Spinner size="h-4 w-4" />
+                                            <span>Analizando equipo...</span>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                                <path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" />
+                                            </svg>
+                                            <span>Generar Analisis del Equipo</span>
+                                        </>
+                                    )}
+                                </button>
+                                {analysisHistory.length > 0 && (
+                                    <button
+                                        onClick={() => setShowHistory(!showHistory)}
+                                        className="flex items-center gap-2 px-3 py-2 rounded-lg font-medium bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
+                                    >
+                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+                                        </svg>
+                                        <span>Historial ({analysisHistory.length})</span>
+                                    </button>
+                                )}
+                            </div>
+                            {isFromCache && teamAnalysis && (
+                                <div className="flex items-center gap-2 text-xs text-amber-400">
+                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                        <path fillRule="evenodd" d="M5 2a1 1 0 011 1v1h8V3a1 1 0 112 0v1a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V6a2 2 0 012-2V3a1 1 0 011-1zm9 6H6v8h8V8z" clipRule="evenodd" />
+                                    </svg>
+                                    <span>Analisis reciente (guardado)</span>
+                                    <button 
+                                        onClick={() => runTeamAIAnalysis(true)}
+                                        className="underline hover:text-amber-300"
+                                    >
+                                        Generar nuevo
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
+                    {/* History Panel */}
+                    {showHistory && analysisHistory.length > 0 && (
+                        <div className="bg-gray-700/50 rounded-lg p-4 mb-4 border border-gray-600">
+                            <h4 className="text-sm font-semibold text-gray-300 mb-3">Historial de Analisis del Equipo</h4>
+                            <div className="space-y-2 max-h-48 overflow-y-auto">
+                                {analysisHistory.map((item) => (
+                                    <button
+                                        key={item.id}
+                                        onClick={() => {
+                                            setTeamAnalysis(item.analysis_data);
+                                            setIsFromCache(true);
+                                            setShowHistory(false);
+                                        }}
+                                        className="w-full text-left p-3 rounded bg-gray-800 hover:bg-gray-750 border border-gray-600 transition-colors"
+                                    >
+                                        <div className="flex justify-between items-center">
+                                            <span className="text-sm text-white">{formatHistoryDate(item.created_at)}</span>
+                                            <span className={`text-xs px-2 py-1 rounded ${
+                                                item.analysis_data.tendencia === 'mejorando' ? 'bg-green-900/50 text-green-400' :
+                                                item.analysis_data.tendencia === 'bajando' ? 'bg-red-900/50 text-red-400' :
+                                                'bg-yellow-900/50 text-yellow-400'
+                                            }`}>
+                                                {item.analysis_data.tendencia}
+                                            </span>
+                                        </div>
+                                        <p className="text-xs text-gray-400 mt-1">
+                                            {item.total_partidos} partidos | {item.total_acciones} acciones | {item.efectividad_global}% efectividad
+                                        </p>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {analysisError && (
+                        <div className="bg-red-900/50 border border-red-500 rounded-lg p-4 mb-4">
+                            <p className="text-red-300">{analysisError}</p>
+                        </div>
+                    )}
+
+                    {!selectedTeamId && filteredTags.length > 0 && (
+                        <div className="text-center py-4 text-amber-400">
+                            <p>Selecciona un equipo especifico en los filtros para generar el analisis.</p>
+                        </div>
+                    )}
+
+                    {filteredTags.length === 0 && !teamAnalysis && (
+                        <div className="text-center py-8 text-gray-400">
+                            <p>No hay datos disponibles con los filtros seleccionados.</p>
+                        </div>
+                    )}
+
+                    {teamAnalysis && (
+                        <div className="space-y-6">
+                            {/* Tendencia */}
+                            <div className={`rounded-lg p-4 ${
+                                teamAnalysis.tendencia === 'mejorando' ? 'bg-green-900/30 border border-green-500' :
+                                teamAnalysis.tendencia === 'bajando' ? 'bg-red-900/30 border border-red-500' :
+                                'bg-yellow-900/30 border border-yellow-500'
+                            }`}>
+                                <div className="flex items-center gap-3 mb-2">
+                                    <span className="text-2xl">
+                                        {teamAnalysis.tendencia === 'mejorando' ? '📈' : teamAnalysis.tendencia === 'bajando' ? '📉' : '➡️'}
+                                    </span>
+                                    <h4 className="text-lg font-semibold capitalize">{teamAnalysis.tendencia}</h4>
+                                </div>
+                                <p className="text-gray-300">{teamAnalysis.tendenciaDescripcion}</p>
+                            </div>
+
+                            {/* Analisis por Linea */}
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                {['defensa', 'medio', 'ataque'].map((linea) => {
+                                    const lineaData = teamAnalysis.analisisPorLinea[linea as keyof typeof teamAnalysis.analisisPorLinea];
+                                    return (
+                                        <div key={linea} className="bg-gray-700/50 rounded-lg p-4">
+                                            <h5 className="text-sm font-semibold text-gray-300 capitalize mb-2">{linea}</h5>
+                                            <p className="text-2xl font-bold text-cyan-400">{lineaData.efectividad}%</p>
+                                            <p className="text-xs text-gray-400 mt-1">{lineaData.observacion}</p>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+
+                            {/* Fortalezas y Areas de Mejora */}
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                <div className="bg-green-900/20 rounded-lg p-4 border border-green-800">
+                                    <h4 className="text-lg font-semibold text-green-400 mb-3">Fortalezas Colectivas</h4>
+                                    <ul className="space-y-2">
+                                        {teamAnalysis.fortalezasColectivas.map((f, i) => (
+                                            <li key={i} className="flex items-start gap-2 text-gray-300">
+                                                <span className="text-green-400 mt-1">✓</span>
+                                                <span>{f}</span>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                                <div className="bg-amber-900/20 rounded-lg p-4 border border-amber-800">
+                                    <h4 className="text-lg font-semibold text-amber-400 mb-3">Oportunidades de Mejora</h4>
+                                    <ul className="space-y-2">
+                                        {teamAnalysis.areasDeMejoraColectivas.map((a, i) => (
+                                            <li key={i} className="flex items-start gap-2 text-gray-300">
+                                                <span className="text-amber-400 mt-1">→</span>
+                                                <span>{a}</span>
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            </div>
+
+                            {/* Jugadores Destacados */}
+                            <div className="bg-purple-900/20 rounded-lg p-4 border border-purple-800">
+                                <h4 className="text-lg font-semibold text-purple-400 mb-3">Jugadores Destacados</h4>
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                    {teamAnalysis.jugadoresDestacados.map((j, i) => (
+                                        <div key={i} className="bg-gray-800/50 rounded p-3">
+                                            <p className="font-semibold text-white">{j.nombre}</p>
+                                            <p className="text-sm text-gray-400">{j.razon}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+
+                            {/* Resumen Ejecutivo */}
+                            <div className="bg-gray-700/50 rounded-lg p-4">
+                                <h4 className="text-lg font-semibold text-white mb-3">Resumen Ejecutivo</h4>
+                                <p className="text-gray-300 leading-relaxed">{teamAnalysis.resumenEjecutivo}</p>
+                            </div>
+
+                            {/* Recomendaciones de Entrenamiento */}
+                            <div className="bg-cyan-900/20 rounded-lg p-4 border border-cyan-800">
+                                <h4 className="text-lg font-semibold text-cyan-400 mb-3">Recomendaciones de Entrenamiento</h4>
+                                <ul className="space-y-2">
+                                    {teamAnalysis.recomendacionesEntrenamiento.map((r, i) => (
+                                        <li key={i} className="flex items-start gap-2 text-gray-300">
+                                            <span className="bg-cyan-600 text-white text-xs px-2 py-0.5 rounded mt-0.5">{i + 1}</span>
+                                            <span>{r}</span>
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+
             {/* Tab Navigation */}
             <div className="flex justify-center">
                 <div className="flex space-x-1 bg-gray-800 p-1 rounded-lg">
                     <button onClick={() => setActiveTab('general')} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${activeTab === 'general' ? 'bg-cyan-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}>
-                        Análisis General
+                        Analisis General
                     </button>
                     <button onClick={() => setActiveTab('player')} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${activeTab === 'player' ? 'bg-cyan-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}>
-                        Análisis por Jugador
+                        Analisis por Jugador
                     </button>
                 </div>
             </div>
 
             {activeTab === 'general' && (
                 <div className="space-y-6">
-                    {/* Charts Grid */}
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        {/* Row 1 */}
-                        <div className="bg-gray-800 p-6 rounded-lg h-80">
-                            <h3 className="text-lg font-semibold text-white mb-4">Efectividad por Jornada</h3>
+                    <div className="bg-gray-800 p-6 rounded-lg h-80">
+                        <h3 className="text-lg font-semibold text-white mb-4">Efectividad por Jornada</h3>
+                        <ResponsiveContainer width="100%" height="100%">
+                            <LineChart data={effectivenessByJornada}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                <XAxis dataKey="name" stroke="#9CA3AF" tick={{ fontSize: 12, fill: '#D1D5DB' }} />
+                                <YAxis stroke="#9CA3AF" domain={[0, 100]} tickFormatter={(val) => `${val}%`} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
+                                <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} formatter={(value: number) => [`${value.toFixed(2)}%`, 'Efectividad']} />
+                                <Line type="monotone" dataKey="Efectividad" stroke="#06B6D4" strokeWidth={2} dot={{ fill: '#06B6D4' }} />
+                            </LineChart>
+                        </ResponsiveContainer>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div className="bg-gray-800 p-6 rounded-lg h-80 flex flex-col">
+                            <h3 className="text-lg font-semibold text-white mb-4">Pases Cortos</h3>
                             <ResponsiveContainer width="100%" height="100%">
-                                <LineChart data={effectivenessByJornada} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                                <BarChart data={pasesCortosData}>
                                     <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                    <XAxis dataKey="name" stroke="#9CA3AF" />
-                                    <YAxis stroke="#9CA3AF" domain={[0, 100]} tickFormatter={(tick) => `${tick}%`}/>
+                                    <XAxis dataKey="name" stroke="#9CA3AF" tick={{ fontSize: 12, fill: '#D1D5DB' }} />
+                                    <YAxis stroke="#9CA3AF" allowDecimals={false} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    <Legend />
-                                    <Line type="monotone" dataKey="Efectividad" stroke="#22D3EE" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 8 }}/>
-                                </LineChart>
-                            </ResponsiveContainer>
-                        </div>
-                        <div className="bg-gray-800 p-6 rounded-lg h-80">
-                             <h3 className="text-lg font-semibold text-white mb-4">Análisis de Pases Cortos</h3>
-                            <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={pasesCortosData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                    <XAxis dataKey="name" stroke="#9CA3AF" />
-                                    <YAxis stroke="#9CA3AF" />
-                                    <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    <Legend />
-                                    <Bar dataKey="Logrados" fill="#22C55E" />
+                                    <Legend wrapperStyle={{ fontSize: '12px' }} />
+                                    <Bar dataKey="Logrados" fill="#10B981" />
                                     <Bar dataKey="No Logrados" fill="#EF4444" />
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
-                        {/* Row 2 */}
-                        <div className="bg-gray-800 p-6 rounded-lg h-80">
-                             <h3 className="text-lg font-semibold text-white mb-4">Análisis de Pases Largos</h3>
+                        <div className="bg-gray-800 p-6 rounded-lg h-80 flex flex-col">
+                            <h3 className="text-lg font-semibold text-white mb-4">Pases Largos</h3>
                             <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={pasesLargosData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                                <BarChart data={pasesLargosData}>
                                     <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                    <XAxis dataKey="name" stroke="#9CA3AF" />
-                                    <YAxis stroke="#9CA3AF" />
+                                    <XAxis dataKey="name" stroke="#9CA3AF" tick={{ fontSize: 12, fill: '#D1D5DB' }} />
+                                    <YAxis stroke="#9CA3AF" allowDecimals={false} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    <Legend />
-                                    <Bar dataKey="Logrados" fill="#22C55E" />
-                                    <Bar dataKey="No Logrados" fill="#EF4444" />
+                                    <Legend wrapperStyle={{ fontSize: '12px' }} />
+                                    <Bar dataKey="Logrados" fill="#3B82F6" />
+                                    <Bar dataKey="No Logrados" fill="#F97316" />
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
-                        <div className="bg-gray-800 p-6 rounded-lg h-80">
-                             <h3 className="text-lg font-semibold text-white mb-4">Análisis de Duelos</h3>
+                        <div className="bg-gray-800 p-6 rounded-lg h-80 flex flex-col">
+                            <h3 className="text-lg font-semibold text-white mb-4">Duelos</h3>
                             <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={duelosData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                                <BarChart data={duelosData}>
                                     <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                    <XAxis dataKey="name" stroke="#9CA3AF" />
-                                    <YAxis stroke="#9CA3AF" />
+                                    <XAxis dataKey="name" stroke="#9CA3AF" tick={{ fontSize: 10, fill: '#D1D5DB' }} />
+                                    <YAxis stroke="#9CA3AF" allowDecimals={false} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    <Legend />
-                                    <Bar dataKey="Logrados" fill="#22C55E" />
-                                    <Bar dataKey="No Logrados" fill="#EF4444" />
+                                    <Legend wrapperStyle={{ fontSize: '12px' }} />
+                                    <Bar dataKey="Logrados" fill="#8B5CF6" />
+                                    <Bar dataKey="No Logrados" fill="#EC4899" />
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
                     </div>
-                     {/* Row 3 - Goalkeeping Charts */}
+
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <div className="bg-gray-800 p-6 rounded-lg h-80 flex flex-col">
-                            <h3 className="text-lg font-semibold text-white mb-4">Rendimiento Ofensivo en Portería</h3>
-                            <div className="flex-1 grid grid-cols-3 items-center text-center">
-                                <div className="relative">
-                                    <p className="text-5xl font-bold text-white">{rendimientoOfensivoPorteria.tirosAPorteria}</p>
-                                    <p className="text-gray-400 mt-2">Tiros a Portería</p>
+                        <div className="bg-gray-800 p-6 rounded-lg">
+                            <h3 className="text-lg font-semibold text-white mb-4">Rendimiento Ofensivo</h3>
+                            <div className="grid grid-cols-3 gap-4 text-center">
+                                <div>
+                                    <p className="text-3xl font-bold text-cyan-400">{rendimientoOfensivoPorteria.tirosAPorteria}</p>
+                                    <p className="text-sm text-gray-400">Tiros a Porteria</p>
                                 </div>
-                                <div className="relative border-l border-r border-gray-700 h-1/2 flex flex-col justify-center">
-                                    <p className="text-5xl font-bold text-white">{rendimientoOfensivoPorteria.golesAFavor}</p>
-                                    <p className="text-gray-400 mt-2">Goles a Favor</p>
+                                <div>
+                                    <p className="text-3xl font-bold text-green-400">{rendimientoOfensivoPorteria.golesAFavor}</p>
+                                    <p className="text-sm text-gray-400">Goles a Favor</p>
                                 </div>
-                                <div className="relative">
-                                    <p className="text-5xl font-bold text-cyan-400">{rendimientoOfensivoPorteria.tasaConversion.toFixed(1)}%</p>
-                                    <p className="text-gray-400 mt-2">Tasa de Conversión</p>
+                                <div>
+                                    <p className="text-3xl font-bold text-yellow-400">{rendimientoOfensivoPorteria.tasaConversion.toFixed(1)}%</p>
+                                    <p className="text-sm text-gray-400">Tasa Conversion</p>
                                 </div>
                             </div>
                         </div>
-                        <div className="bg-gray-800 p-6 rounded-lg h-80">
-                            <h3 className="text-lg font-semibold text-white mb-4">Rendimiento Defensivo en Portería</h3>
-                             <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={rendimientoDefensivoPorteria} layout="vertical" margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                        <div className="bg-gray-800 p-6 rounded-lg h-60 flex flex-col">
+                            <h3 className="text-lg font-semibold text-white mb-4">Rendimiento Defensivo (Porteria)</h3>
+                            <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={rendimientoDefensivoPorteria} layout="vertical">
                                     <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
-                                    <XAxis type="number" stroke="#9CA3AF" allowDecimals={false} />
-                                    <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={100} tick={{ fill: '#D1D5DB' }} />
-                                    <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} cursor={{fill: 'rgba(107, 114, 128, 0.2)'}} />
-                                    <Bar dataKey="value" barSize={35}>
+                                    <XAxis type="number" stroke="#9CA3AF" allowDecimals={false} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
+                                    <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={100} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
+                                    <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
+                                    <Bar dataKey="value" name="Cantidad">
                                         {rendimientoDefensivoPorteria.map((entry, index) => (
                                             <Cell key={`cell-${index}`} fill={entry.fill} />
                                         ))}
@@ -852,54 +1085,52 @@ const DashboardPage: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* === AGREGADO: NUEVAS GRAFICAS DE TRANSICIONES Y RECUPERACION BALON === */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <div className="bg-gray-800 p-6 rounded-lg h-80">
-                            <h3 className="text-lg font-semibold text-white mb-4">Transiciones Ofensivas (Logradas vs No Logradas)</h3>
+                        <div className="bg-gray-800 p-6 rounded-lg h-60 flex flex-col">
+                            <h3 className="text-lg font-semibold text-white mb-4">Transiciones Ofensivas</h3>
                             <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={transicionesOfensivasData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                    <XAxis dataKey="name" stroke="#9CA3AF" />
-                                    <YAxis stroke="#9CA3AF" allowDecimals={false} />
+                                <BarChart data={transicionesOfensivasData} layout="vertical">
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
+                                    <XAxis type="number" stroke="#9CA3AF" allowDecimals={false} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
+                                    <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={100} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    {/* Color verde para Logradas, rojo para No logradas */}
-                                    <Bar dataKey="value">
-                                        {transicionesOfensivasData.map((entry, idx) => (
-                                            <Cell 
-                                                key={`cell-transicion-${idx}`} 
-                                                fill={entry.name === 'Logradas' ? '#22C55E' : '#EF4444'}
-                                            />
+                                    <Bar dataKey="value" name="Cantidad">
+                                        {transicionesOfensivasData.map((entry, index) => (
+                                            <Cell key={`cell-${index}`} fill={entry.fill} />
                                         ))}
                                     </Bar>
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
-                        <div className="bg-gray-800 p-6 rounded-lg h-80">
-                            <h3 className="text-lg font-semibold text-white mb-4">Recuperación de Balón por Jornada</h3>
+                        <div className="bg-gray-800 p-6 rounded-lg h-60 flex flex-col">
+                            <h3 className="text-lg font-semibold text-white mb-4">Transiciones Defensivas</h3>
                             <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={recuperacionBalonPorJornada} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                    <XAxis dataKey="name" stroke="#9CA3AF" />
-                                    <YAxis stroke="#9CA3AF" allowDecimals={false} />
+                                <BarChart data={transicionesDefensivasData} layout="vertical">
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
+                                    <XAxis type="number" stroke="#9CA3AF" allowDecimals={false} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
+                                    <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={100} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    <Bar dataKey="value" fill="#16A34A" />
+                                    <Bar dataKey="value" name="Cantidad">
+                                        {transicionesDefensivasData.map((entry, index) => (
+                                            <Cell key={`cell-${index}`} fill={entry.fill} />
+                                        ))}
+                                    </Bar>
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
                     </div>
 
-                    {/* === AGREGADO: GRAFICAS SCATTER (AL FINAL COMO SOLICITASTE) === */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <div className="bg-gray-800 p-6 rounded-lg h-80">
-                            <h3 className="text-lg font-semibold text-white mb-4">Tiempo de Transiciones Ofensivas Logradas</h3>
+                        <div className="bg-gray-800 p-6 rounded-lg h-80 flex flex-col">
+                            <h3 className="text-lg font-semibold text-white mb-4" style={{ color: SCATTER_LINE_COLOR_1 }}>Tiempos de Transiciones Ofensivas por Jornada</h3>
                             <ResponsiveContainer width="100%" height="100%">
-                                <ScatterChart margin={{ top: 20, right: 20, left: 0, bottom: 40 }}>
-                                    <CartesianGrid stroke="#374151" />
+                                <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 40 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                                     <XAxis 
                                         dataKey="x"
                                         type="number"
                                         name="Jornada"
-                                        domain={['dataMin', 'dataMax']}
+                                        domain={['dataMin - 0.5', 'dataMax + 0.5']}
                                         ticks={Array.from(new Set(scatterTransicionesData.map(d => d.jornadaNum))).sort((a,b)=>a-b)}
                                         tickFormatter={(val) => `Jornada ${Math.round(Number(val))}`}
                                         tick={{ fill: SCATTER_LINE_COLOR_1, fontWeight: 'bold' }}
@@ -921,7 +1152,7 @@ const DashboardPage: React.FC = () => {
                                             return (
                                                 <div style={{ padding: 8, background: '#0b1220', color: '#fff', border: `1px solid ${SCATTER_LINE_COLOR_1}` }}>
                                                     <div style={{ fontWeight: 700 }}>{p.jornadaLabel ?? `Jornada ${Math.round(p.jornadaNum || p.x)}`}</div>
-                                                    <div style={{ marginTop: 4 }}>Duración: {formatSecondsToMMSS(p.y)}</div>
+                                                    <div style={{ marginTop: 4 }}>Duracion: {formatSecondsToMMSS(p.tiempo)}</div>
                                                 </div>
                                             );
                                         }}
@@ -934,19 +1165,20 @@ const DashboardPage: React.FC = () => {
                                 </ScatterChart>
                             </ResponsiveContainer>
                             <div className="text-center text-sm mt-2" style={{ color: SCATTER_LINE_COLOR_1 }}>
-                              {`Puntos encontrados: ${scatterTransicionesData.length}`}
+                                {`Puntos encontrados: ${scatterTransicionesData.length}`}
                             </div>
                         </div>
-                        <div className="bg-gray-800 p-6 rounded-lg h-80">
-                            <h3 className="text-lg font-semibold text-white mb-4">Tiempo de Recuperación de Balón</h3>
+
+                        <div className="bg-gray-800 p-6 rounded-lg h-80 flex flex-col">
+                            <h3 className="text-lg font-semibold text-white mb-4" style={{ color: SCATTER_LINE_COLOR_2 }}>Duracion Perdida-Recuperacion por Jornada</h3>
                             <ResponsiveContainer width="100%" height="100%">
-                                <ScatterChart margin={{ top: 20, right: 20, left: 0, bottom: 40 }}>
-                                    <CartesianGrid stroke="#374151" />
+                                <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 40 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
                                     <XAxis 
                                         dataKey="x"
                                         type="number"
                                         name="Jornada"
-                                        domain={['dataMin', 'dataMax']}
+                                        domain={['dataMin - 0.5', 'dataMax + 0.5']}
                                         ticks={Array.from(new Set(scatterRecuperacionesData.map(d => d.jornadaNum))).sort((a,b)=>a-b)}
                                         tickFormatter={(val) => `Jornada ${Math.round(Number(val))}`}
                                         tick={{ fill: SCATTER_LINE_COLOR_2, fontWeight: 'bold' }}
@@ -968,14 +1200,14 @@ const DashboardPage: React.FC = () => {
                                             return (
                                                 <div style={{ padding: 8, background: '#0b1220', color: '#fff', border: `1px solid ${SCATTER_LINE_COLOR_2}` }}>
                                                     <div style={{ fontWeight: 700 }}>{p.jornadaLabel ?? `Jornada ${Math.round(p.jornadaNum || p.x)}`}</div>
-                                                    <div style={{ marginTop: 4 }}>Duración: {formatSecondsToMMSS(p.y)}</div>
-                                                    <div style={{ marginTop: 4, fontSize: 12, color: '#D1D5DB' }}>Pérdida: {formatSecondsToMMSS(p.lossTime)} — Recuperación: {formatSecondsToMMSS(p.recoveryTime)}</div>
+                                                    <div style={{ marginTop: 4 }}>Duracion: {formatSecondsToMMSS(p.y)}</div>
+                                                    <div style={{ marginTop: 4, fontSize: 12, color: '#D1D5DB' }}>Perdida: {formatSecondsToMMSS(p.lossTime)} — Recuperacion: {formatSecondsToMMSS(p.recoveryTime)}</div>
                                                 </div>
                                             );
                                         }}
                                     />
                                     <Scatter 
-                                        name="Recuperaciones de Balón" 
+                                        name="Recuperaciones de Balon" 
                                         data={scatterRecuperacionesData.map(d => ({ x: d.jornadaX, y: d.tiempo, jornadaNum: d.jornadaNum, jornadaLabel: d.jornadaLabel, lossTime: d.lossTime, recoveryTime: d.recoveryTime }))} 
                                         fill={SCATTER_LINE_COLOR_2}
                                     />
@@ -986,16 +1218,13 @@ const DashboardPage: React.FC = () => {
                             </div>
                         </div>
                     </div>
-                    {/* === FIN GRAFICAS SCATTER === */}
-
-                    {/* === FIN NUEVAS GRAFICAS === */}
                 </div>
             )}
 
             {activeTab === 'player' && (
                 <div className="space-y-6">
                     <div className="bg-gray-800 p-6 rounded-lg h-96">
-                        <h3 className="text-lg font-semibold text-white mb-4">Tiros a Portería Realizados</h3>
+                        <h3 className="text-lg font-semibold text-white mb-4">Tiros a Porteria Realizados</h3>
                         <ResponsiveContainer width="100%" height="100%">
                             <Treemap
                                 data={treemapData}
@@ -1049,22 +1278,21 @@ const DashboardPage: React.FC = () => {
                             </ResponsiveContainer>
                         </div>
                          <div className="bg-gray-800 p-6 rounded-lg h-96 flex flex-col">
-                            <h3 className="text-lg font-semibold text-white mb-4">Aéreos Logrados</h3>
+                            <h3 className="text-lg font-semibold text-white mb-4">Aereos Logrados</h3>
                             <ResponsiveContainer width="100%" height="100%">
                                 <BarChart data={duelosAereosLogradosData} layout="vertical" margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
                                      <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
                                     <XAxis type="number" stroke="#9CA3AF" allowDecimals={false} />
                                     <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={80} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} cursor={{fill: 'rgba(107, 114, 128, 0.2)'}}/>
-                                    <Bar dataKey="value" fill="#EC4899" name="Aéreos" />
+                                    <Bar dataKey="value" fill="#EC4899" name="Aereos" />
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
                     </div>
 
-                    {/* === AGREGADO: RECUPERACION DE BALON POR JUGADOR === */}
                     <div className="bg-gray-800 p-6 rounded-lg h-96 flex flex-col">
-                        <h3 className="text-lg font-semibold text-white mb-4">Recuperación de Balón por Jugador</h3>
+                        <h3 className="text-lg font-semibold text-white mb-4">Recuperacion de Balon por Jugador</h3>
                         <ResponsiveContainer width="100%" height="100%">
                             <BarChart data={recuperacionBalonPorJugador} layout="vertical" margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
@@ -1075,7 +1303,6 @@ const DashboardPage: React.FC = () => {
                             </BarChart>
                         </ResponsiveContainer>
                     </div>
-                    {/* === FIN RECUPERACION DE BALON POR JUGADOR === */}
                 </div>
             )}
         </div>
@@ -1083,3 +1310,4 @@ const DashboardPage: React.FC = () => {
 };
 
 export default DashboardPage;
+
