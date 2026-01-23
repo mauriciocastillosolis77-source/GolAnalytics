@@ -1054,10 +1054,11 @@ const RendimientoPage: React.FC = () => {
                                         <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                                             <path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" />
                                         </svg>
-                                        <span>Generar Analisis</span>
+                                        <span>Generar Análisis Ejecutivo del Jugador</span>
                                     </>
                                 )}
                             </button>
+                            <p className="text-xs text-gray-400 mt-2">Obtén un análisis claro, accionable y comparado contra estándares profesionales por posición.</p>
                         </div>
 
                         {analysisError && (
@@ -1127,8 +1128,9 @@ const RendimientoPage: React.FC = () => {
                                 {/* Comparativo Profesional */}
                                 <div className="bg-cyan-900/20 rounded-lg p-4 border border-cyan-700">
                                     <h4 className="text-lg font-semibold text-cyan-400 mb-3 flex items-center gap-2">
-                                        <span>⚽</span> Comparativo con Profesional ({aiAnalysis.comparativoProfesional.posicion})
+                                        <span>⚽</span> Estándar Profesional esperado ({aiAnalysis.comparativoProfesional.posicion})
                                     </h4>
+                                    <p className="text-xs text-gray-400 mb-3 italic">El análisis se basa en estándares de rendimiento profesional para la posición, utilizados como referencia formativa.</p>
                                     <div className="mb-3">
                                         <p className="text-sm text-gray-400 mb-2">Metricas clave para esta posicion:</p>
                                         <div className="flex flex-wrap gap-2">
