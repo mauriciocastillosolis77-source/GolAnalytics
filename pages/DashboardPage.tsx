@@ -1125,8 +1125,8 @@ const DashboardPage: React.FC = () => {
                 </div>
             )}
 
-            {/* AI Team Analysis Section - SOLO ADMIN - COLAPSABLE AL FINAL */}
-            {profile?.rol === 'admin' && (
+            {/* AI Team Analysis Section - ADMIN Y AUXILIAR - COLAPSABLE AL FINAL */}
+            {(profile?.rol === 'admin' || profile?.rol === 'auxiliar') && (
                 <div className="bg-gray-800 rounded-lg overflow-hidden">
                     {/* Header colapsable */}
                     <button
@@ -1366,5 +1366,3 @@ const DashboardPage: React.FC = () => {
 };
 
 export default DashboardPage;
-
-
