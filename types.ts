@@ -17,17 +17,18 @@ export interface Player {
   nombre: string;
   numero: number;
   posicion: string;
+  team_id?: string;
   created_at?: string;
 }
 
 export interface Tag {
-  id: string;
+  id: string | number;
   match_id: string;
-  team_id?: string;
   player_id: string;
   accion: string;
   resultado: string;
   timestamp: number;
+  // Nuevos campos añadidos para soportar videos y timestamps absolutos
   video_file?: string;
   timestamp_absolute?: number;
   created_at?: string;
@@ -44,6 +45,7 @@ export interface Profile {
   rol: 'admin' | 'auxiliar';
   username?: string;
   avatar_url?: string;
+  team_id?: string;
 }
 
 export interface AuthContextType {
@@ -54,4 +56,66 @@ export interface AuthContextType {
   signIn: (email: string, password: string) => Promise<{ error: AuthError | null }>;
   signUp: (email: string, password: string) => Promise<{ error: AuthError | null }>;
   logout: () => Promise<void>;
+}
+
+export interface AnalysisHistory {
+  id: string;
+  player_id: string;
+  team_id?: string;
+  analysis_data: {
+    tendencia: 'mejorando' | 'estable' | 'bajando';
+    tendenciaDescripcion: string;
+    fortalezas: string[];
+    areasDeMejora: string[];
+    comparativoProfesional: {
+      posicion: string;
+      metricasReferencia: string[];
+      analisis: string;
+    };
+    resumenGeneral: string;
+  };
+  filters_used?: {
+    torneo?: string;
+    categoria?: string;
+    jornadaMin?: number;
+    jornadaMax?: number;
+  };
+  total_acciones: number;
+  efectividad_global: number;
+  created_at: string;
+}
+
+export interface TeamAnalysis {
+  tendencia: 'mejorando' | 'estable' | 'bajando';
+  tendenciaDescripcion: string;
+  fortalezasColectivas: string[];
+  areasDeMejoraColectivas: string[];
+  analisisPorLinea: {
+    defensa: { efectividad: number; observacion: string };
+    medio: { efectividad: number; observacion: string };
+    ataque: { efectividad: number; observacion: string };
+  };
+  jugadoresDestacados: Array<{
+    nombre: string;
+    razon: string;
+  }>;
+  resumenEjecutivo: string;
+  recomendacionesEntrenamiento: string[];
+}
+
+export interface TeamAnalysisHistory {
+  id: string;
+  team_id: string;
+  team_name: string;
+  analysis_data: TeamAnalysis;
+  filters_used?: {
+    torneo?: string;
+    categoria?: string;
+    jornadaMin?: number;
+    jornadaMax?: number;
+  };
+  total_partidos: number;
+  total_acciones: number;
+  efectividad_global: number;
+  created_at: string;
 }

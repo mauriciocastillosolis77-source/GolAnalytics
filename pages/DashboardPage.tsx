@@ -1,8 +1,11 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../services/supabaseClient';
-import type { Match, Tag, Player } from '../types';
+import type { Match, Tag, Player, TeamAnalysis, TeamAnalysisHistory } from '../types';
 import { METRICS } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
+import { analyzeTeamPerformance } from '../services/geminiTeamAnalysisService';
+import { saveTeamAnalysis, getCachedTeamAnalysis, getTeamAnalysisHistory } from '../services/teamAnalysisHistoryService';
+import { useAuth } from '../contexts/AuthContext';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, Cell, Treemap, ScatterChart, Scatter } from 'recharts';
 
 type Filters = {
@@ -19,7 +22,7 @@ const COLORS = ['#06B6D4', '#3B82F6', '#8B5CF6', '#EC4899', '#F97316', '#10B981'
 
 const CustomizedContent = (props: any) => {
     const { depth, x, y, width, height, index, name, size } = props;
-    if (width < 35 || height < 20) return null; // Don't render text in very small boxes
+    if (width < 35 || height < 20) return null;
 
     return (
         <g>
@@ -41,7 +44,7 @@ const CustomizedContent = (props: any) => {
                 dominantBaseline="middle"
                 fill="#fff"
                 fontSize={14}
-                fontWeight="normal" // Ensure text is not bold
+                fontWeight="normal"
             >
                 {name}
             </text>
@@ -52,7 +55,7 @@ const CustomizedContent = (props: any) => {
                 dominantBaseline="middle"
                 fill="#fff"
                 fontSize={12}
-                fontWeight="normal" // Ensure text is not bold
+                fontWeight="normal"
             >
                 ({size})
             </text>
@@ -60,29 +63,14 @@ const CustomizedContent = (props: any) => {
     );
 };
 
-/*
-  Helper: parseTimeToSeconds
-  - Convierte números (segundos) y strings "mm:ss" o "m:ss" en segundos (number).
-  - También acepta formatos decimales con coma o punto, y objetos con campos comunes.
-  - Devuelve null si no puede parsear.
-*/
 const parseTimeToSeconds = (value: any): number | null => {
     if (value === null || value === undefined) return null;
-
-    // si ya viene como número
     if (typeof value === 'number' && !isNaN(value)) return value;
-
-    // si viene como string
     if (typeof value === 'string') {
         let s = value.trim();
-
-        // reemplazar coma decimal por punto (ej. "12,34")
         s = s.replace(',', '.');
-
-        // si formato mm:ss o hh:mm:ss -> tomar últimas dos partes como minutos:segundos o horas:minutos:segundos
         if (s.includes(':')) {
             const parts = s.split(':').map(p => p.trim());
-            // si vienen hh:mm:ss -> sumar horas
             if (parts.length === 3) {
                 const hours = parseFloat(parts[0]) || 0;
                 const mins = parseFloat(parts[1]) || 0;
@@ -95,29 +83,18 @@ const parseTimeToSeconds = (value: any): number | null => {
                 return mins * 60 + secs;
             }
         }
-
-        // si es un solo número en texto, interpretarlo como segundos
         const num = parseFloat(s);
         return isNaN(num) ? null : num;
     }
-
-    // si viene como objeto (ej. metadata)
     if (typeof value === 'object') {
-        // comprobar campos comunes
         const candidate = (value as any).tiempo ?? (value as any).time ?? (value as any).duration ?? (value as any).seconds;
         if (candidate !== undefined) {
             return parseTimeToSeconds(candidate);
         }
     }
-
     return null;
 };
 
-/*
-  Helper: getTagTime
-  - Extrae el tiempo (en segundos) de un tag probando varios campos y normalizando
-  - Si detecta valores extremadamente grandes (posible ms), divide por 1000
-*/
 const getTagTime = (tag: any): number | null => {
     if (!tag) return null;
     const raw = (tag as any).tiempo_transicion
@@ -132,26 +109,17 @@ const getTagTime = (tag: any): number | null => {
         ?? (tag as any).timestamp_seconds;
 
     let seconds = parseTimeToSeconds(raw);
-
-    // Si parse devolvió null, intentar leer directamente tag.timestamp numérico
     if (seconds === null) {
         const maybeNum = Number(raw);
         if (!isNaN(maybeNum)) seconds = maybeNum;
     }
-
     if (seconds === null) return null;
-
-    // Normalizar si parece estar en milisegundos (valores mayores a 10000 -> ms)
     if (seconds > 10000) {
         seconds = seconds / 1000;
     }
-
     return seconds;
 };
 
-/*
- Helper: formatear segundos a mm:ss o hh:mm:ss para mostrar en eje Y y tooltips
-*/
 const formatSecondsToMMSS = (value: number | null | undefined) => {
     if (value === null || value === undefined || isNaN(Number(value))) return '';
     const total = Math.floor(Number(value));
@@ -160,18 +128,38 @@ const formatSecondsToMMSS = (value: number | null | undefined) => {
     const seconds = total % 60;
     const pad = (n: number) => n.toString().padStart(2, '0');
     if (hours > 0) {
-        return `${hours}:${pad(minutes)}:${pad(seconds)}`; // hh:mm:ss
+        return `${hours}:${pad(minutes)}:${pad(seconds)}`;
     }
-    return `${minutes}:${pad(seconds)}`; // mm:ss
+    return `${minutes}:${pad(seconds)}`;
+};
+
+const formatHistoryDate = (dateStr: string): string => {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('es-MX', {
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+    });
 };
 
 const DashboardPage: React.FC = () => {
+    const { profile } = useAuth();
     const [matches, setMatches] = useState<Match[]>([]);
     const [tags, setTags] = useState<Tag[]>([]);
     const [players, setPlayers] = useState<Player[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState<'general' | 'player'>('general');
+    
+    const [teamAnalysis, setTeamAnalysis] = useState<TeamAnalysis | null>(null);
+    const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const [analysisError, setAnalysisError] = useState<string | null>(null);
+    const [isFromCache, setIsFromCache] = useState(false);
+    const [showHistory, setShowHistory] = useState(false);
+    const [analysisHistory, setAnalysisHistory] = useState<TeamAnalysisHistory[]>([]);
+    const [showAISection, setShowAISection] = useState(false);
     
     const [filters, setFilters] = useState<Filters>({
         matchId: 'all',
@@ -192,13 +180,7 @@ const DashboardPage: React.FC = () => {
                 if (matchesError) throw matchesError;
                 setMatches(matchesData || []);
 
-                // ---------- Reemplazo: obtener todos los tags en batches para evitar límite de 1000 filas ----------
-                /*
-                  Obtener todos los tags en páginas:
-                  - Primero pedimos count exacto (select ... { count: 'exact' })
-                  - Si hay más filas que la página inicial, hacemos requests con .range() en batches
-                */
-                const pageSize = 1000; // tamaño de batch: puedes reducirlo (p.ej. 500) si hay problemas de memoria
+                const pageSize = 1000;
                 const { data: firstPageData, count, error: firstError } = await supabase
                   .from('tags')
                   .select('*', { count: 'exact' })
@@ -210,7 +192,6 @@ const DashboardPage: React.FC = () => {
                 console.log('[Dashboard] tags count (total reported):', count, 'firstPageRows:', allTags.length);
 
                 if (typeof count === 'number' && count > allTags.length) {
-                  // hay más filas: fetch por rangos
                   for (let from = allTags.length; from < count; from += pageSize) {
                     const to = Math.min(from + pageSize - 1, count - 1);
                     const { data: pageData, error: pageError } = await supabase
@@ -225,7 +206,6 @@ const DashboardPage: React.FC = () => {
 
                 setTags(allTags || []);
                 console.log('[Dashboard] total tags loaded into state:', (allTags || []).length);
-                // ---------- fin reemplazo ----------
 
                 const { data: playersData, error: playersError } = await supabase.from('players').select('*');
                 if (playersError) throw playersError;
@@ -279,6 +259,98 @@ const DashboardPage: React.FC = () => {
         const efectividad = total > 0 ? (logrados / total) * 100 : 0;
         return { total, efectividad };
     }, [filteredTags]);
+
+    const selectedTeamName = useMemo(() => {
+        if (filters.equipo !== 'all') return filters.equipo;
+        const teamNames = [...new Set(filteredMatches.map(m => m.nombre_equipo).filter(Boolean))];
+        return teamNames.length === 1 ? teamNames[0] : teamNames.length > 1 ? 'Varios equipos' : 'Sin equipo';
+    }, [filters.equipo, filteredMatches]);
+
+    const selectedTeamId = useMemo(() => {
+        if (filters.equipo !== 'all') {
+            const match = matches.find(m => m.nombre_equipo === filters.equipo);
+            return match?.team_id || null;
+        }
+        const teamIds = [...new Set(filteredMatches.map(m => m.team_id).filter(Boolean))];
+        return teamIds.length === 1 ? teamIds[0] : null;
+    }, [filters.equipo, filteredMatches, matches]);
+
+    useEffect(() => {
+        if (selectedTeamId) {
+            getTeamAnalysisHistory(selectedTeamId).then(setAnalysisHistory);
+        } else {
+            setAnalysisHistory([]);
+        }
+    }, [selectedTeamId]);
+
+    const runTeamAIAnalysis = async (forceNew: boolean = false) => {
+        if (filteredTags.length === 0 || !selectedTeamId) return;
+
+        setIsAnalyzing(true);
+        setAnalysisError(null);
+
+        try {
+            const totalAcciones = filteredTags.length;
+            const totalLogradas = filteredTags.filter(t => t.resultado === 'logrado').length;
+            const efectividadGlobal = totalAcciones > 0 ? Math.round((totalLogradas / totalAcciones) * 100) : 0;
+
+            const currentFilters = {
+                torneo: filters.torneo !== 'all' ? filters.torneo : undefined,
+                categoria: filters.categoria !== 'all' ? filters.categoria : undefined,
+            };
+
+            if (!forceNew) {
+                const cached = await getCachedTeamAnalysis(
+                    selectedTeamId,
+                    filteredMatches.length,
+                    totalAcciones,
+                    efectividadGlobal,
+                    currentFilters
+                );
+
+                if (cached) {
+                    setTeamAnalysis(cached.analysis_data);
+                    setIsFromCache(true);
+                    setIsAnalyzing(false);
+                    return;
+                }
+            }
+
+            const filteredPlayers = players.filter(p => {
+                const playerTagIds = new Set(filteredTags.map(t => t.player_id));
+                return playerTagIds.has(p.id);
+            });
+
+            const analysis = await analyzeTeamPerformance(
+                selectedTeamName,
+                filteredMatches,
+                filteredTags,
+                filteredPlayers
+            );
+
+            setTeamAnalysis(analysis);
+            setIsFromCache(false);
+
+            await saveTeamAnalysis({
+                teamId: selectedTeamId,
+                teamName: selectedTeamName,
+                analysisData: analysis,
+                filtersUsed: currentFilters,
+                totalPartidos: filteredMatches.length,
+                totalAcciones,
+                efectividadGlobal
+            });
+
+            const updatedHistory = await getTeamAnalysisHistory(selectedTeamId);
+            setAnalysisHistory(updatedHistory);
+
+        } catch (err: any) {
+            console.error('Error in team AI analysis:', err);
+            setAnalysisError(err.message || 'Error al generar el análisis del equipo');
+        } finally {
+            setIsAnalyzing(false);
+        }
+    };
     
     const effectivenessByJornada = useMemo(() => {
         const dataByJornada: { [key: string]: { logradas: number, total: number } } = {};
@@ -432,7 +504,7 @@ const DashboardPage: React.FC = () => {
                 value: count,
             }))
             .sort((a, b) => b.value - a.value)
-            .slice(0, 10); // Top 10
+            .slice(0, 10);
     }, [filteredTags, players]);
 
     const pasesLargosLogradosData = useMemo(() => {
@@ -451,7 +523,7 @@ const DashboardPage: React.FC = () => {
                 value: count,
             }))
             .sort((a, b) => b.value - a.value)
-            .slice(0, 10); // Top 10
+            .slice(0, 10);
     }, [filteredTags, players]);
     
     const duelos1v1LogradosData = useMemo(() => {
@@ -492,9 +564,6 @@ const DashboardPage: React.FC = () => {
             .slice(0, 10);
     }, [filteredTags, players]);
 
-    // === NUEVAS GRAFICAS ===
-
-    // 1. Transiciones ofensivas logradas/no logradas (General)
     const transicionesOfensivasData = useMemo(() => {
         const logradas = filteredTags.filter(
             t => t.accion === 'Transición ofensiva lograda'
@@ -508,7 +577,6 @@ const DashboardPage: React.FC = () => {
         ];
     }, [filteredTags]);
 
-    // 2. Recuperación de balón por jornada (General)
     const recuperacionBalonPorJornada = useMemo(() => {
         const dataByJornada: { [jornada: string]: number } = {};
         filteredTags.forEach(tag => {
@@ -528,7 +596,6 @@ const DashboardPage: React.FC = () => {
             .sort((a, b) => parseInt(a.name.split(' ')[1]) - parseInt(b.name.split(' ')[1]));
     }, [filteredTags, matches]);
 
-    // 3. Recuperación de balón por jugador (Jugador)
     const recuperacionBalonPorJugador = useMemo(() => {
         const counts: { [playerId: string]: number } = {};
         filteredTags
@@ -546,12 +613,7 @@ const DashboardPage: React.FC = () => {
             .sort((a, b) => b.value - a.value);
     }, [filteredTags, players]);
 
-    // === FIN NUEVAS GRAFICAS ===
-
-    // === SCATTER CHART DATOS (AGREGADOS) ===
-    // Grafica 1: Duración desde la recuperación hasta la transición ofensiva lograda
     const scatterTransicionesData = useMemo(() => {
-        // Agrupar tags por match (usar filteredTags para respetar filtros)
         const tagsByMatch: Record<string, any[]> = {};
         filteredTags.forEach(tag => {
             if (!tag.match_id) return;
@@ -572,22 +634,20 @@ const DashboardPage: React.FC = () => {
             const jornadaNum = match && match.jornada ? Number(match.jornada) : null;
             if (jornadaNum === null) return;
 
-            // obtener solo recoveries y transiciones logradas
             const recoveries = list.filter((t: any) => t.accion === 'Recuperación de balón').map((r: any) => ({ time: r.__timeSeconds, id: r.id }));
             const transitions = list.filter((t: any) => t.accion === 'Transición ofensiva lograda' && t.resultado === 'logrado').map((tr: any) => ({ time: tr.__timeSeconds, id: tr.id }));
 
             if (transitions.length === 0 || recoveries.length === 0) return;
 
             transitions.forEach(tr => {
-                // buscar la última recovery con tiempo < transition.time
                 const prevs = recoveries.filter(r => r.time < tr.time);
-                if (prevs.length === 0) return; // no contabilizar si no hay recovery previa
+                if (prevs.length === 0) return;
                 const lastRec = prevs[prevs.length - 1];
                 const duration = tr.time - lastRec.time;
                 if (duration < 0) return;
                 points.push({
                     jornadaNum,
-                    jornadaX: jornadaNum, // jitter se aplicará luego
+                    jornadaX: jornadaNum,
                     jornadaLabel: `Jornada ${jornadaNum}`,
                     tiempo: duration,
                     tagId: tr.id
@@ -595,7 +655,6 @@ const DashboardPage: React.FC = () => {
             });
         });
 
-        // aplicar jitter horizontal por jornada
         const byJornada: Record<number, any[]> = {};
         points.forEach(p => {
             if (!byJornada[p.jornadaNum]) byJornada[p.jornadaNum] = [];
@@ -620,12 +679,9 @@ const DashboardPage: React.FC = () => {
         return final.sort((a, b) => a.jornadaNum - b.jornadaNum || a.jornadaX - b.jornadaX);
     }, [filteredTags, matches]);
 
-    // Grafica 2: Tiempo absoluto (en segundos) de las recuperaciones de balón
-    // MODIFICADO: ahora calcula la duración desde la ÚLTIMA "Pérdida de balón" previa en el MISMO partido hasta la recuperación
     const scatterRecuperacionesData = useMemo(() => {
         const pts: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId?: string; lossTime?: number; recoveryTime?: number }[] = [];
 
-        // Agrupar tags por match y normalizar tiempo (usar getTagTime)
         const tagsByMatch: Record<string, any[]> = {};
         filteredTags.forEach(tag => {
             if (!tag.match_id) return;
@@ -638,7 +694,6 @@ const DashboardPage: React.FC = () => {
             });
         });
 
-        // Para cada partido, ordenar cronológicamente y emparejar: recovery -> última loss previa
         Object.keys(tagsByMatch).forEach(matchId => {
             const list = tagsByMatch[matchId].sort((a, b) => a.__timeSeconds - b.__timeSeconds);
             const match = matches.find(m => m.id === matchId);
@@ -651,17 +706,15 @@ const DashboardPage: React.FC = () => {
             if (recoveries.length === 0 || losses.length === 0) return;
 
             recoveries.forEach(rec => {
-                // buscar la última pérdida con tiempo < recovery.time
                 const prevLosses = losses.filter(l => l.time < rec.time);
-                if (prevLosses.length === 0) return; // no hay pérdida previa -> no contabilizar
+                if (prevLosses.length === 0) return;
                 const lastLoss = prevLosses[prevLosses.length - 1];
                 const duration = rec.time - lastLoss.time;
                 if (duration < 0) return;
-                // Validación de rango (1s .. 65:59 = 3959s) para evitar outliers
                 if (duration < 1 || duration > 3959) return;
                 pts.push({
                     jornadaNum,
-                    jornadaX: jornadaNum, // jitter aplicado después
+                    jornadaX: jornadaNum,
                     jornadaLabel: `Jornada ${jornadaNum}`,
                     tiempo: duration,
                     tagId: rec.id,
@@ -671,7 +724,6 @@ const DashboardPage: React.FC = () => {
             });
         });
 
-        // aplicar jitter horizontal similar al otro scatter
         const byJornada: Record<number, any[]> = {};
         pts.forEach(p => {
             if (!byJornada[p.jornadaNum]) byJornada[p.jornadaNum] = [];
@@ -696,8 +748,8 @@ const DashboardPage: React.FC = () => {
         return final.sort((a, b) => a.jornadaNum - b.jornadaNum || a.jornadaX - b.jornadaX);
     }, [filteredTags, matches]);
 
-    const SCATTER_LINE_COLOR_1 = "#F97316"; // naranja intenso
-    const SCATTER_LINE_COLOR_2 = "#22D3EE"; // cyan brillante
+    const SCATTER_LINE_COLOR_1 = "#F97316";
+    const SCATTER_LINE_COLOR_2 = "#22D3EE";
 
     if (loading) return <div className="flex justify-center items-center h-full"><Spinner /></div>;
     if (error) return <div className="text-center text-red-400 p-8">{error}</div>;
@@ -852,7 +904,7 @@ const DashboardPage: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* === AGREGADO: NUEVAS GRAFICAS DE TRANSICIONES Y RECUPERACION BALON === */}
+                    {/* TRANSICIONES Y RECUPERACION BALON */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <div className="bg-gray-800 p-6 rounded-lg h-80">
                             <h3 className="text-lg font-semibold text-white mb-4">Transiciones Ofensivas (Logradas vs No Logradas)</h3>
@@ -862,7 +914,6 @@ const DashboardPage: React.FC = () => {
                                     <XAxis dataKey="name" stroke="#9CA3AF" />
                                     <YAxis stroke="#9CA3AF" allowDecimals={false} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    {/* Color verde para Logradas, rojo para No logradas */}
                                     <Bar dataKey="value">
                                         {transicionesOfensivasData.map((entry, idx) => (
                                             <Cell 
@@ -888,7 +939,7 @@ const DashboardPage: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* === AGREGADO: GRAFICAS SCATTER (AL FINAL COMO SOLICITASTE) === */}
+                    {/* SCATTER PLOTS */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <div className="bg-gray-800 p-6 rounded-lg h-80">
                             <h3 className="text-lg font-semibold text-white mb-4">Tiempo de Transiciones Ofensivas Logradas</h3>
@@ -986,9 +1037,6 @@ const DashboardPage: React.FC = () => {
                             </div>
                         </div>
                     </div>
-                    {/* === FIN GRAFICAS SCATTER === */}
-
-                    {/* === FIN NUEVAS GRAFICAS === */}
                 </div>
             )}
 
@@ -1062,7 +1110,6 @@ const DashboardPage: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* === AGREGADO: RECUPERACION DE BALON POR JUGADOR === */}
                     <div className="bg-gray-800 p-6 rounded-lg h-96 flex flex-col">
                         <h3 className="text-lg font-semibold text-white mb-4">Recuperación de Balón por Jugador</h3>
                         <ResponsiveContainer width="100%" height="100%">
@@ -1075,7 +1122,243 @@ const DashboardPage: React.FC = () => {
                             </BarChart>
                         </ResponsiveContainer>
                     </div>
-                    {/* === FIN RECUPERACION DE BALON POR JUGADOR === */}
+                </div>
+            )}
+
+            {/* AI Team Analysis Section - SOLO ADMIN - COLAPSABLE AL FINAL */}
+            {profile?.rol === 'admin' && (
+                <div className="bg-gray-800 rounded-lg overflow-hidden">
+                    {/* Header colapsable */}
+                    <button
+                        onClick={() => setShowAISection(!showAISection)}
+                        className="w-full flex items-center justify-between p-4 hover:bg-gray-750 transition-colors"
+                    >
+                        <div className="flex items-center gap-3">
+                            <div className="bg-gradient-to-r from-purple-600 to-cyan-600 p-2 rounded-lg">
+                                <span className="text-2xl">⚽</span>
+                            </div>
+                            <div className="text-left">
+                                <h3 className="text-lg font-semibold text-white">Análisis especializado GolAnalytics</h3>
+                                <p className="text-xs text-gray-400">Resumen ejecutivo del rendimiento colectivo con recomendaciones</p>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            {teamAnalysis && (
+                                <span className={`text-xs px-2 py-1 rounded ${
+                                    teamAnalysis.tendencia === 'mejorando' ? 'bg-green-900/50 text-green-400' :
+                                    teamAnalysis.tendencia === 'bajando' ? 'bg-red-900/50 text-red-400' :
+                                    'bg-yellow-900/50 text-yellow-400'
+                                }`}>
+                                    {teamAnalysis.tendencia}
+                                </span>
+                            )}
+                            <svg 
+                                xmlns="http://www.w3.org/2000/svg" 
+                                className={`h-5 w-5 text-gray-400 transition-transform ${showAISection ? 'rotate-180' : ''}`} 
+                                viewBox="0 0 20 20" 
+                                fill="currentColor"
+                            >
+                                <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                            </svg>
+                        </div>
+                    </button>
+
+                    {/* Contenido colapsable */}
+                    {showAISection && (
+                        <div className="p-6 pt-2 border-t border-gray-700">
+                            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
+                                <div>
+                                    <p className="text-sm text-gray-300">Equipo: <span className="font-semibold text-white">{selectedTeamName}</span></p>
+                                </div>
+                                <div className="flex flex-col items-end gap-2">
+                                    <div className="flex gap-2">
+                                        <button
+                                            onClick={() => runTeamAIAnalysis(false)}
+                                            disabled={isAnalyzing || filteredTags.length === 0 || !selectedTeamId}
+                                            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+                                                isAnalyzing || filteredTags.length === 0 || !selectedTeamId
+                                                    ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                                                    : 'bg-gradient-to-r from-purple-600 to-cyan-600 hover:from-purple-700 hover:to-cyan-700 text-white'
+                                            }`}
+                                        >
+                                            {isAnalyzing ? (
+                                                <>
+                                                    <Spinner size="h-4 w-4" />
+                                                    <span>Analizando equipo...</span>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <span>⚽</span>
+                                                    <span>Generar análisis ejecutivo del equipo</span>
+                                                </>
+                                            )}
+                                        </button>
+                                        {analysisHistory.length > 0 && (
+                                            <button
+                                                onClick={() => setShowHistory(!showHistory)}
+                                                className="flex items-center gap-2 px-3 py-2 rounded-lg font-medium bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
+                                            >
+                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+                                                </svg>
+                                                <span>Historial ({analysisHistory.length})</span>
+                                            </button>
+                                        )}
+                                    </div>
+                                    {isFromCache && teamAnalysis && (
+                                        <div className="flex items-center gap-2 text-xs text-amber-400">
+                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                                <path fillRule="evenodd" d="M5 2a1 1 0 011 1v1h8V3a1 1 0 112 0v1a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V6a2 2 0 012-2V3a1 1 0 011-1zm9 6H6v8h8V8z" clipRule="evenodd" />
+                                            </svg>
+                                            <span>Análisis reciente (guardado)</span>
+                                            <button 
+                                                onClick={() => runTeamAIAnalysis(true)}
+                                                className="underline hover:text-amber-300"
+                                            >
+                                                Generar nuevo
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {showHistory && analysisHistory.length > 0 && (
+                                <div className="bg-gray-700/50 rounded-lg p-4 mb-4 border border-gray-600">
+                                    <h4 className="text-sm font-semibold text-gray-300 mb-3">Historial de Análisis del Equipo</h4>
+                                    <div className="space-y-2 max-h-48 overflow-y-auto">
+                                        {analysisHistory.map((item) => (
+                                            <button
+                                                key={item.id}
+                                                onClick={() => {
+                                                    setTeamAnalysis(item.analysis_data);
+                                                    setIsFromCache(true);
+                                                    setShowHistory(false);
+                                                }}
+                                                className="w-full text-left p-3 rounded bg-gray-800 hover:bg-gray-750 border border-gray-600 transition-colors"
+                                            >
+                                                <div className="flex justify-between items-center">
+                                                    <span className="text-sm text-white">{formatHistoryDate(item.created_at)}</span>
+                                                    <span className={`text-xs px-2 py-1 rounded ${
+                                                        item.analysis_data.tendencia === 'mejorando' ? 'bg-green-900/50 text-green-400' :
+                                                        item.analysis_data.tendencia === 'bajando' ? 'bg-red-900/50 text-red-400' :
+                                                        'bg-yellow-900/50 text-yellow-400'
+                                                    }`}>
+                                                        {item.analysis_data.tendencia}
+                                                    </span>
+                                                </div>
+                                                <p className="text-xs text-gray-400 mt-1">
+                                                    {item.total_partidos} partidos | {item.total_acciones} acciones | {item.efectividad_global}% efectividad
+                                                </p>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {analysisError && (
+                                <div className="bg-red-900/50 border border-red-500 rounded-lg p-4 mb-4">
+                                    <p className="text-red-300">{analysisError}</p>
+                                </div>
+                            )}
+
+                            {!selectedTeamId && filteredTags.length > 0 && (
+                                <div className="text-center py-4 text-amber-400">
+                                    <p>Selecciona un equipo específico en los filtros para generar el análisis.</p>
+                                </div>
+                            )}
+
+                            {filteredTags.length === 0 && !teamAnalysis && (
+                                <div className="text-center py-8 text-gray-400">
+                                    <p>No hay datos disponibles con los filtros seleccionados.</p>
+                                </div>
+                            )}
+
+                            {teamAnalysis && (
+                                <div className="space-y-6">
+                                    <div className={`rounded-lg p-4 ${
+                                        teamAnalysis.tendencia === 'mejorando' ? 'bg-green-900/30 border border-green-500' :
+                                        teamAnalysis.tendencia === 'bajando' ? 'bg-red-900/30 border border-red-500' :
+                                        'bg-yellow-900/30 border border-yellow-500'
+                                    }`}>
+                                        <div className="flex items-center gap-3 mb-2">
+                                            <span className="text-2xl">
+                                                {teamAnalysis.tendencia === 'mejorando' ? '📈' : teamAnalysis.tendencia === 'bajando' ? '📉' : '➡️'}
+                                            </span>
+                                            <h4 className="text-lg font-semibold capitalize">{teamAnalysis.tendencia}</h4>
+                                        </div>
+                                        <p className="text-gray-300">{teamAnalysis.tendenciaDescripcion}</p>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        {['defensa', 'medio', 'ataque'].map((linea) => {
+                                            const lineaData = teamAnalysis.analisisPorLinea[linea as keyof typeof teamAnalysis.analisisPorLinea];
+                                            return (
+                                                <div key={linea} className="bg-gray-700/50 rounded-lg p-4">
+                                                    <h5 className="text-sm font-semibold text-gray-300 capitalize mb-2">{linea}</h5>
+                                                    <p className="text-2xl font-bold text-cyan-400">{lineaData.efectividad}%</p>
+                                                    <p className="text-xs text-gray-400 mt-1">{lineaData.observacion}</p>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        <div className="bg-green-900/20 rounded-lg p-4 border border-green-800">
+                                            <h4 className="text-lg font-semibold text-green-400 mb-3">Fortalezas Colectivas</h4>
+                                            <ul className="space-y-2">
+                                                {teamAnalysis.fortalezasColectivas.map((f, i) => (
+                                                    <li key={i} className="flex items-start gap-2 text-gray-300">
+                                                        <span className="text-green-400 mt-1">✓</span>
+                                                        <span>{f}</span>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                        <div className="bg-amber-900/20 rounded-lg p-4 border border-amber-800">
+                                            <h4 className="text-lg font-semibold text-amber-400 mb-3">Oportunidades de Mejora</h4>
+                                            <ul className="space-y-2">
+                                                {teamAnalysis.areasDeMejoraColectivas.map((a, i) => (
+                                                    <li key={i} className="flex items-start gap-2 text-gray-300">
+                                                        <span className="text-amber-400 mt-1">→</span>
+                                                        <span>{a}</span>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-purple-900/20 rounded-lg p-4 border border-purple-800">
+                                        <h4 className="text-lg font-semibold text-purple-400 mb-3">Jugadores Destacados</h4>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            {teamAnalysis.jugadoresDestacados.map((j, i) => (
+                                                <div key={i} className="bg-gray-800/50 rounded p-3">
+                                                    <p className="font-semibold text-white">{j.nombre}</p>
+                                                    <p className="text-sm text-gray-400">{j.razon}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-gray-700/50 rounded-lg p-4">
+                                        <h4 className="text-lg font-semibold text-white mb-3">Resumen Ejecutivo</h4>
+                                        <p className="text-gray-300 leading-relaxed">{teamAnalysis.resumenEjecutivo}</p>
+                                    </div>
+
+                                    <div className="bg-cyan-900/20 rounded-lg p-4 border border-cyan-800">
+                                        <h4 className="text-lg font-semibold text-cyan-400 mb-3">Recomendaciones de Entrenamiento</h4>
+                                        <ul className="space-y-2">
+                                            {teamAnalysis.recomendacionesEntrenamiento.map((r, i) => (
+                                                <li key={i} className="flex items-start gap-2 text-gray-300">
+                                                    <span className="bg-cyan-600 text-white text-xs px-2 py-0.5 rounded mt-0.5">{i + 1}</span>
+                                                    <span>{r}</span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             )}
         </div>
@@ -1083,3 +1366,5 @@ const DashboardPage: React.FC = () => {
 };
 
 export default DashboardPage;
+
+
