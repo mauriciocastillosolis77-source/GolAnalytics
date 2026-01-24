@@ -7,6 +7,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { ACTION_GROUPS } from '../constants/actionGroups';
 import { analyzePlayerPerformance, type PerformanceAnalysis } from '../services/geminiPerformanceService';
 import { getCachedAnalysis, saveAnalysis, getPlayerAnalysisHistory, formatHistoryDate } from '../services/analysisHistoryService';
+import { exportPlayerAnalysisToPDF } from '../services/pdfExportService';
 
 const RendimientoPage: React.FC = () => {
     const { profile } = useAuth();
@@ -1300,6 +1301,32 @@ const RendimientoPage: React.FC = () => {
                                                 <span>📋</span> Resumen y Recomendaciones
                                             </h4>
                                             <p className="text-gray-300">{aiAnalysis.resumenGeneral}</p>
+                                        </div>
+
+                                        {/* Botón Descargar PDF */}
+                                        <div className="flex justify-center pt-4">
+                                            <button
+                                                onClick={async () => {
+                                                    try {
+                                                        await exportPlayerAnalysisToPDF(aiAnalysis, {
+                                                            userName: profile?.nombre || 'Usuario',
+                                                            teamName: `Academia ${profile?.nombre || 'GolAnalytics'}`,
+                                                            playerName: selectedPlayer?.nombre,
+                                                            playerNumber: selectedPlayer?.numero,
+                                                            playerPosition: selectedPlayer?.posicion
+                                                        });
+                                                    } catch (error) {
+                                                        console.error('Error exporting PDF:', error);
+                                                        alert('Error al generar el PDF. Intenta de nuevo.');
+                                                    }
+                                                }}
+                                                className="flex items-center gap-2 px-6 py-3 rounded-lg font-medium bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white transition-colors"
+                                            >
+                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                                    <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                                                </svg>
+                                                <span>Descargar PDF</span>
+                                            </button>
                                         </div>
                                     </div>
                                 )}

@@ -238,4 +238,3 @@ export const analyzeTeamPerformance = async (
     const analysis: TeamAnalysis = JSON.parse(text.trim());
     return analysis;
 };
-
