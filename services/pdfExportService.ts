@@ -1,4 +1,5 @@
 import jsPDF from 'jspdf';
+import { LOGO_BASE64 } from '../constants/logoBase64';
 
 interface TeamAnalysisData {
   tendencia: string;
@@ -56,15 +57,9 @@ function getTendenciaColor(tendencia: string): [number, number, number] {
   }
 }
 
-async function loadLogo(): Promise<string | undefined> {
+function loadLogo(): string | undefined {
   try {
-    const response = await fetch('/images/golanalytics-logo.png');
-    const blob = await response.blob();
-    return new Promise((resolve) => {
-      const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result as string);
-      reader.readAsDataURL(blob);
-    });
+    return LOGO_BASE64;
   } catch (e) {
     console.warn('Could not load logo');
     return undefined;
@@ -272,7 +267,7 @@ export async function exportTeamAnalysisToPDF(
   const pageWidth = doc.internal.pageSize.getWidth();
   const maxWidth = pageWidth - 30;
   
-  const logoBase64 = await loadLogo();
+  const logoBase64 = loadLogo();
   
   let y = addHeader(doc, options, 'ANALISIS EJECUTIVO DEL EQUIPO', logoBase64);
   
@@ -371,7 +366,7 @@ export async function exportPlayerAnalysisToPDF(
   const pageWidth = doc.internal.pageSize.getWidth();
   const maxWidth = pageWidth - 30;
   
-  const logoBase64 = await loadLogo();
+  const logoBase64 = loadLogo();
   
   let y = addHeader(doc, options, 'ANALISIS DE RENDIMIENTO INDIVIDUAL', logoBase64);
   
