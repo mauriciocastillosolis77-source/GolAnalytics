@@ -3,8 +3,8 @@ import { supabase } from '../services/supabaseClient';
 import type { Match, Tag, Player, TeamAnalysis, TeamAnalysisHistory } from '../types';
 import { METRICS } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
-import { analyzeTeamPerformance } from '../services/geminiTeamAnalysisService_v1';
-import { saveTeamAnalysis, getCachedTeamAnalysis, getTeamAnalysisHistory } from '../services/teamAnalysisHistoryService_v1';
+import { analyzeTeamPerformance } from '../services/geminiTeamAnalysisService';
+import { saveTeamAnalysis, getCachedTeamAnalysis, getTeamAnalysisHistory } from '../services/teamAnalysisHistoryService';
 import { useAuth } from '../contexts/AuthContext';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, Cell, Treemap, ScatterChart, Scatter } from 'recharts';
 
@@ -1328,4 +1328,5 @@ const DashboardPage: React.FC = () => {
 };
 
 export default DashboardPage;
+
 
