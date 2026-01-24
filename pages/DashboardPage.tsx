@@ -159,6 +159,7 @@ const DashboardPage: React.FC = () => {
     const [isFromCache, setIsFromCache] = useState(false);
     const [showHistory, setShowHistory] = useState(false);
     const [analysisHistory, setAnalysisHistory] = useState<TeamAnalysisHistory[]>([]);
+    const [showAISection, setShowAISection] = useState(false);
     
     const [filters, setFilters] = useState<Filters>({
         matchId: 'all',
@@ -792,206 +793,6 @@ const DashboardPage: React.FC = () => {
                 </div>
             </div>
 
-            {/* AI Team Analysis Section - SOLO ADMIN */}
-            {profile?.rol === 'admin' && (
-                <div className="bg-gray-800 rounded-lg p-6">
-                    <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
-                        <div>
-                            <h3 className="text-xl font-semibold text-white">Análisis IA del Equipo: {selectedTeamName}</h3>
-                            <p className="text-xs text-gray-400 mt-1">Genera un resumen ejecutivo del rendimiento colectivo con recomendaciones de entrenamiento.</p>
-                        </div>
-                        <div className="flex flex-col items-end gap-2">
-                            <div className="flex gap-2">
-                                <button
-                                    onClick={() => runTeamAIAnalysis(false)}
-                                    disabled={isAnalyzing || filteredTags.length === 0 || !selectedTeamId}
-                                    className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
-                                        isAnalyzing || filteredTags.length === 0 || !selectedTeamId
-                                            ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                                            : 'bg-gradient-to-r from-purple-600 to-cyan-600 hover:from-purple-700 hover:to-cyan-700 text-white'
-                                    }`}
-                                >
-                                    {isAnalyzing ? (
-                                        <>
-                                            <Spinner size="h-4 w-4" />
-                                            <span>Analizando equipo...</span>
-                                        </>
-                                    ) : (
-                                        <>
-                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                                <path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" />
-                                            </svg>
-                                            <span>Generar Análisis del Equipo</span>
-                                        </>
-                                    )}
-                                </button>
-                                {analysisHistory.length > 0 && (
-                                    <button
-                                        onClick={() => setShowHistory(!showHistory)}
-                                        className="flex items-center gap-2 px-3 py-2 rounded-lg font-medium bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
-                                    >
-                                        <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
-                                        </svg>
-                                        <span>Historial ({analysisHistory.length})</span>
-                                    </button>
-                                )}
-                            </div>
-                            {isFromCache && teamAnalysis && (
-                                <div className="flex items-center gap-2 text-xs text-amber-400">
-                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                                        <path fillRule="evenodd" d="M5 2a1 1 0 011 1v1h8V3a1 1 0 112 0v1a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V6a2 2 0 012-2V3a1 1 0 011-1zm9 6H6v8h8V8z" clipRule="evenodd" />
-                                    </svg>
-                                    <span>Análisis reciente (guardado)</span>
-                                    <button 
-                                        onClick={() => runTeamAIAnalysis(true)}
-                                        className="underline hover:text-amber-300"
-                                    >
-                                        Generar nuevo
-                                    </button>
-                                </div>
-                            )}
-                        </div>
-                    </div>
-
-                    {showHistory && analysisHistory.length > 0 && (
-                        <div className="bg-gray-700/50 rounded-lg p-4 mb-4 border border-gray-600">
-                            <h4 className="text-sm font-semibold text-gray-300 mb-3">Historial de Análisis del Equipo</h4>
-                            <div className="space-y-2 max-h-48 overflow-y-auto">
-                                {analysisHistory.map((item) => (
-                                    <button
-                                        key={item.id}
-                                        onClick={() => {
-                                            setTeamAnalysis(item.analysis_data);
-                                            setIsFromCache(true);
-                                            setShowHistory(false);
-                                        }}
-                                        className="w-full text-left p-3 rounded bg-gray-800 hover:bg-gray-750 border border-gray-600 transition-colors"
-                                    >
-                                        <div className="flex justify-between items-center">
-                                            <span className="text-sm text-white">{formatHistoryDate(item.created_at)}</span>
-                                            <span className={`text-xs px-2 py-1 rounded ${
-                                                item.analysis_data.tendencia === 'mejorando' ? 'bg-green-900/50 text-green-400' :
-                                                item.analysis_data.tendencia === 'bajando' ? 'bg-red-900/50 text-red-400' :
-                                                'bg-yellow-900/50 text-yellow-400'
-                                            }`}>
-                                                {item.analysis_data.tendencia}
-                                            </span>
-                                        </div>
-                                        <p className="text-xs text-gray-400 mt-1">
-                                            {item.total_partidos} partidos | {item.total_acciones} acciones | {item.efectividad_global}% efectividad
-                                        </p>
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-                    )}
-
-                    {analysisError && (
-                        <div className="bg-red-900/50 border border-red-500 rounded-lg p-4 mb-4">
-                            <p className="text-red-300">{analysisError}</p>
-                        </div>
-                    )}
-
-                    {!selectedTeamId && filteredTags.length > 0 && (
-                        <div className="text-center py-4 text-amber-400">
-                            <p>Selecciona un equipo específico en los filtros para generar el análisis.</p>
-                        </div>
-                    )}
-
-                    {filteredTags.length === 0 && !teamAnalysis && (
-                        <div className="text-center py-8 text-gray-400">
-                            <p>No hay datos disponibles con los filtros seleccionados.</p>
-                        </div>
-                    )}
-
-                    {teamAnalysis && (
-                        <div className="space-y-6">
-                            <div className={`rounded-lg p-4 ${
-                                teamAnalysis.tendencia === 'mejorando' ? 'bg-green-900/30 border border-green-500' :
-                                teamAnalysis.tendencia === 'bajando' ? 'bg-red-900/30 border border-red-500' :
-                                'bg-yellow-900/30 border border-yellow-500'
-                            }`}>
-                                <div className="flex items-center gap-3 mb-2">
-                                    <span className="text-2xl">
-                                        {teamAnalysis.tendencia === 'mejorando' ? '📈' : teamAnalysis.tendencia === 'bajando' ? '📉' : '➡️'}
-                                    </span>
-                                    <h4 className="text-lg font-semibold capitalize">{teamAnalysis.tendencia}</h4>
-                                </div>
-                                <p className="text-gray-300">{teamAnalysis.tendenciaDescripcion}</p>
-                            </div>
-
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                {['defensa', 'medio', 'ataque'].map((linea) => {
-                                    const lineaData = teamAnalysis.analisisPorLinea[linea as keyof typeof teamAnalysis.analisisPorLinea];
-                                    return (
-                                        <div key={linea} className="bg-gray-700/50 rounded-lg p-4">
-                                            <h5 className="text-sm font-semibold text-gray-300 capitalize mb-2">{linea}</h5>
-                                            <p className="text-2xl font-bold text-cyan-400">{lineaData.efectividad}%</p>
-                                            <p className="text-xs text-gray-400 mt-1">{lineaData.observacion}</p>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                <div className="bg-green-900/20 rounded-lg p-4 border border-green-800">
-                                    <h4 className="text-lg font-semibold text-green-400 mb-3">Fortalezas Colectivas</h4>
-                                    <ul className="space-y-2">
-                                        {teamAnalysis.fortalezasColectivas.map((f, i) => (
-                                            <li key={i} className="flex items-start gap-2 text-gray-300">
-                                                <span className="text-green-400 mt-1">✓</span>
-                                                <span>{f}</span>
-                                            </li>
-                                        ))}
-                                    </ul>
-                                </div>
-                                <div className="bg-amber-900/20 rounded-lg p-4 border border-amber-800">
-                                    <h4 className="text-lg font-semibold text-amber-400 mb-3">Oportunidades de Mejora</h4>
-                                    <ul className="space-y-2">
-                                        {teamAnalysis.areasDeMejoraColectivas.map((a, i) => (
-                                            <li key={i} className="flex items-start gap-2 text-gray-300">
-                                                <span className="text-amber-400 mt-1">→</span>
-                                                <span>{a}</span>
-                                            </li>
-                                        ))}
-                                    </ul>
-                                </div>
-                            </div>
-
-                            <div className="bg-purple-900/20 rounded-lg p-4 border border-purple-800">
-                                <h4 className="text-lg font-semibold text-purple-400 mb-3">Jugadores Destacados</h4>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                    {teamAnalysis.jugadoresDestacados.map((j, i) => (
-                                        <div key={i} className="bg-gray-800/50 rounded p-3">
-                                            <p className="font-semibold text-white">{j.nombre}</p>
-                                            <p className="text-sm text-gray-400">{j.razon}</p>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-
-                            <div className="bg-gray-700/50 rounded-lg p-4">
-                                <h4 className="text-lg font-semibold text-white mb-3">Resumen Ejecutivo</h4>
-                                <p className="text-gray-300 leading-relaxed">{teamAnalysis.resumenEjecutivo}</p>
-                            </div>
-
-                            <div className="bg-cyan-900/20 rounded-lg p-4 border border-cyan-800">
-                                <h4 className="text-lg font-semibold text-cyan-400 mb-3">Recomendaciones de Entrenamiento</h4>
-                                <ul className="space-y-2">
-                                    {teamAnalysis.recomendacionesEntrenamiento.map((r, i) => (
-                                        <li key={i} className="flex items-start gap-2 text-gray-300">
-                                            <span className="bg-cyan-600 text-white text-xs px-2 py-0.5 rounded mt-0.5">{i + 1}</span>
-                                            <span>{r}</span>
-                                        </li>
-                                    ))}
-                                </ul>
-                            </div>
-                        </div>
-                    )}
-                </div>
-            )}
-
             {/* Tab Navigation */}
             <div className="flex justify-center">
                 <div className="flex space-x-1 bg-gray-800 p-1 rounded-lg">
@@ -1321,6 +1122,247 @@ const DashboardPage: React.FC = () => {
                             </BarChart>
                         </ResponsiveContainer>
                     </div>
+                </div>
+            )}
+
+            {/* AI Team Analysis Section - SOLO ADMIN - COLAPSABLE AL FINAL */}
+            {profile?.rol === 'admin' && (
+                <div className="bg-gray-800 rounded-lg overflow-hidden">
+                    {/* Header colapsable */}
+                    <button
+                        onClick={() => setShowAISection(!showAISection)}
+                        className="w-full flex items-center justify-between p-4 hover:bg-gray-750 transition-colors"
+                    >
+                        <div className="flex items-center gap-3">
+                            <div className="bg-gradient-to-r from-purple-600 to-cyan-600 p-2 rounded-lg">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" viewBox="0 0 20 20" fill="currentColor">
+                                    <path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" />
+                                </svg>
+                            </div>
+                            <div className="text-left">
+                                <h3 className="text-lg font-semibold text-white">Análisis IA del Equipo</h3>
+                                <p className="text-xs text-gray-400">Resumen ejecutivo del rendimiento colectivo con recomendaciones</p>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-3">
+                            {teamAnalysis && (
+                                <span className={`text-xs px-2 py-1 rounded ${
+                                    teamAnalysis.tendencia === 'mejorando' ? 'bg-green-900/50 text-green-400' :
+                                    teamAnalysis.tendencia === 'bajando' ? 'bg-red-900/50 text-red-400' :
+                                    'bg-yellow-900/50 text-yellow-400'
+                                }`}>
+                                    {teamAnalysis.tendencia}
+                                </span>
+                            )}
+                            <svg 
+                                xmlns="http://www.w3.org/2000/svg" 
+                                className={`h-5 w-5 text-gray-400 transition-transform ${showAISection ? 'rotate-180' : ''}`} 
+                                viewBox="0 0 20 20" 
+                                fill="currentColor"
+                            >
+                                <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+                            </svg>
+                        </div>
+                    </button>
+
+                    {/* Contenido colapsable */}
+                    {showAISection && (
+                        <div className="p-6 pt-2 border-t border-gray-700">
+                            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
+                                <div>
+                                    <p className="text-sm text-gray-300">Equipo: <span className="font-semibold text-white">{selectedTeamName}</span></p>
+                                </div>
+                                <div className="flex flex-col items-end gap-2">
+                                    <div className="flex gap-2">
+                                        <button
+                                            onClick={() => runTeamAIAnalysis(false)}
+                                            disabled={isAnalyzing || filteredTags.length === 0 || !selectedTeamId}
+                                            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors ${
+                                                isAnalyzing || filteredTags.length === 0 || !selectedTeamId
+                                                    ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                                                    : 'bg-gradient-to-r from-purple-600 to-cyan-600 hover:from-purple-700 hover:to-cyan-700 text-white'
+                                            }`}
+                                        >
+                                            {isAnalyzing ? (
+                                                <>
+                                                    <Spinner size="h-4 w-4" />
+                                                    <span>Analizando equipo...</span>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                                        <path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" />
+                                                    </svg>
+                                                    <span>Generar Análisis</span>
+                                                </>
+                                            )}
+                                        </button>
+                                        {analysisHistory.length > 0 && (
+                                            <button
+                                                onClick={() => setShowHistory(!showHistory)}
+                                                className="flex items-center gap-2 px-3 py-2 rounded-lg font-medium bg-gray-700 hover:bg-gray-600 text-gray-300 transition-colors"
+                                            >
+                                                <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z" clipRule="evenodd" />
+                                                </svg>
+                                                <span>Historial ({analysisHistory.length})</span>
+                                            </button>
+                                        )}
+                                    </div>
+                                    {isFromCache && teamAnalysis && (
+                                        <div className="flex items-center gap-2 text-xs text-amber-400">
+                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                                                <path fillRule="evenodd" d="M5 2a1 1 0 011 1v1h8V3a1 1 0 112 0v1a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V6a2 2 0 012-2V3a1 1 0 011-1zm9 6H6v8h8V8z" clipRule="evenodd" />
+                                            </svg>
+                                            <span>Análisis reciente (guardado)</span>
+                                            <button 
+                                                onClick={() => runTeamAIAnalysis(true)}
+                                                className="underline hover:text-amber-300"
+                                            >
+                                                Generar nuevo
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+
+                            {showHistory && analysisHistory.length > 0 && (
+                                <div className="bg-gray-700/50 rounded-lg p-4 mb-4 border border-gray-600">
+                                    <h4 className="text-sm font-semibold text-gray-300 mb-3">Historial de Análisis del Equipo</h4>
+                                    <div className="space-y-2 max-h-48 overflow-y-auto">
+                                        {analysisHistory.map((item) => (
+                                            <button
+                                                key={item.id}
+                                                onClick={() => {
+                                                    setTeamAnalysis(item.analysis_data);
+                                                    setIsFromCache(true);
+                                                    setShowHistory(false);
+                                                }}
+                                                className="w-full text-left p-3 rounded bg-gray-800 hover:bg-gray-750 border border-gray-600 transition-colors"
+                                            >
+                                                <div className="flex justify-between items-center">
+                                                    <span className="text-sm text-white">{formatHistoryDate(item.created_at)}</span>
+                                                    <span className={`text-xs px-2 py-1 rounded ${
+                                                        item.analysis_data.tendencia === 'mejorando' ? 'bg-green-900/50 text-green-400' :
+                                                        item.analysis_data.tendencia === 'bajando' ? 'bg-red-900/50 text-red-400' :
+                                                        'bg-yellow-900/50 text-yellow-400'
+                                                    }`}>
+                                                        {item.analysis_data.tendencia}
+                                                    </span>
+                                                </div>
+                                                <p className="text-xs text-gray-400 mt-1">
+                                                    {item.total_partidos} partidos | {item.total_acciones} acciones | {item.efectividad_global}% efectividad
+                                                </p>
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {analysisError && (
+                                <div className="bg-red-900/50 border border-red-500 rounded-lg p-4 mb-4">
+                                    <p className="text-red-300">{analysisError}</p>
+                                </div>
+                            )}
+
+                            {!selectedTeamId && filteredTags.length > 0 && (
+                                <div className="text-center py-4 text-amber-400">
+                                    <p>Selecciona un equipo específico en los filtros para generar el análisis.</p>
+                                </div>
+                            )}
+
+                            {filteredTags.length === 0 && !teamAnalysis && (
+                                <div className="text-center py-8 text-gray-400">
+                                    <p>No hay datos disponibles con los filtros seleccionados.</p>
+                                </div>
+                            )}
+
+                            {teamAnalysis && (
+                                <div className="space-y-6">
+                                    <div className={`rounded-lg p-4 ${
+                                        teamAnalysis.tendencia === 'mejorando' ? 'bg-green-900/30 border border-green-500' :
+                                        teamAnalysis.tendencia === 'bajando' ? 'bg-red-900/30 border border-red-500' :
+                                        'bg-yellow-900/30 border border-yellow-500'
+                                    }`}>
+                                        <div className="flex items-center gap-3 mb-2">
+                                            <span className="text-2xl">
+                                                {teamAnalysis.tendencia === 'mejorando' ? '📈' : teamAnalysis.tendencia === 'bajando' ? '📉' : '➡️'}
+                                            </span>
+                                            <h4 className="text-lg font-semibold capitalize">{teamAnalysis.tendencia}</h4>
+                                        </div>
+                                        <p className="text-gray-300">{teamAnalysis.tendenciaDescripcion}</p>
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        {['defensa', 'medio', 'ataque'].map((linea) => {
+                                            const lineaData = teamAnalysis.analisisPorLinea[linea as keyof typeof teamAnalysis.analisisPorLinea];
+                                            return (
+                                                <div key={linea} className="bg-gray-700/50 rounded-lg p-4">
+                                                    <h5 className="text-sm font-semibold text-gray-300 capitalize mb-2">{linea}</h5>
+                                                    <p className="text-2xl font-bold text-cyan-400">{lineaData.efectividad}%</p>
+                                                    <p className="text-xs text-gray-400 mt-1">{lineaData.observacion}</p>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        <div className="bg-green-900/20 rounded-lg p-4 border border-green-800">
+                                            <h4 className="text-lg font-semibold text-green-400 mb-3">Fortalezas Colectivas</h4>
+                                            <ul className="space-y-2">
+                                                {teamAnalysis.fortalezasColectivas.map((f, i) => (
+                                                    <li key={i} className="flex items-start gap-2 text-gray-300">
+                                                        <span className="text-green-400 mt-1">✓</span>
+                                                        <span>{f}</span>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                        <div className="bg-amber-900/20 rounded-lg p-4 border border-amber-800">
+                                            <h4 className="text-lg font-semibold text-amber-400 mb-3">Oportunidades de Mejora</h4>
+                                            <ul className="space-y-2">
+                                                {teamAnalysis.areasDeMejoraColectivas.map((a, i) => (
+                                                    <li key={i} className="flex items-start gap-2 text-gray-300">
+                                                        <span className="text-amber-400 mt-1">→</span>
+                                                        <span>{a}</span>
+                                                    </li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-purple-900/20 rounded-lg p-4 border border-purple-800">
+                                        <h4 className="text-lg font-semibold text-purple-400 mb-3">Jugadores Destacados</h4>
+                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                            {teamAnalysis.jugadoresDestacados.map((j, i) => (
+                                                <div key={i} className="bg-gray-800/50 rounded p-3">
+                                                    <p className="font-semibold text-white">{j.nombre}</p>
+                                                    <p className="text-sm text-gray-400">{j.razon}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    <div className="bg-gray-700/50 rounded-lg p-4">
+                                        <h4 className="text-lg font-semibold text-white mb-3">Resumen Ejecutivo</h4>
+                                        <p className="text-gray-300 leading-relaxed">{teamAnalysis.resumenEjecutivo}</p>
+                                    </div>
+
+                                    <div className="bg-cyan-900/20 rounded-lg p-4 border border-cyan-800">
+                                        <h4 className="text-lg font-semibold text-cyan-400 mb-3">Recomendaciones de Entrenamiento</h4>
+                                        <ul className="space-y-2">
+                                            {teamAnalysis.recomendacionesEntrenamiento.map((r, i) => (
+                                                <li key={i} className="flex items-start gap-2 text-gray-300">
+                                                    <span className="bg-cyan-600 text-white text-xs px-2 py-0.5 rounded mt-0.5">{i + 1}</span>
+                                                    <span>{r}</span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
                 </div>
             )}
         </div>
