@@ -3,8 +3,8 @@ import { supabase } from '../services/supabaseClient';
 import type { Match, Tag, Player, TeamAnalysis, TeamAnalysisHistory } from '../types';
 import { METRICS } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
-import { analyzeTeamPerformance } from '../services/geminiTeamAnalysisService';
-import { saveTeamAnalysis, getCachedTeamAnalysis, getTeamAnalysisHistory } from '../services/teamAnalysisHistoryService';
+import { analyzeTeamPerformance } from '../services/geminiTeamAnalysisService_v1';
+import { saveTeamAnalysis, getCachedTeamAnalysis, getTeamAnalysisHistory } from '../services/teamAnalysisHistoryService_v1';
 import { useAuth } from '../contexts/AuthContext';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, Cell, Treemap, ScatterChart, Scatter } from 'recharts';
 
@@ -188,6 +188,7 @@ const DashboardPage: React.FC = () => {
                 if (firstError) throw firstError;
 
                 let allTags = firstPageData || [];
+                console.log('[Dashboard] tags count (total reported):', count, 'firstPageRows:', allTags.length);
 
                 if (typeof count === 'number' && count > allTags.length) {
                   for (let from = allTags.length; from < count; from += pageSize) {
@@ -198,10 +199,12 @@ const DashboardPage: React.FC = () => {
                       .range(from, to);
                     if (pageError) throw pageError;
                     allTags = allTags.concat(pageData || []);
+                    console.log(`[Dashboard] fetched tags range ${from}-${to}, got ${pageData?.length || 0}`);
                   }
                 }
 
                 setTags(allTags || []);
+                console.log('[Dashboard] total tags loaded into state:', (allTags || []).length);
 
                 const { data: playersData, error: playersError } = await supabase.from('players').select('*');
                 if (playersError) throw playersError;
@@ -342,7 +345,7 @@ const DashboardPage: React.FC = () => {
 
         } catch (err: any) {
             console.error('Error in team AI analysis:', err);
-            setAnalysisError(err.message || 'Error al generar el analisis del equipo');
+            setAnalysisError(err.message || 'Error al generar el análisis del equipo');
         } finally {
             setIsAnalyzing(false);
         }
@@ -568,23 +571,29 @@ const DashboardPage: React.FC = () => {
             t => t.accion === 'Transición ofensiva no lograda'
         ).length;
         return [
-            { name: 'Logradas', value: logradas, fill: '#10B981' },
-            { name: 'No Logradas', value: noLogradas, fill: '#EF4444' },
+            { name: 'Logradas', value: logradas },
+            { name: 'No logradas', value: noLogradas }
         ];
     }, [filteredTags]);
 
-    const transicionesDefensivasData = useMemo(() => {
-        const logradas = filteredTags.filter(
-            t => t.accion === 'Transición defensiva lograda'
-        ).length;
-        const noLogradas = filteredTags.filter(
-            t => t.accion === 'Transición defensiva no lograda'
-        ).length;
-        return [
-            { name: 'Logradas', value: logradas, fill: '#3B82F6' },
-            { name: 'No Logradas', value: noLogradas, fill: '#F97316' },
-        ];
-    }, [filteredTags]);
+    const recuperacionBalonPorJornada = useMemo(() => {
+        const dataByJornada: { [jornada: string]: number } = {};
+        filteredTags.forEach(tag => {
+            if (tag.accion === 'Recuperación de balón') {
+                const match = matches.find(m => m.id === tag.match_id);
+                if (!match || !match.jornada) return;
+                const jornada = String(match.jornada);
+                if (!dataByJornada[jornada]) dataByJornada[jornada] = 0;
+                dataByJornada[jornada]++;
+            }
+        });
+        return Object.entries(dataByJornada)
+            .map(([jornada, count]) => ({
+                name: `Jornada ${jornada}`,
+                value: count
+            }))
+            .sort((a, b) => parseInt(a.name.split(' ')[1]) - parseInt(b.name.split(' ')[1]));
+    }, [filteredTags, matches]);
 
     const recuperacionBalonPorJugador = useMemo(() => {
         const counts: { [playerId: string]: number } = {};
@@ -600,44 +609,64 @@ const DashboardPage: React.FC = () => {
                 name: players.find(p => p.id === playerId)?.nombre || 'Desconocido',
                 value: count,
             }))
-            .sort((a, b) => b.value - a.value)
-            .slice(0, 10);
+            .sort((a, b) => b.value - a.value);
     }, [filteredTags, players]);
 
     const scatterTransicionesData = useMemo(() => {
-        const transiciones = filteredTags.filter(t =>
-            t.accion === 'Transición ofensiva lograda' || t.accion === 'Transición ofensiva no lograda'
-        );
-
-        const pts: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId: string | number }[] = [];
-
-        transiciones.forEach(tag => {
-            const match = matches.find(m => m.id === tag.match_id);
-            if (!match || !match.jornada) return;
-            const time = getTagTime(tag);
-            if (time === null) return;
-            pts.push({
-                jornadaNum: match.jornada,
-                jornadaX: match.jornada,
-                jornadaLabel: `Jornada ${match.jornada}`,
-                tiempo: time,
-                tagId: tag.id
+        const tagsByMatch: Record<string, any[]> = {};
+        filteredTags.forEach(tag => {
+            if (!tag.match_id) return;
+            const tSeconds = getTagTime(tag);
+            if (tSeconds === null) return;
+            if (!tagsByMatch[tag.match_id]) tagsByMatch[tag.match_id] = [];
+            tagsByMatch[tag.match_id].push({
+                ...tag,
+                __timeSeconds: tSeconds
             });
         });
 
-        const byJornada: Record<number, typeof pts> = {};
-        pts.forEach(p => {
+        const points: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId?: string }[] = [];
+
+        Object.keys(tagsByMatch).forEach(matchId => {
+            const list = tagsByMatch[matchId].sort((a, b) => a.__timeSeconds - b.__timeSeconds);
+            const match = matches.find(m => m.id === matchId);
+            const jornadaNum = match && match.jornada ? Number(match.jornada) : null;
+            if (jornadaNum === null) return;
+
+            const recoveries = list.filter((t: any) => t.accion === 'Recuperación de balón').map((r: any) => ({ time: r.__timeSeconds, id: r.id }));
+            const transitions = list.filter((t: any) => t.accion === 'Transición ofensiva lograda' && t.resultado === 'logrado').map((tr: any) => ({ time: tr.__timeSeconds, id: tr.id }));
+
+            if (transitions.length === 0 || recoveries.length === 0) return;
+
+            transitions.forEach(tr => {
+                const prevs = recoveries.filter(r => r.time < tr.time);
+                if (prevs.length === 0) return;
+                const lastRec = prevs[prevs.length - 1];
+                const duration = tr.time - lastRec.time;
+                if (duration < 0) return;
+                points.push({
+                    jornadaNum,
+                    jornadaX: jornadaNum,
+                    jornadaLabel: `Jornada ${jornadaNum}`,
+                    tiempo: duration,
+                    tagId: tr.id
+                });
+            });
+        });
+
+        const byJornada: Record<number, any[]> = {};
+        points.forEach(p => {
             if (!byJornada[p.jornadaNum]) byJornada[p.jornadaNum] = [];
             byJornada[p.jornadaNum].push(p);
         });
 
         const spread = 0.12;
-        const final: typeof pts = [];
+        const final: typeof points = [];
         Object.keys(byJornada).forEach(k => {
             const j = Number(k);
             const arr = byJornada[j];
             const count = arr.length;
-            arr.forEach((item, idx) => {
+            arr.forEach((item: any, idx: number) => {
                 const offset = (count === 1) ? 0 : ((idx - (count - 1) / 2) * spread);
                 final.push({
                     ...item,
@@ -650,35 +679,28 @@ const DashboardPage: React.FC = () => {
     }, [filteredTags, matches]);
 
     const scatterRecuperacionesData = useMemo(() => {
-        const perdidas = filteredTags.filter(t => t.accion === 'Perdida de balon');
-        const recuperaciones = filteredTags.filter(t => t.accion === 'Recuperación de balón');
+        const pts: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId?: string; lossTime?: number; recoveryTime?: number }[] = [];
 
-        const pts: { jornadaNum: number; jornadaX: number; jornadaLabel: string; tiempo: number; tagId: string | number; lossTime: number; recoveryTime: number }[] = [];
-
-        const perdidasPorPartido: Record<string, { id: string | number; time: number }[]> = {};
-        const recuperacionesPorPartido: Record<string, { id: string | number; time: number }[]> = {};
-
-        perdidas.forEach(tag => {
-            const time = getTagTime(tag);
-            if (time === null) return;
-            if (!perdidasPorPartido[tag.match_id]) perdidasPorPartido[tag.match_id] = [];
-            perdidasPorPartido[tag.match_id].push({ id: tag.id, time });
+        const tagsByMatch: Record<string, any[]> = {};
+        filteredTags.forEach(tag => {
+            if (!tag.match_id) return;
+            const tSeconds = getTagTime(tag);
+            if (tSeconds === null) return;
+            if (!tagsByMatch[tag.match_id]) tagsByMatch[tag.match_id] = [];
+            tagsByMatch[tag.match_id].push({
+                ...tag,
+                __timeSeconds: tSeconds
+            });
         });
 
-        recuperaciones.forEach(tag => {
-            const time = getTagTime(tag);
-            if (time === null) return;
-            if (!recuperacionesPorPartido[tag.match_id]) recuperacionesPorPartido[tag.match_id] = [];
-            recuperacionesPorPartido[tag.match_id].push({ id: tag.id, time });
-        });
-
-        Object.keys(perdidasPorPartido).forEach(matchId => {
+        Object.keys(tagsByMatch).forEach(matchId => {
+            const list = tagsByMatch[matchId].sort((a, b) => a.__timeSeconds - b.__timeSeconds);
             const match = matches.find(m => m.id === matchId);
-            if (!match || !match.jornada) return;
-            const jornadaNum = match.jornada;
+            const jornadaNum = match && match.jornada ? Number(match.jornada) : null;
+            if (jornadaNum === null) return;
 
-            const losses = perdidasPorPartido[matchId].sort((a, b) => a.time - b.time);
-            const recoveries = (recuperacionesPorPartido[matchId] || []).sort((a, b) => a.time - b.time);
+            const losses = list.filter((t: any) => t.accion === 'Pérdida de balón').map((l: any) => ({ time: l.__timeSeconds, id: l.id }));
+            const recoveries = list.filter((t: any) => t.accion === 'Recuperación de balón').map((r: any) => ({ time: r.__timeSeconds, id: r.id }));
 
             if (recoveries.length === 0 || losses.length === 0) return;
 
@@ -770,12 +792,12 @@ const DashboardPage: React.FC = () => {
                 </div>
             </div>
 
-            {/* AI Team Analysis Section */}
+            {/* AI Team Analysis Section - SOLO ADMIN */}
             {profile?.rol === 'admin' && (
                 <div className="bg-gray-800 rounded-lg p-6">
                     <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
                         <div>
-                            <h3 className="text-xl font-semibold text-white">Analisis IA del Equipo: {selectedTeamName}</h3>
+                            <h3 className="text-xl font-semibold text-white">Análisis IA del Equipo: {selectedTeamName}</h3>
                             <p className="text-xs text-gray-400 mt-1">Genera un resumen ejecutivo del rendimiento colectivo con recomendaciones de entrenamiento.</p>
                         </div>
                         <div className="flex flex-col items-end gap-2">
@@ -799,7 +821,7 @@ const DashboardPage: React.FC = () => {
                                             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                                                 <path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" />
                                             </svg>
-                                            <span>Generar Analisis del Equipo</span>
+                                            <span>Generar Análisis del Equipo</span>
                                         </>
                                     )}
                                 </button>
@@ -820,7 +842,7 @@ const DashboardPage: React.FC = () => {
                                     <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
                                         <path fillRule="evenodd" d="M5 2a1 1 0 011 1v1h8V3a1 1 0 112 0v1a2 2 0 012 2v10a2 2 0 01-2 2H4a2 2 0 01-2-2V6a2 2 0 012-2V3a1 1 0 011-1zm9 6H6v8h8V8z" clipRule="evenodd" />
                                     </svg>
-                                    <span>Analisis reciente (guardado)</span>
+                                    <span>Análisis reciente (guardado)</span>
                                     <button 
                                         onClick={() => runTeamAIAnalysis(true)}
                                         className="underline hover:text-amber-300"
@@ -832,10 +854,9 @@ const DashboardPage: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* History Panel */}
                     {showHistory && analysisHistory.length > 0 && (
                         <div className="bg-gray-700/50 rounded-lg p-4 mb-4 border border-gray-600">
-                            <h4 className="text-sm font-semibold text-gray-300 mb-3">Historial de Analisis del Equipo</h4>
+                            <h4 className="text-sm font-semibold text-gray-300 mb-3">Historial de Análisis del Equipo</h4>
                             <div className="space-y-2 max-h-48 overflow-y-auto">
                                 {analysisHistory.map((item) => (
                                     <button
@@ -874,7 +895,7 @@ const DashboardPage: React.FC = () => {
 
                     {!selectedTeamId && filteredTags.length > 0 && (
                         <div className="text-center py-4 text-amber-400">
-                            <p>Selecciona un equipo especifico en los filtros para generar el analisis.</p>
+                            <p>Selecciona un equipo específico en los filtros para generar el análisis.</p>
                         </div>
                     )}
 
@@ -886,7 +907,6 @@ const DashboardPage: React.FC = () => {
 
                     {teamAnalysis && (
                         <div className="space-y-6">
-                            {/* Tendencia */}
                             <div className={`rounded-lg p-4 ${
                                 teamAnalysis.tendencia === 'mejorando' ? 'bg-green-900/30 border border-green-500' :
                                 teamAnalysis.tendencia === 'bajando' ? 'bg-red-900/30 border border-red-500' :
@@ -901,7 +921,6 @@ const DashboardPage: React.FC = () => {
                                 <p className="text-gray-300">{teamAnalysis.tendenciaDescripcion}</p>
                             </div>
 
-                            {/* Analisis por Linea */}
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                                 {['defensa', 'medio', 'ataque'].map((linea) => {
                                     const lineaData = teamAnalysis.analisisPorLinea[linea as keyof typeof teamAnalysis.analisisPorLinea];
@@ -915,7 +934,6 @@ const DashboardPage: React.FC = () => {
                                 })}
                             </div>
 
-                            {/* Fortalezas y Areas de Mejora */}
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                                 <div className="bg-green-900/20 rounded-lg p-4 border border-green-800">
                                     <h4 className="text-lg font-semibold text-green-400 mb-3">Fortalezas Colectivas</h4>
@@ -941,7 +959,6 @@ const DashboardPage: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* Jugadores Destacados */}
                             <div className="bg-purple-900/20 rounded-lg p-4 border border-purple-800">
                                 <h4 className="text-lg font-semibold text-purple-400 mb-3">Jugadores Destacados</h4>
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -954,13 +971,11 @@ const DashboardPage: React.FC = () => {
                                 </div>
                             </div>
 
-                            {/* Resumen Ejecutivo */}
                             <div className="bg-gray-700/50 rounded-lg p-4">
                                 <h4 className="text-lg font-semibold text-white mb-3">Resumen Ejecutivo</h4>
                                 <p className="text-gray-300 leading-relaxed">{teamAnalysis.resumenEjecutivo}</p>
                             </div>
 
-                            {/* Recomendaciones de Entrenamiento */}
                             <div className="bg-cyan-900/20 rounded-lg p-4 border border-cyan-800">
                                 <h4 className="text-lg font-semibold text-cyan-400 mb-3">Recomendaciones de Entrenamiento</h4>
                                 <ul className="space-y-2">
@@ -981,101 +996,104 @@ const DashboardPage: React.FC = () => {
             <div className="flex justify-center">
                 <div className="flex space-x-1 bg-gray-800 p-1 rounded-lg">
                     <button onClick={() => setActiveTab('general')} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${activeTab === 'general' ? 'bg-cyan-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}>
-                        Analisis General
+                        Análisis General
                     </button>
                     <button onClick={() => setActiveTab('player')} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${activeTab === 'player' ? 'bg-cyan-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}>
-                        Analisis por Jugador
+                        Análisis por Jugador
                     </button>
                 </div>
             </div>
 
             {activeTab === 'general' && (
                 <div className="space-y-6">
-                    <div className="bg-gray-800 p-6 rounded-lg h-80">
-                        <h3 className="text-lg font-semibold text-white mb-4">Efectividad por Jornada</h3>
-                        <ResponsiveContainer width="100%" height="100%">
-                            <LineChart data={effectivenessByJornada}>
-                                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                <XAxis dataKey="name" stroke="#9CA3AF" tick={{ fontSize: 12, fill: '#D1D5DB' }} />
-                                <YAxis stroke="#9CA3AF" domain={[0, 100]} tickFormatter={(val) => `${val}%`} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
-                                <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} formatter={(value: number) => [`${value.toFixed(2)}%`, 'Efectividad']} />
-                                <Line type="monotone" dataKey="Efectividad" stroke="#06B6D4" strokeWidth={2} dot={{ fill: '#06B6D4' }} />
-                            </LineChart>
-                        </ResponsiveContainer>
-                    </div>
-
-                    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                        <div className="bg-gray-800 p-6 rounded-lg h-80 flex flex-col">
-                            <h3 className="text-lg font-semibold text-white mb-4">Pases Cortos</h3>
+                    {/* Charts Grid */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        {/* Row 1 */}
+                        <div className="bg-gray-800 p-6 rounded-lg h-80">
+                            <h3 className="text-lg font-semibold text-white mb-4">Efectividad por Jornada</h3>
                             <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={pasesCortosData}>
+                                <LineChart data={effectivenessByJornada} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
                                     <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                    <XAxis dataKey="name" stroke="#9CA3AF" tick={{ fontSize: 12, fill: '#D1D5DB' }} />
-                                    <YAxis stroke="#9CA3AF" allowDecimals={false} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
+                                    <XAxis dataKey="name" stroke="#9CA3AF" />
+                                    <YAxis stroke="#9CA3AF" domain={[0, 100]} tickFormatter={(tick) => `${tick}%`}/>
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    <Legend wrapperStyle={{ fontSize: '12px' }} />
-                                    <Bar dataKey="Logrados" fill="#10B981" />
+                                    <Legend />
+                                    <Line type="monotone" dataKey="Efectividad" stroke="#22D3EE" strokeWidth={2} dot={{ r: 4 }} activeDot={{ r: 8 }}/>
+                                </LineChart>
+                            </ResponsiveContainer>
+                        </div>
+                        <div className="bg-gray-800 p-6 rounded-lg h-80">
+                             <h3 className="text-lg font-semibold text-white mb-4">Análisis de Pases Cortos</h3>
+                            <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={pasesCortosData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                    <XAxis dataKey="name" stroke="#9CA3AF" />
+                                    <YAxis stroke="#9CA3AF" />
+                                    <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
+                                    <Legend />
+                                    <Bar dataKey="Logrados" fill="#22C55E" />
                                     <Bar dataKey="No Logrados" fill="#EF4444" />
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
-                        <div className="bg-gray-800 p-6 rounded-lg h-80 flex flex-col">
-                            <h3 className="text-lg font-semibold text-white mb-4">Pases Largos</h3>
+                        {/* Row 2 */}
+                        <div className="bg-gray-800 p-6 rounded-lg h-80">
+                             <h3 className="text-lg font-semibold text-white mb-4">Análisis de Pases Largos</h3>
                             <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={pasesLargosData}>
+                                <BarChart data={pasesLargosData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
                                     <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                    <XAxis dataKey="name" stroke="#9CA3AF" tick={{ fontSize: 12, fill: '#D1D5DB' }} />
-                                    <YAxis stroke="#9CA3AF" allowDecimals={false} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
+                                    <XAxis dataKey="name" stroke="#9CA3AF" />
+                                    <YAxis stroke="#9CA3AF" />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    <Legend wrapperStyle={{ fontSize: '12px' }} />
-                                    <Bar dataKey="Logrados" fill="#3B82F6" />
-                                    <Bar dataKey="No Logrados" fill="#F97316" />
+                                    <Legend />
+                                    <Bar dataKey="Logrados" fill="#22C55E" />
+                                    <Bar dataKey="No Logrados" fill="#EF4444" />
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
-                        <div className="bg-gray-800 p-6 rounded-lg h-80 flex flex-col">
-                            <h3 className="text-lg font-semibold text-white mb-4">Duelos</h3>
+                        <div className="bg-gray-800 p-6 rounded-lg h-80">
+                             <h3 className="text-lg font-semibold text-white mb-4">Análisis de Duelos</h3>
                             <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={duelosData}>
+                                <BarChart data={duelosData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
                                     <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                    <XAxis dataKey="name" stroke="#9CA3AF" tick={{ fontSize: 10, fill: '#D1D5DB' }} />
-                                    <YAxis stroke="#9CA3AF" allowDecimals={false} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
+                                    <XAxis dataKey="name" stroke="#9CA3AF" />
+                                    <YAxis stroke="#9CA3AF" />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    <Legend wrapperStyle={{ fontSize: '12px' }} />
-                                    <Bar dataKey="Logrados" fill="#8B5CF6" />
-                                    <Bar dataKey="No Logrados" fill="#EC4899" />
+                                    <Legend />
+                                    <Bar dataKey="Logrados" fill="#22C55E" />
+                                    <Bar dataKey="No Logrados" fill="#EF4444" />
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
                     </div>
-
+                     {/* Row 3 - Goalkeeping Charts */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <div className="bg-gray-800 p-6 rounded-lg">
-                            <h3 className="text-lg font-semibold text-white mb-4">Rendimiento Ofensivo</h3>
-                            <div className="grid grid-cols-3 gap-4 text-center">
-                                <div>
-                                    <p className="text-3xl font-bold text-cyan-400">{rendimientoOfensivoPorteria.tirosAPorteria}</p>
-                                    <p className="text-sm text-gray-400">Tiros a Porteria</p>
+                        <div className="bg-gray-800 p-6 rounded-lg h-80 flex flex-col">
+                            <h3 className="text-lg font-semibold text-white mb-4">Rendimiento Ofensivo en Portería</h3>
+                            <div className="flex-1 grid grid-cols-3 items-center text-center">
+                                <div className="relative">
+                                    <p className="text-5xl font-bold text-white">{rendimientoOfensivoPorteria.tirosAPorteria}</p>
+                                    <p className="text-gray-400 mt-2">Tiros a Portería</p>
                                 </div>
-                                <div>
-                                    <p className="text-3xl font-bold text-green-400">{rendimientoOfensivoPorteria.golesAFavor}</p>
-                                    <p className="text-sm text-gray-400">Goles a Favor</p>
+                                <div className="relative border-l border-r border-gray-700 h-1/2 flex flex-col justify-center">
+                                    <p className="text-5xl font-bold text-white">{rendimientoOfensivoPorteria.golesAFavor}</p>
+                                    <p className="text-gray-400 mt-2">Goles a Favor</p>
                                 </div>
-                                <div>
-                                    <p className="text-3xl font-bold text-yellow-400">{rendimientoOfensivoPorteria.tasaConversion.toFixed(1)}%</p>
-                                    <p className="text-sm text-gray-400">Tasa Conversion</p>
+                                <div className="relative">
+                                    <p className="text-5xl font-bold text-cyan-400">{rendimientoOfensivoPorteria.tasaConversion.toFixed(1)}%</p>
+                                    <p className="text-gray-400 mt-2">Tasa de Conversión</p>
                                 </div>
                             </div>
                         </div>
-                        <div className="bg-gray-800 p-6 rounded-lg h-60 flex flex-col">
-                            <h3 className="text-lg font-semibold text-white mb-4">Rendimiento Defensivo (Porteria)</h3>
-                            <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={rendimientoDefensivoPorteria} layout="vertical">
+                        <div className="bg-gray-800 p-6 rounded-lg h-80">
+                            <h3 className="text-lg font-semibold text-white mb-4">Rendimiento Defensivo en Portería</h3>
+                             <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={rendimientoDefensivoPorteria} layout="vertical" margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
                                     <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
-                                    <XAxis type="number" stroke="#9CA3AF" allowDecimals={false} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
-                                    <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={100} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
-                                    <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    <Bar dataKey="value" name="Cantidad">
+                                    <XAxis type="number" stroke="#9CA3AF" allowDecimals={false} />
+                                    <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={100} tick={{ fill: '#D1D5DB' }} />
+                                    <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} cursor={{fill: 'rgba(107, 114, 128, 0.2)'}} />
+                                    <Bar dataKey="value" barSize={35}>
                                         {rendimientoDefensivoPorteria.map((entry, index) => (
                                             <Cell key={`cell-${index}`} fill={entry.fill} />
                                         ))}
@@ -1085,52 +1103,53 @@ const DashboardPage: React.FC = () => {
                         </div>
                     </div>
 
+                    {/* TRANSICIONES Y RECUPERACION BALON */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <div className="bg-gray-800 p-6 rounded-lg h-60 flex flex-col">
-                            <h3 className="text-lg font-semibold text-white mb-4">Transiciones Ofensivas</h3>
+                        <div className="bg-gray-800 p-6 rounded-lg h-80">
+                            <h3 className="text-lg font-semibold text-white mb-4">Transiciones Ofensivas (Logradas vs No Logradas)</h3>
                             <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={transicionesOfensivasData} layout="vertical">
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
-                                    <XAxis type="number" stroke="#9CA3AF" allowDecimals={false} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
-                                    <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={100} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
+                                <BarChart data={transicionesOfensivasData} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                    <XAxis dataKey="name" stroke="#9CA3AF" />
+                                    <YAxis stroke="#9CA3AF" allowDecimals={false} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    <Bar dataKey="value" name="Cantidad">
-                                        {transicionesOfensivasData.map((entry, index) => (
-                                            <Cell key={`cell-${index}`} fill={entry.fill} />
+                                    <Bar dataKey="value">
+                                        {transicionesOfensivasData.map((entry, idx) => (
+                                            <Cell 
+                                                key={`cell-transicion-${idx}`} 
+                                                fill={entry.name === 'Logradas' ? '#22C55E' : '#EF4444'}
+                                            />
                                         ))}
                                     </Bar>
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
-                        <div className="bg-gray-800 p-6 rounded-lg h-60 flex flex-col">
-                            <h3 className="text-lg font-semibold text-white mb-4">Transiciones Defensivas</h3>
+                        <div className="bg-gray-800 p-6 rounded-lg h-80">
+                            <h3 className="text-lg font-semibold text-white mb-4">Recuperación de Balón por Jornada</h3>
                             <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={transicionesDefensivasData} layout="vertical">
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
-                                    <XAxis type="number" stroke="#9CA3AF" allowDecimals={false} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
-                                    <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={100} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
+                                <BarChart data={recuperacionBalonPorJornada} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                    <XAxis dataKey="name" stroke="#9CA3AF" />
+                                    <YAxis stroke="#9CA3AF" allowDecimals={false} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    <Bar dataKey="value" name="Cantidad">
-                                        {transicionesDefensivasData.map((entry, index) => (
-                                            <Cell key={`cell-${index}`} fill={entry.fill} />
-                                        ))}
-                                    </Bar>
+                                    <Bar dataKey="value" fill="#16A34A" />
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
                     </div>
 
+                    {/* SCATTER PLOTS */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <div className="bg-gray-800 p-6 rounded-lg h-80 flex flex-col">
-                            <h3 className="text-lg font-semibold text-white mb-4" style={{ color: SCATTER_LINE_COLOR_1 }}>Tiempos de Transiciones Ofensivas por Jornada</h3>
+                        <div className="bg-gray-800 p-6 rounded-lg h-80">
+                            <h3 className="text-lg font-semibold text-white mb-4">Tiempo de Transiciones Ofensivas Logradas</h3>
                             <ResponsiveContainer width="100%" height="100%">
-                                <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 40 }}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                <ScatterChart margin={{ top: 20, right: 20, left: 0, bottom: 40 }}>
+                                    <CartesianGrid stroke="#374151" />
                                     <XAxis 
                                         dataKey="x"
                                         type="number"
                                         name="Jornada"
-                                        domain={['dataMin - 0.5', 'dataMax + 0.5']}
+                                        domain={['dataMin', 'dataMax']}
                                         ticks={Array.from(new Set(scatterTransicionesData.map(d => d.jornadaNum))).sort((a,b)=>a-b)}
                                         tickFormatter={(val) => `Jornada ${Math.round(Number(val))}`}
                                         tick={{ fill: SCATTER_LINE_COLOR_1, fontWeight: 'bold' }}
@@ -1152,7 +1171,7 @@ const DashboardPage: React.FC = () => {
                                             return (
                                                 <div style={{ padding: 8, background: '#0b1220', color: '#fff', border: `1px solid ${SCATTER_LINE_COLOR_1}` }}>
                                                     <div style={{ fontWeight: 700 }}>{p.jornadaLabel ?? `Jornada ${Math.round(p.jornadaNum || p.x)}`}</div>
-                                                    <div style={{ marginTop: 4 }}>Duracion: {formatSecondsToMMSS(p.tiempo)}</div>
+                                                    <div style={{ marginTop: 4 }}>Duración: {formatSecondsToMMSS(p.y)}</div>
                                                 </div>
                                             );
                                         }}
@@ -1165,20 +1184,19 @@ const DashboardPage: React.FC = () => {
                                 </ScatterChart>
                             </ResponsiveContainer>
                             <div className="text-center text-sm mt-2" style={{ color: SCATTER_LINE_COLOR_1 }}>
-                                {`Puntos encontrados: ${scatterTransicionesData.length}`}
+                              {`Puntos encontrados: ${scatterTransicionesData.length}`}
                             </div>
                         </div>
-
-                        <div className="bg-gray-800 p-6 rounded-lg h-80 flex flex-col">
-                            <h3 className="text-lg font-semibold text-white mb-4" style={{ color: SCATTER_LINE_COLOR_2 }}>Duracion Perdida-Recuperacion por Jornada</h3>
+                        <div className="bg-gray-800 p-6 rounded-lg h-80">
+                            <h3 className="text-lg font-semibold text-white mb-4">Tiempo de Recuperación de Balón</h3>
                             <ResponsiveContainer width="100%" height="100%">
-                                <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 40 }}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                <ScatterChart margin={{ top: 20, right: 20, left: 0, bottom: 40 }}>
+                                    <CartesianGrid stroke="#374151" />
                                     <XAxis 
                                         dataKey="x"
                                         type="number"
                                         name="Jornada"
-                                        domain={['dataMin - 0.5', 'dataMax + 0.5']}
+                                        domain={['dataMin', 'dataMax']}
                                         ticks={Array.from(new Set(scatterRecuperacionesData.map(d => d.jornadaNum))).sort((a,b)=>a-b)}
                                         tickFormatter={(val) => `Jornada ${Math.round(Number(val))}`}
                                         tick={{ fill: SCATTER_LINE_COLOR_2, fontWeight: 'bold' }}
@@ -1200,14 +1218,14 @@ const DashboardPage: React.FC = () => {
                                             return (
                                                 <div style={{ padding: 8, background: '#0b1220', color: '#fff', border: `1px solid ${SCATTER_LINE_COLOR_2}` }}>
                                                     <div style={{ fontWeight: 700 }}>{p.jornadaLabel ?? `Jornada ${Math.round(p.jornadaNum || p.x)}`}</div>
-                                                    <div style={{ marginTop: 4 }}>Duracion: {formatSecondsToMMSS(p.y)}</div>
-                                                    <div style={{ marginTop: 4, fontSize: 12, color: '#D1D5DB' }}>Perdida: {formatSecondsToMMSS(p.lossTime)} — Recuperacion: {formatSecondsToMMSS(p.recoveryTime)}</div>
+                                                    <div style={{ marginTop: 4 }}>Duración: {formatSecondsToMMSS(p.y)}</div>
+                                                    <div style={{ marginTop: 4, fontSize: 12, color: '#D1D5DB' }}>Pérdida: {formatSecondsToMMSS(p.lossTime)} — Recuperación: {formatSecondsToMMSS(p.recoveryTime)}</div>
                                                 </div>
                                             );
                                         }}
                                     />
                                     <Scatter 
-                                        name="Recuperaciones de Balon" 
+                                        name="Recuperaciones de Balón" 
                                         data={scatterRecuperacionesData.map(d => ({ x: d.jornadaX, y: d.tiempo, jornadaNum: d.jornadaNum, jornadaLabel: d.jornadaLabel, lossTime: d.lossTime, recoveryTime: d.recoveryTime }))} 
                                         fill={SCATTER_LINE_COLOR_2}
                                     />
@@ -1224,7 +1242,7 @@ const DashboardPage: React.FC = () => {
             {activeTab === 'player' && (
                 <div className="space-y-6">
                     <div className="bg-gray-800 p-6 rounded-lg h-96">
-                        <h3 className="text-lg font-semibold text-white mb-4">Tiros a Porteria Realizados</h3>
+                        <h3 className="text-lg font-semibold text-white mb-4">Tiros a Portería Realizados</h3>
                         <ResponsiveContainer width="100%" height="100%">
                             <Treemap
                                 data={treemapData}
@@ -1278,21 +1296,21 @@ const DashboardPage: React.FC = () => {
                             </ResponsiveContainer>
                         </div>
                          <div className="bg-gray-800 p-6 rounded-lg h-96 flex flex-col">
-                            <h3 className="text-lg font-semibold text-white mb-4">Aereos Logrados</h3>
+                            <h3 className="text-lg font-semibold text-white mb-4">Aéreos Logrados</h3>
                             <ResponsiveContainer width="100%" height="100%">
                                 <BarChart data={duelosAereosLogradosData} layout="vertical" margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
                                      <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
                                     <XAxis type="number" stroke="#9CA3AF" allowDecimals={false} />
                                     <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={80} tick={{ fontSize: 12, fill: '#D1D5DB' }} />
                                     <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} cursor={{fill: 'rgba(107, 114, 128, 0.2)'}}/>
-                                    <Bar dataKey="value" fill="#EC4899" name="Aereos" />
+                                    <Bar dataKey="value" fill="#EC4899" name="Aéreos" />
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
                     </div>
 
                     <div className="bg-gray-800 p-6 rounded-lg h-96 flex flex-col">
-                        <h3 className="text-lg font-semibold text-white mb-4">Recuperacion de Balon por Jugador</h3>
+                        <h3 className="text-lg font-semibold text-white mb-4">Recuperación de Balón por Jugador</h3>
                         <ResponsiveContainer width="100%" height="100%">
                             <BarChart data={recuperacionBalonPorJugador} layout="vertical" margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
