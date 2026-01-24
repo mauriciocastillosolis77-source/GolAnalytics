@@ -1135,12 +1135,10 @@ const DashboardPage: React.FC = () => {
                     >
                         <div className="flex items-center gap-3">
                             <div className="bg-gradient-to-r from-purple-600 to-cyan-600 p-2 rounded-lg">
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6 text-white" viewBox="0 0 20 20" fill="currentColor">
-                                    <path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" />
-                                </svg>
+                                <span className="text-2xl">⚽</span>
                             </div>
                             <div className="text-left">
-                                <h3 className="text-lg font-semibold text-white">Análisis IA del Equipo</h3>
+                                <h3 className="text-lg font-semibold text-white">Análisis especializado GolAnalytics</h3>
                                 <p className="text-xs text-gray-400">Resumen ejecutivo del rendimiento colectivo con recomendaciones</p>
                             </div>
                         </div>
@@ -1190,10 +1188,8 @@ const DashboardPage: React.FC = () => {
                                                 </>
                                             ) : (
                                                 <>
-                                                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-                                                        <path fillRule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clipRule="evenodd" />
-                                                    </svg>
-                                                    <span>Generar Análisis</span>
+                                                    <span>⚽</span>
+                                                    <span>Generar análisis ejecutivo del equipo</span>
                                                 </>
                                             )}
                                         </button>
