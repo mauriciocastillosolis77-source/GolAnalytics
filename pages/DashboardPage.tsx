@@ -5,6 +5,7 @@ import { METRICS } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
 import { analyzeTeamPerformance } from '../services/geminiTeamAnalysisService';
 import { saveTeamAnalysis, getCachedTeamAnalysis, getTeamAnalysisHistory } from '../services/teamAnalysisHistoryService';
+import { exportTeamAnalysisToPDF } from '../services/pdfExportService';
 import { useAuth } from '../contexts/AuthContext';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, Cell, Treemap, ScatterChart, Scatter } from 'recharts';
 
@@ -1354,6 +1355,28 @@ const DashboardPage: React.FC = () => {
                                                 </li>
                                             ))}
                                         </ul>
+                                    </div>
+
+                                    <div className="flex justify-center pt-4">
+                                        <button
+                                            onClick={async () => {
+                                                try {
+                                                    await exportTeamAnalysisToPDF(teamAnalysis, {
+                                                        userName: profile?.nombre || 'Usuario',
+                                                        teamName: selectedTeamName
+                                                    });
+                                                } catch (error) {
+                                                    console.error('Error exporting PDF:', error);
+                                                    alert('Error al generar el PDF. Intenta de nuevo.');
+                                                }
+                                            }}
+                                            className="flex items-center gap-2 px-6 py-3 rounded-lg font-medium bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white transition-colors"
+                                        >
+                                            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                                                <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
+                                            </svg>
+                                            <span>Descargar PDF</span>
+                                        </button>
                                     </div>
                                 </div>
                             )}
