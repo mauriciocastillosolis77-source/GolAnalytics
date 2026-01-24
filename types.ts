@@ -84,3 +84,38 @@ export interface AnalysisHistory {
   efectividad_global: number;
   created_at: string;
 }
+
+export interface TeamAnalysis {
+  tendencia: 'mejorando' | 'estable' | 'bajando';
+  tendenciaDescripcion: string;
+  fortalezasColectivas: string[];
+  areasDeMejoraColectivas: string[];
+  analisisPorLinea: {
+    defensa: { efectividad: number; observacion: string };
+    medio: { efectividad: number; observacion: string };
+    ataque: { efectividad: number; observacion: string };
+  };
+  jugadoresDestacados: Array<{
+    nombre: string;
+    razon: string;
+  }>;
+  resumenEjecutivo: string;
+  recomendacionesEntrenamiento: string[];
+}
+
+export interface TeamAnalysisHistory {
+  id: string;
+  team_id: string;
+  team_name: string;
+  analysis_data: TeamAnalysis;
+  filters_used?: {
+    torneo?: string;
+    categoria?: string;
+    jornadaMin?: number;
+    jornadaMax?: number;
+  };
+  total_partidos: number;
+  total_acciones: number;
+  efectividad_global: number;
+  created_at: string;
+}
