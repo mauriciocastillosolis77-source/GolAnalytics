@@ -15,34 +15,63 @@ function getApiKey(): string {
     return apiKey;
 }
 
-const getSegmentPrompt = (startTime: number, endTime: number, existingTags: Tag[] = []) => `Eres un analista experto de fútbol. Analiza la siguiente secuencia de frames de un partido de fútbol.
+const formatTimestamp = (seconds: number): string => {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+};
 
-Los frames representan el segmento del minuto ${Math.floor(startTime/60)}:${String(Math.floor(startTime%60)).padStart(2,'0')} al minuto ${Math.floor(endTime/60)}:${String(Math.floor(endTime%60)).padStart(2,'0')} del partido.
-Los frames están ordenados cronológicamente, con 1 segundo de diferencia entre cada uno.
+const getSegmentPrompt = (startTime: number, endTime: number, existingTags: Tag[] = [], teamName?: string, hasTeamUniform?: boolean, frameTimestamps?: number[]) => {
+    const frameMapping = frameTimestamps 
+        ? frameTimestamps.map((ts, idx) => `Frame ${idx + 1} = ${formatTimestamp(ts)}`).join(', ')
+        : '';
+    
+    return `Eres un analista experto de fútbol. Analiza la siguiente secuencia de frames de un partido de fútbol.
 
-Tu tarea es identificar TODAS las jugadas significativas y etiquetarlas según la lista de métricas predefinida.
+Los frames representan el segmento del ${formatTimestamp(startTime)} al ${formatTimestamp(endTime)} del partido.
+
+${hasTeamUniform ? `IMPORTANTE - FILTRO DE EQUIPO:
+La PRIMERA imagen que recibes es el uniforme del equipo que estamos analizando${teamName ? ` (${teamName})` : ''}.
+SOLO debes reportar jugadas de los jugadores que visten ESE uniforme.
+IGNORA completamente las jugadas del equipo rival (uniforme diferente).
+Si un jugador del equipo rival hace una jugada, NO la incluyas en tu respuesta.
+` : ''}
+
+MAPEO EXACTO DE FRAMES A TIMESTAMPS:
+${frameMapping || 'Los frames están ordenados cronológicamente.'}
+${hasTeamUniform ? 'NOTA: El primer frame es la imagen del uniforme de referencia, NO es parte del video.' : ''}
+
+Tu tarea es identificar TODAS las jugadas significativas${hasTeamUniform ? ' DEL EQUIPO INDICADO' : ''} y etiquetarlas según la lista de métricas predefinida.
+
+REGLAS CRÍTICAS DE TIMESTAMPS:
+- USA EXACTAMENTE el timestamp del frame donde ocurre la jugada según el mapeo de arriba
+- NO inventes timestamps - solo usa los que corresponden a los frames que ves
+- Si una jugada ocurre entre el Frame 3 y Frame 4, usa el timestamp del Frame 3 (cuando inicia la acción)
 
 IMPORTANTE: 
-- Cada frame representa 1 segundo del video
 - Presta atención a secuencias de frames para detectar el RESULTADO de cada acción (logrado/fallado)
 - Un pase es "logrado" si en los frames siguientes un compañero recibe el balón
 - Un pase es "fallado" si en los frames siguientes el rival intercepta o el balón sale
 - Un 1vs1 ofensivo es "logrado" si el jugador supera al defensor
 - Un 1vs1 defensivo es "logrado" si el defensor recupera el balón o bloquea
+${hasTeamUniform ? '- SOLO reporta jugadas de jugadores con el uniforme mostrado en la primera imagen' : ''}
+- BUSCA ACTIVAMENTE todas las jugadas: pases, duelos, recuperaciones, pérdidas, tiros, etc.
+- NO omitas jugadas solo porque parecen rutinarias - queremos TODAS las acciones del equipo
 
 Lista de métricas (usar EXACTAMENTE estos nombres):
 ${METRICS.join('\n')}
 
 Jugadas ya etiquetadas en este partido (NO sugerir duplicados):
-${existingTags.filter(t => t.timestamp >= startTime && t.timestamp <= endTime).map(t => `- ${t.accion} ${t.resultado ? '(' + t.resultado + ')' : ''} en ${Math.floor(t.timestamp/60)}:${String(Math.floor(t.timestamp%60)).padStart(2,'0')}`).join('\n') || 'Ninguna'}
+${existingTags.filter(t => t.timestamp >= startTime && t.timestamp <= endTime).map(t => `- ${t.accion} ${t.resultado ? '(' + t.resultado + ')' : ''} en ${formatTimestamp(t.timestamp)}`).join('\n') || 'Ninguna'}
 
 Para cada jugada identificada, proporciona:
-- timestamp: El minuto y segundo aproximado de la jugada (formato "MM:SS", ejemplo: "05:23")
+- timestamp: El minuto y segundo EXACTO de la jugada (formato "MM:SS") - USA el mapeo de frames de arriba
 - action: El nombre EXACTO de la métrica de la lista (incluyendo logrado/fallado si aplica)
 - description: Descripción breve de la jugada y el jugador involucrado (color de camiseta, número si visible)
 
 Devuelve tus hallazgos como un array JSON. Si no encuentras jugadas significativas, devuelve un array vacío.
 `;
+};
 
 export interface SegmentAnalysisProgress {
     phase: 'extracting' | 'analyzing' | 'complete';
@@ -51,12 +80,19 @@ export interface SegmentAnalysisProgress {
     message: string;
 }
 
+export interface TeamUniformContext {
+    uniformBase64: string;
+    uniformMimeType: string;
+    teamName?: string;
+}
+
 export const analyzeVideoSegment = async (
     base64Frames: { data: string; mimeType: string; timestamp: number }[],
     startTime: number,
     endTime: number,
     existingTags: Tag[],
-    onProgress?: (progress: SegmentAnalysisProgress) => void
+    onProgress?: (progress: SegmentAnalysisProgress) => void,
+    teamUniformContext?: TeamUniformContext
 ): Promise<AISuggestion[]> => {
     const apiKey = getApiKey();
     
@@ -64,21 +100,37 @@ export const analyzeVideoSegment = async (
         throw new Error("No se pudieron extraer frames del segmento seleccionado.");
     }
     
+    const hasTeamUniform = !!teamUniformContext?.uniformBase64;
+    
     onProgress?.({
         phase: 'analyzing',
         framesExtracted: base64Frames.length,
         totalFrames: base64Frames.length,
-        message: `Analizando ${base64Frames.length} frames con Gemini...`
+        message: hasTeamUniform 
+            ? `Analizando ${base64Frames.length} frames con filtro de equipo...`
+            : `Analizando ${base64Frames.length} frames con Gemini...`
     });
     
-    const imageParts = base64Frames.map(frame => ({
+    const imageParts: any[] = [];
+    
+    if (hasTeamUniform && teamUniformContext) {
+        imageParts.push({
+            inline_data: {
+                mime_type: teamUniformContext.uniformMimeType,
+                data: teamUniformContext.uniformBase64,
+            },
+        });
+    }
+    
+    imageParts.push(...base64Frames.map(frame => ({
         inline_data: {
             mime_type: frame.mimeType,
             data: frame.data,
         },
-    }));
+    })));
     
-    const prompt = getSegmentPrompt(startTime, endTime, existingTags);
+    const frameTimestamps = base64Frames.map(f => f.timestamp);
+    const prompt = getSegmentPrompt(startTime, endTime, existingTags, teamUniformContext?.teamName, hasTeamUniform, frameTimestamps);
 
     const requestBody = {
         contents: [{
