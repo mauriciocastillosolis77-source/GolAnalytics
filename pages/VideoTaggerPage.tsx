@@ -59,6 +59,7 @@ const VideoTaggerPage: React.FC = () => {
     const [isCustomAnalyzing, setIsCustomAnalyzing] = useState(false);
     const [aiSuggestions, setAiSuggestions] = useState<AISuggestion[]>([]);
     const [isSuggestionsModalOpen, setIsSuggestionsModalOpen] = useState(false);
+    const [pendingAiSuggestion, setPendingAiSuggestion] = useState<AISuggestion | null>(null);
     
     // Batch Analysis State
     const [isBatchAnalyzing, setIsBatchAnalyzing] = useState(false);
@@ -423,9 +424,16 @@ const VideoTaggerPage: React.FC = () => {
             resultado: resultado,
             timestamp: relativeTime,
             video_file: videoFileName ?? undefined,
-            timestamp_absolute: timestamp_absolute as any
+            timestamp_absolute: timestamp_absolute as any,
+            ai_suggested: pendingAiSuggestion !== null
         };
         setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
+        
+        // Si había una sugerencia de IA pendiente, removerla
+        if (pendingAiSuggestion) {
+            setAiSuggestions(prev => prev.filter(s => s !== pendingAiSuggestion));
+            setPendingAiSuggestion(null);
+        }
     };
 
     // Handler for deleting a tag
@@ -840,48 +848,123 @@ const VideoTaggerPage: React.FC = () => {
     
     const handleAcceptSuggestion = (suggestion: AISuggestion) => {
         // Convertir formato: "1_vs_1_ofensivo" → "1 vs 1 ofensivo"
-        let accionBase = suggestion.action.replace(/_/g, ' ');
+        let accionNormalizada = suggestion.action.replace(/_/g, ' ');
         
-        // Buscar si la acción base existe con "logrado" o "fallado"
-        const opcionLogrado = `${accionBase} logrado`;
-        const opcionFallado = `${accionBase} fallado`;
+        // Verificar si la acción existe exactamente en METRICS
+        const accionExacta = METRICS.find(m => m.toLowerCase() === accionNormalizada.toLowerCase());
         
-        let accionFinal = '';
-        
-        // Verificar qué opciones existen
-        if (METRICS.includes(accionBase)) {
-            // La acción existe tal cual (ej: "Recuperación de balón")
-            accionFinal = accionBase;
-        } else if (METRICS.includes(opcionLogrado) || METRICS.includes(opcionFallado)) {
-            // La acción necesita logrado/fallado - usar la primera que exista
-            if (METRICS.includes(opcionLogrado)) {
-                accionFinal = opcionLogrado;
-            } else {
-                accionFinal = opcionFallado;
+        if (!accionExacta) {
+            // La acción no coincide exactamente - buscar coincidencia parcial
+            const coincidenciaParcial = METRICS.find(m => 
+                m.toLowerCase().startsWith(accionNormalizada.toLowerCase()) ||
+                accionNormalizada.toLowerCase().includes(m.toLowerCase().split(' ')[0])
+            );
+            
+            if (coincidenciaParcial) {
+                setSelectedAction(coincidenciaParcial);
             }
-        } else {
-            // Acción no encontrada en ningún formato
-            alert(`Acción "${accionBase}" no encontrada. Las opciones más cercanas son:\n- ${opcionLogrado}\n- ${opcionFallado}\n\nPor favor, selecciona manualmente.`);
-            handleRejectSuggestion(suggestion);
+            
+            // Mover video al timestamp
+            if (videoRef.current) {
+                const timeParts = suggestion.timestamp.split(':').map(Number);
+                const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
+                videoRef.current.currentTime = timestamp;
+            }
+            
+            // Guardar como sugerencia pendiente para que addTag la remueva cuando se complete
+            setPendingAiSuggestion(suggestion);
+            setSaveStatus({ 
+                message: `"${accionNormalizada}" requiere ajuste. Selecciona la acción correcta.`, 
+                type: 'error' 
+            });
+            setTimeout(() => setSaveStatus(null), 3000);
             return;
         }
         
-        // Pre-llenar el formulario con la acción sugerida
-        setSelectedAction(accionFinal);
-        
-        // Mover el video al timestamp de la sugerencia
-        if (videoRef.current) {
-            const timeParts = suggestion.timestamp.split(':').map(Number);
-            const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
-            videoRef.current.currentTime = timestamp;
+        // La acción existe exactamente - verificar si hay jugador seleccionado
+        if (!selectedPlayerId) {
+            // No hay jugador - pre-llenar acción, mover video
+            setSelectedAction(accionExacta);
+            
+            if (videoRef.current) {
+                const timeParts = suggestion.timestamp.split(':').map(Number);
+                const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
+                videoRef.current.currentTime = timestamp;
+            }
+            
+            // Guardar como sugerencia pendiente para que addTag la remueva cuando se complete
+            setPendingAiSuggestion(suggestion);
+            setSaveStatus({ message: 'Selecciona un jugador y haz clic en Etiquetar', type: 'success' });
+            setTimeout(() => setSaveStatus(null), 2000);
+            return;
         }
         
-        // Cerrar modal y remover sugerencia
-        setIsSuggestionsModalOpen(false);
+        // Verificar que hay un partido seleccionado
+        if (!selectedMatchId) {
+            setSaveStatus({ message: 'Selecciona un partido primero', type: 'error' });
+            setTimeout(() => setSaveStatus(null), 2000);
+            return;
+        }
+        
+        // Tenemos acción válida y jugador - crear tag usando la misma lógica de addTagWithAction
+        const timeParts = suggestion.timestamp.split(':').map(Number);
+        const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
+        
+        // Usar la misma lógica de parsing que addTagWithAction
+        const actionParts = accionExacta.split(' ');
+        let resultado = '';
+        if (actionParts.includes('logrado')) resultado = 'logrado';
+        else if (actionParts.includes('fallado')) resultado = 'fallado';
+        else if (accionExacta === "Transición ofensiva lograda") resultado = 'logrado';
+        else if (accionExacta === "Transición ofensiva no lograda") resultado = 'no logrado';
+        
+        let accion = accionExacta;
+        if (
+            accionExacta === "Transición ofensiva lograda" ||
+            accionExacta === "Transición ofensiva no lograda" ||
+            accionExacta === "Recuperación de balón" ||
+            accionExacta === "Pérdida de balón" ||
+            accionExacta === "Atajadas" ||
+            accionExacta === "Goles a favor" ||
+            accionExacta === "Goles recibidos" ||
+            accionExacta === "Tiros a portería"
+        ) {
+            accion = accionExacta;
+        } else {
+            accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
+        }
+        
+        const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
+        const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
+        const timestamp_absolute = (videoFileName ? (videoStartOffset + timestamp) : undefined);
+        
+        const selectedMatchForTag = matches.find(m => m.id === selectedMatchId);
+        const newTag: Tag = {
+            id: `temp-${Date.now()}`,
+            match_id: selectedMatchId,
+            player_id: selectedPlayerId,
+            accion: accion,
+            resultado: resultado,
+            timestamp: timestamp,
+            video_file: videoFileName ?? undefined,
+            timestamp_absolute: timestamp_absolute as any,
+            team_id: selectedMatchForTag?.team_id || null,
+            ai_suggested: true
+        };
+        
+        setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
+        
+        // Ahora SÍ remover sugerencia porque se procesó completamente
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
         
-        // Mensaje informativo
-        alert(`Acción "${accionFinal}" seleccionada. Verifica si es correcta y ajusta "logrado/fallado" si es necesario antes de etiquetar.`);
+        // Feedback visual
+        setSaveStatus({ message: `✓ IA: ${accionExacta}`, type: 'success' });
+        setTimeout(() => setSaveStatus(null), 1500);
+        
+        // Mover video al timestamp
+        if (videoRef.current) {
+            videoRef.current.currentTime = timestamp;
+        }
     };
 
     const handleRejectSuggestion = (suggestion: AISuggestion) => {
