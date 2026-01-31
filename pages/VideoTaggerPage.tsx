@@ -958,15 +958,44 @@ const VideoTaggerPage: React.FC = () => {
                             </button>
                         </div>
                         
-                        {/* Fila 2: Mini referencia de atajos */}
-                        <div className="mt-2 flex items-center gap-1 flex-wrap text-xs">
-                            <span className="text-gray-400 mr-1">Atajos:</span>
-                            <span className="bg-gray-600 px-1.5 py-0.5 rounded"><span className="text-cyan-400">1-8</span> Pases</span>
-                            <span className="bg-gray-600 px-1.5 py-0.5 rounded"><span className="text-cyan-400">9,0</span> 1v1 Def</span>
-                            <span className="bg-gray-600 px-1.5 py-0.5 rounded"><span className="text-cyan-400">Q,W</span> 1v1 Of</span>
-                            <span className="bg-gray-600 px-1.5 py-0.5 rounded"><span className="text-cyan-400">E-Y</span> Aereos</span>
-                            <span className="bg-gray-600 px-1.5 py-0.5 rounded"><span className="text-cyan-400">U,I</span> Trans</span>
-                            <span className="bg-gray-600 px-1.5 py-0.5 rounded"><span className="text-cyan-400">A-H</span> Otros</span>
+                        {/* Fila 2: Menu desplegable de atajos */}
+                        <div className="mt-2">
+                            <button 
+                                onClick={() => setShowShortcutsGuide(!showShortcutsGuide)}
+                                className="flex items-center gap-2 text-xs text-cyan-400 hover:text-cyan-300"
+                            >
+                                <span>{showShortcutsGuide ? '▼' : '▶'}</span>
+                                <span>Ver atajos de teclado</span>
+                            </button>
+                            
+                            {showShortcutsGuide && (
+                                <div className="mt-2 grid grid-cols-4 gap-1 text-xs">
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">1</span> Pase corto def logrado</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">2</span> Pase corto def fallado</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">3</span> Pase corto of logrado</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">4</span> Pase corto of fallado</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">5</span> Pase largo def logrado</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">6</span> Pase largo def fallado</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">7</span> Pase largo of logrado</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">8</span> Pase largo of fallado</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">9</span> 1v1 def logrado</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">0</span> 1v1 def fallado</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">Q</span> 1v1 of logrado</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">W</span> 1v1 of fallado</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">E</span> Aereo def logrado</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">R</span> Aereo def fallado</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">T</span> Aereo of logrado</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">Y</span> Aereo of fallado</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">U</span> Trans of lograda</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">I</span> Trans of no lograda</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">A</span> Atajadas</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">S</span> Goles a favor</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">D</span> Goles recibidos</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">F</span> Perdida de balon</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">G</span> Tiros a porteria</div>
+                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">H</span> Recuperacion</div>
+                                </div>
+                            )}
                         </div>
                         
                         {/* Indicador de accion seleccionada */}
