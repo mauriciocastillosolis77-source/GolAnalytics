@@ -3,7 +3,7 @@ import { supabase } from '../services/supabaseClient';
 import type { Player, Match, Tag, AISuggestion } from '../types';
 import { METRICS } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
-import { EditIcon, TrashIcon, SparklesIcon, CloudUploadIcon, CloudCheckIcon, EyeIcon } from '../components/ui/Icons';
+import { EditIcon, TrashIcon, SparklesIcon, CloudUploadIcon, CloudCheckIcon,} from '../components/ui/Icons';
 import { analyzeVideoFrames } from '../services/geminiService';
 import { analyzeVideoSegment, extractFramesFromSegment, type SegmentAnalysisProgress } from '../services/geminiSegmentService';
 import { blobToBase64 } from '../utils/blob';
