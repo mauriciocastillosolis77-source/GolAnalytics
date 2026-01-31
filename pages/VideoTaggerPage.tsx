@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { supabase } from '../services/supabaseClient';
 import type { Player, Match, Tag, AISuggestion } from '../types';
@@ -1374,3 +1373,4 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
