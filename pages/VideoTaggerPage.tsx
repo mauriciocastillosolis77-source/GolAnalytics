@@ -1,9 +1,10 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { supabase } from '../services/supabaseClient';
 import type { Player, Match, Tag, AISuggestion } from '../types';
 import { METRICS } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
-import { EditIcon, TrashIcon, SparklesIcon, CloudUploadIcon, CloudCheckIcon } from '../components/ui/Icons';
+import { EditIcon, TrashIcon, SparklesIcon, CloudUploadIcon, CloudCheckIcon, EyeIcon } from '../components/ui/Icons';
 import { analyzeVideoFrames } from '../services/geminiService';
 import { analyzeVideoSegment, extractFramesFromSegment, type SegmentAnalysisProgress } from '../services/geminiSegmentService';
 import { blobToBase64 } from '../utils/blob';
@@ -80,6 +81,38 @@ const VideoTaggerPage: React.FC = () => {
     const videoRef = useRef<HTMLVideoElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [currentTime, setCurrentTime] = useState(0);
+    const [showShortcutsGuide, setShowShortcutsGuide] = useState(false);
+    
+    // Derived state: any AI analysis is running
+    const isAnyAnalysisRunning = isGeminiAnalyzing || isCustomAnalyzing || isBatchAnalyzing || isSegmentAnalyzing;
+
+    // Keyboard shortcuts mapping: key -> action from METRICS
+    const KEYBOARD_SHORTCUTS: Record<string, string> = {
+        '1': 'Pase corto defensivo logrado',
+        '2': 'Pase corto defensivo fallado',
+        '3': 'Pase corto ofensivo logrado',
+        '4': 'Pase corto ofensivo fallado',
+        '5': 'Pase largo defensivo logrado',
+        '6': 'Pase largo defensivo fallado',
+        '7': 'Pase largo ofensivo logrado',
+        '8': 'Pase largo ofensivo fallado',
+        '9': '1 vs 1 defensivo logrado',
+        '0': '1 vs 1 defensivo fallado',
+        'q': '1 vs 1 ofensivo logrado',
+        'w': '1 vs 1 ofensivo fallado',
+        'e': 'Aéreo defensivo logrado',
+        'r': 'Aéreo defensivo fallado',
+        't': 'Aéreo ofensivo logrado',
+        'y': 'Aéreo ofensivo fallado',
+        'u': 'Transición ofensiva lograda',
+        'i': 'Transición ofensiva no lograda',
+        'a': 'Atajadas',
+        's': 'Goles a favor',
+        'd': 'Goles recibidos',
+        'f': 'Pérdida de balón',
+        'g': 'Tiros a portería',
+        'h': 'Recuperación de balón',
+    };
 
     // Fetch matches and teams when component mounts
     useEffect(() => {
@@ -152,12 +185,6 @@ const VideoTaggerPage: React.FC = () => {
         setSelectedVideo(v);
     }, [selectedVideoId, videos]);
 
-
-    // Filtrar jugadores por el equipo del partido seleccionado
-    const selectedMatch = matches.find(m => m.id === selectedMatchId);
-    const filteredPlayers = (selectedMatch?.team_id 
-        ? players.filter(p => p.team_id === selectedMatch.team_id)
-        : players).sort((a, b) => a.numero - b.numero);
     // Handlers for creating a match
     const handleCreateMatch = async () => {
         setIsSavingMatch(true);
@@ -195,10 +222,19 @@ const VideoTaggerPage: React.FC = () => {
         }
     };
 
-    // Handler for uploading players via Excel file (sin match_id)
+    // Handler for uploading players via Excel file
     const handlePlayerFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (!file) return;
+        
+        // Verificar que hay un partido seleccionado para obtener el team_id
+        const selectedMatch = matches.find(m => m.id === selectedMatchId);
+        if (!selectedMatch?.team_id) {
+            setPlayerUploadStatus('error');
+            setPlayerUploadMessage('❌ Error: Primero selecciona un partido para asociar los jugadores al equipo.');
+            return;
+        }
+        
         setPlayerUploadStatus('loading');
         setPlayerUploadMessage('');
         const reader = new FileReader();
@@ -221,23 +257,13 @@ const VideoTaggerPage: React.FC = () => {
                 const parsedPlayers = rawData.slice(1).map(row => ({
                     nombre: String(row[headers.indexOf('nombre')] || '').trim(),
                     numero: Number(row[headers.indexOf('numero')]),
-                    posicion: String(row[headers.indexOf('posicion')] || '').trim()
+                    posicion: String(row[headers.indexOf('posicion')] || '').trim(),
+                    team_id: selectedMatch.team_id
                 }));
 
-                // Obtener team_id del partido seleccionado
-                const selectedMatch = matches.find(m => m.id === selectedMatchId);
-                if (!selectedMatch?.team_id) {
-                    throw new Error("Primero selecciona un partido para asociar los jugadores al equipo.");
-                }
-                const teamId = selectedMatch.team_id;
-
-                const newPlayers = parsedPlayers.filter(p => p.nombre && !players.some(existing => existing.nombre === p.nombre && existing.numero === p.numero && existing.team_id === teamId));
-                
-                // Agregar team_id a cada jugador
-                const playersWithTeam = newPlayers.map(p => ({ ...p, team_id: teamId }));
-                
-                if (playersWithTeam.length > 0) {
-                    const { data: inserted, error } = await supabase.from('players').insert(playersWithTeam).select();
+                const newPlayers = parsedPlayers.filter(p => p.nombre && !players.some(existing => existing.nombre === p.nombre && existing.numero === p.numero && existing.team_id === selectedMatch.team_id));
+                if (newPlayers.length > 0) {
+                    const { data: inserted, error } = await supabase.from('players').insert(newPlayers).select();
                     if (error) throw error;
                     setPlayerUploadStatus('success');
                     setPlayerUploadMessage(`✅ ${inserted?.length || 0} nuevos jugadores cargados. ${parsedPlayers.length - newPlayers.length} ya existían.`);
@@ -275,6 +301,89 @@ const VideoTaggerPage: React.FC = () => {
 
     const formatTime = (time: number) => new Date(time * 1000).toISOString().slice(14, 19);
 
+    // Handler for adding a tag with a specific action (used by keyboard shortcuts)
+    const addTagWithAction = (actionName: string) => {
+        if (!selectedPlayerId || !videoRef.current) return;
+        if (!activeVideoUrl && !selectedVideo) return;
+
+        const actionParts = actionName.split(' ');
+
+        let resultado = '';
+        if (actionParts.includes('logrado')) resultado = 'logrado';
+        else if (actionParts.includes('fallado')) resultado = 'fallado';
+        else if (actionName === "Transición ofensiva lograda") resultado = 'logrado';
+        else if (actionName === "Transición ofensiva no lograda") resultado = 'no logrado';
+
+        let accion = actionName;
+        if (
+            actionName === "Transición ofensiva lograda" ||
+            actionName === "Transición ofensiva no lograda" ||
+            actionName === "Recuperación de balón" ||
+            actionName === "Pérdida de balón" ||
+            actionName === "Atajadas" ||
+            actionName === "Goles a favor" ||
+            actionName === "Goles recibidos" ||
+            actionName === "Tiros a portería"
+        ) {
+            accion = actionName;
+        } else {
+            accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
+        }
+
+        const relativeTime = Math.floor(videoRef.current.currentTime);
+        const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
+        const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
+        const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
+
+        const selectedMatchForTag = matches.find(m => m.id === selectedMatchId);
+        const newTag: Tag = {
+            id: `temp-${Date.now()}`,
+            match_id: selectedMatchId,
+            player_id: selectedPlayerId,
+            accion: accion,
+            resultado: resultado,
+            timestamp: relativeTime,
+            video_file: videoFileName ?? undefined,
+            timestamp_absolute: timestamp_absolute as any,
+            team_id: selectedMatchForTag?.team_id || null
+        };
+        setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
+        
+        // Visual feedback
+        setSaveStatus({ message: `Etiquetado: ${accion} ${resultado}`, type: 'success' });
+        setTimeout(() => setSaveStatus(null), 1500);
+    };
+
+    // Keyboard shortcuts effect - only pre-selects action, does NOT auto-save
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            // Ignore if typing in an input/select/textarea
+            const target = e.target as HTMLElement;
+            if (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA') {
+                return;
+            }
+            
+            // Ignore if any modal is open
+            if (isSuggestionsModalOpen || showBatchResultsModal || showSegmentModal || showNewVideoModal || isCreatingMatch) {
+                return;
+            }
+
+            const key = e.key.toLowerCase();
+            const action = KEYBOARD_SHORTCUTS[key];
+            
+            if (action && (activeVideoUrl || selectedVideo)) {
+                e.preventDefault();
+                // Only pre-select the action in the dropdown, do NOT create tag automatically
+                setSelectedAction(action);
+                setSaveStatus({ message: `Accion seleccionada: ${action}`, type: 'success' });
+                setTimeout(() => setSaveStatus(null), 1500);
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [activeVideoUrl, selectedVideo, isSuggestionsModalOpen, showBatchResultsModal, showSegmentModal, showNewVideoModal, isCreatingMatch]);
+
     // Handler for adding a tag (jugada)
     const addTag = () => {
         if (!selectedPlayerId || !videoRef.current) return;
@@ -307,7 +416,6 @@ const VideoTaggerPage: React.FC = () => {
         const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
         const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
 
-        const selectedMatchForTag = matches.find(m => m.id === selectedMatchId);
         const newTag: Tag = {
             id: `temp-${Date.now()}`,
             match_id: selectedMatchId,
@@ -316,8 +424,7 @@ const VideoTaggerPage: React.FC = () => {
             resultado: resultado,
             timestamp: relativeTime,
             video_file: videoFileName ?? undefined,
-            timestamp_absolute: timestamp_absolute as any,
-            team_id: selectedMatchForTag?.team_id || null
+            timestamp_absolute: timestamp_absolute as any
         };
         setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
     };
@@ -358,7 +465,6 @@ const VideoTaggerPage: React.FC = () => {
                 // normalize undefined timestamp_absolute to null if needed
                 return {
                     ...tag,
-                    video_file: tag.video_file || null,
                     timestamp_absolute: (typeof tag.timestamp_absolute === 'number') ? tag.timestamp_absolute : null
                 };
             });
@@ -765,6 +871,15 @@ const VideoTaggerPage: React.FC = () => {
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
     };
 
+    const handlePreviewSuggestion = (suggestion: AISuggestion) => {
+        if (videoRef.current) {
+            const timeParts = suggestion.timestamp.split(':').map(Number);
+            const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
+            videoRef.current.currentTime = timestamp;
+            videoRef.current.play();
+        }
+    };
+
     if (isLoading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
 
     return (
@@ -775,6 +890,7 @@ const VideoTaggerPage: React.FC = () => {
                     suggestions={aiSuggestions}
                     onAccept={handleAcceptSuggestion}
                     onReject={handleRejectSuggestion}
+                    onPreview={handlePreviewSuggestion}
                     onClose={() => setIsSuggestionsModalOpen(false)}
                 />
             )}
@@ -942,8 +1058,8 @@ const VideoTaggerPage: React.FC = () => {
                 <div className="bg-gray-800 rounded-lg p-4">
                     <h3 className="text-lg font-semibold mb-2 text-white">3. Etiquetar Jugada</h3>
                     <label className="block text-sm text-gray-400 mb-1">Jugador</label>
-                    <select value={selectedPlayerId} onChange={e => setSelectedPlayerId(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-2" disabled={filteredPlayers.length === 0}>
-                        {filteredPlayers.length > 0 ? filteredPlayers.map(p => (
+                    <select value={selectedPlayerId} onChange={e => setSelectedPlayerId(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-2" disabled={players.length === 0}>
+                        {players.length > 0 ? players.map(p => (
                             <option key={p.id} value={p.id}>{p.numero} - {p.nombre}</option>
                         )) : <option>Cargue archivo de jugadores</option>}
                     </select>
@@ -973,7 +1089,7 @@ const VideoTaggerPage: React.FC = () => {
                     {/* Segment Analysis Button (Gemini) - RECOMMENDED */}
                     <button 
                         onClick={() => setShowSegmentModal(true)} 
-                        disabled={(!activeVideoUrl && !selectedVideo) || isSegmentAnalyzing || !selectedMatchId} 
+                        disabled={(!activeVideoUrl && !selectedVideo) || isAnyAnalysisRunning || !selectedMatchId} 
                         className="w-full bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 p-3 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed mb-3"
                     >
                         <SparklesIcon />Analizar Segmento (Gemini) ⚡
@@ -983,7 +1099,7 @@ const VideoTaggerPage: React.FC = () => {
                     {/* Batch Analysis Button */}
                     <button 
                         onClick={handleBatchAnalysis} 
-                        disabled={!activeVideoUrl || isBatchAnalyzing || !selectedMatchId} 
+                        disabled={!activeVideoUrl || isAnyAnalysisRunning || !selectedMatchId} 
                         className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 p-3 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed mb-3"
                     >
                         {isBatchAnalyzing ? <><Spinner /> Analizando partido...</> : <><SparklesIcon />Analizar Partido Completo 🚀</>}
@@ -1005,16 +1121,58 @@ const VideoTaggerPage: React.FC = () => {
                         </div>
                     )}
                     
-                    <button onClick={handleAIAssistedAnalysis} disabled={!activeVideoUrl && !selectedVideo || isGeminiAnalyzing || !selectedMatchId} className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
+                    <button onClick={handleAIAssistedAnalysis} disabled={(!activeVideoUrl && !selectedVideo) || isAnyAnalysisRunning || !selectedMatchId} className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
                         {isGeminiAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Sugerir Acciones</>}
                     </button>
-<button 
+                    <button 
                         onClick={handleCustomModelAnalysis} 
-                        disabled={!activeVideoUrl && !selectedVideo || isCustomAnalyzing || !selectedMatchId} 
+                        disabled={(!activeVideoUrl && !selectedVideo) || isAnyAnalysisRunning || !selectedMatchId} 
                         className="w-full mt-2 bg-indigo-600 hover:bg-indigo-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed"
                     >
                         {isCustomAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Modelo Personalizado (74% Top-3)</>}
                     </button>
+                </div>
+
+                {/* 5. Atajos de Teclado */}
+                <div className="bg-gray-800 rounded-lg p-4">
+                    <button 
+                        onClick={() => setShowShortcutsGuide(!showShortcutsGuide)}
+                        className="w-full flex items-center justify-between text-lg font-semibold text-white"
+                    >
+                        <span>Atajos de Teclado</span>
+                        <span className="text-cyan-400">{showShortcutsGuide ? '▼' : '▶'}</span>
+                    </button>
+                    {showShortcutsGuide && (
+                        <div className="mt-3 space-y-2 text-sm">
+                            <p className="text-gray-400 mb-2">Presiona una tecla para pre-seleccionar la accion (requiere video cargado). Luego selecciona el jugador y guarda:</p>
+                            <div className="grid grid-cols-2 gap-1 text-xs">
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">1</span> Pase corto def. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">2</span> Pase corto def. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">3</span> Pase corto of. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">4</span> Pase corto of. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">5</span> Pase largo def. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">6</span> Pase largo def. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">7</span> Pase largo of. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">8</span> Pase largo of. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">9</span> 1vs1 def. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">0</span> 1vs1 def. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">Q</span> 1vs1 of. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">W</span> 1vs1 of. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">E</span> Aereo def. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">R</span> Aereo def. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">T</span> Aereo of. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">Y</span> Aereo of. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">U</span> Trans. of. lograda</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">I</span> Trans. of. no lograda</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">A</span> Atajadas</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">S</span> Goles a favor</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">D</span> Goles recibidos</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">F</span> Perdida de balon</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">G</span> Tiros a porteria</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">H</span> Recuperacion de balon</div>
+                            </div>
+                        </div>
+                    )}
                 </div>
             </div>
 
@@ -1057,10 +1215,21 @@ const VideoTaggerPage: React.FC = () => {
                                             <td className="p-2 text-xs text-gray-400">
                                                 {sugg.predictions[2] && `${sugg.predictions[2].action.replace(/_/g, ' ')} (${Math.round(sugg.predictions[2].probability * 100)}%)`}
                                             </td>
-                                            <td className="p-2 text-center">
+                                            <td className="p-2 text-center flex items-center justify-center gap-1">
                                                 <button 
                                                     onClick={() => {
-                                                        // Set video to this timestamp and pre-fill action
+                                                        if (videoRef.current) {
+                                                            videoRef.current.currentTime = sugg.timestamp;
+                                                            videoRef.current.play();
+                                                        }
+                                                    }}
+                                                    className="p-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs"
+                                                    title="Ver jugada"
+                                                >
+                                                    <EyeIcon className="w-4 h-4" />
+                                                </button>
+                                                <button 
+                                                    onClick={() => {
                                                         if (videoRef.current) {
                                                             videoRef.current.currentTime = sugg.timestamp;
                                                         }
@@ -1072,7 +1241,7 @@ const VideoTaggerPage: React.FC = () => {
                                                         setBatchSuggestions(prev => prev.map((s, i) => i === idx ? {...s, accepted: true} : s));
                                                     }}
                                                     disabled={sugg.accepted}
-                                                    className="px-3 py-1 bg-green-600 hover:bg-green-500 rounded text-xs disabled:bg-gray-600 disabled:cursor-not-allowed mr-2"
+                                                    className="px-2 py-1 bg-green-600 hover:bg-green-500 rounded text-xs disabled:bg-gray-600 disabled:cursor-not-allowed"
                                                 >
                                                     {sugg.accepted ? '✓' : 'Aceptar'}
                                                 </button>
@@ -1080,7 +1249,7 @@ const VideoTaggerPage: React.FC = () => {
                                                     onClick={() => {
                                                         setBatchSuggestions(prev => prev.filter((_, i) => i !== idx));
                                                     }}
-                                                    className="px-3 py-1 bg-red-600 hover:bg-red-500 rounded text-xs"
+                                                    className="px-2 py-1 bg-red-600 hover:bg-red-500 rounded text-xs"
                                                 >
                                                     ✗
                                                 </button>
