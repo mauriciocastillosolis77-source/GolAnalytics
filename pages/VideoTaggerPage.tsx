@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { supabase } from '../services/supabaseClient';
 import type { Player, Match, Tag, AISuggestion } from '../types';
 import { METRICS } from '../constants';
@@ -86,6 +86,14 @@ const VideoTaggerPage: React.FC = () => {
     // Derived state: any AI analysis is running
     const isAnyAnalysisRunning = isGeminiAnalyzing || isCustomAnalyzing || isBatchAnalyzing || isSegmentAnalyzing;
 
+    // Filtrar jugadores por equipo del partido seleccionado
+    const filteredPlayers = useMemo(() => {
+        if (!selectedMatchId) return players;
+        const selectedMatch = matches.find(m => m.id === selectedMatchId);
+        if (!selectedMatch?.team_id) return players;
+        return players.filter(p => p.team_id === selectedMatch.team_id);
+    }, [players, selectedMatchId, matches]);
+
     // Keyboard shortcuts mapping: key -> action from METRICS
     const KEYBOARD_SHORTCUTS: Record<string, string> = {
         '1': 'Pase corto defensivo logrado',
@@ -146,8 +154,16 @@ const VideoTaggerPage: React.FC = () => {
                 setTags(tagsData || []);
                 const { data: playersData } = await supabase.from('players').select('*');
                 setPlayers(playersData || []);
-                if (playersData && playersData.length > 0 && !selectedPlayerId) {
-                    setSelectedPlayerId(playersData[0].id);
+                
+                // Filtrar jugadores por equipo del partido y seleccionar el primero
+                const selectedMatch = matches.find(m => m.id === selectedMatchId);
+                if (playersData && playersData.length > 0) {
+                    const teamPlayers = selectedMatch?.team_id 
+                        ? playersData.filter(p => p.team_id === selectedMatch.team_id)
+                        : playersData;
+                    if (teamPlayers.length > 0) {
+                        setSelectedPlayerId(teamPlayers[0].id);
+                    }
                 }
 
                 // Fetch videos metadata for the match
@@ -1115,11 +1131,11 @@ const VideoTaggerPage: React.FC = () => {
                                 value={selectedPlayerId} 
                                 onChange={e => setSelectedPlayerId(e.target.value)} 
                                 className="flex-1 min-w-[120px] bg-gray-600 p-2 rounded text-sm" 
-                                disabled={players.length === 0}
+                                disabled={filteredPlayers.length === 0}
                             >
-                                {players.length > 0 ? players.map(p => (
+                                {filteredPlayers.length > 0 ? filteredPlayers.map(p => (
                                     <option key={p.id} value={p.id}>{p.numero} - {p.nombre}</option>
-                                )) : <option>Sin jugadores</option>}
+                                )) : <option>Sin jugadores del equipo</option>}
                             </select>
                             <select 
                                 value={selectedAction} 
@@ -1339,10 +1355,10 @@ const VideoTaggerPage: React.FC = () => {
                 <div className="bg-gray-800 rounded-lg p-4">
                     <h3 className="text-lg font-semibold mb-2 text-white">3. Etiquetar Jugada</h3>
                     <label className="block text-sm text-gray-400 mb-1">Jugador</label>
-                    <select value={selectedPlayerId} onChange={e => setSelectedPlayerId(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-2" disabled={players.length === 0}>
-                        {players.length > 0 ? players.map(p => (
+                    <select value={selectedPlayerId} onChange={e => setSelectedPlayerId(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-2" disabled={filteredPlayers.length === 0}>
+                        {filteredPlayers.length > 0 ? filteredPlayers.map(p => (
                             <option key={p.id} value={p.id}>{p.numero} - {p.nombre}</option>
-                        )) : <option>Cargue archivo de jugadores</option>}
+                        )) : <option>Sin jugadores del equipo</option>}
                     </select>
                     <label className="block text-sm text-gray-400 mb-1">Acción</label>
                     <select value={selectedAction} onChange={e => setSelectedAction(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-4">
