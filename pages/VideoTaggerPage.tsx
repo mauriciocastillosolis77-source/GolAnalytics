@@ -345,7 +345,7 @@ const VideoTaggerPage: React.FC = () => {
             timestamp: relativeTime,
             video_file: videoFileName ?? undefined,
             timestamp_absolute: timestamp_absolute as any,
-            team_id: selectedMatchForTag?.team_id || null
+            team_id: selectedMatchForTag?.team_id
         };
         setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
         
@@ -416,6 +416,7 @@ const VideoTaggerPage: React.FC = () => {
         const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
         const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
 
+        const selectedMatchForTag = matches.find(m => m.id === selectedMatchId);
         const newTag: Tag = {
             id: `temp-${Date.now()}`,
             match_id: selectedMatchId,
@@ -425,6 +426,7 @@ const VideoTaggerPage: React.FC = () => {
             timestamp: relativeTime,
             video_file: videoFileName ?? undefined,
             timestamp_absolute: timestamp_absolute as any,
+            team_id: selectedMatchForTag?.team_id,
             ai_suggested: pendingAiSuggestion !== null
         };
         setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
@@ -796,7 +798,7 @@ const VideoTaggerPage: React.FC = () => {
                 canvasRef.current,
                 startSeconds,
                 endSeconds,
-                1,
+                3,
                 setSegmentProgress
             );
             
@@ -900,23 +902,24 @@ const VideoTaggerPage: React.FC = () => {
             return;
         }
         
-        // La acción existe exactamente - verificar si hay jugador seleccionado
-        if (!selectedPlayerId) {
-            // No hay jugador - pre-llenar acción, mover video
-            setSelectedAction(accionExacta);
-            
-            if (videoRef.current) {
-                const timeParts = suggestion.timestamp.split(':').map(Number);
-                const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
-                videoRef.current.currentTime = timestamp;
-            }
-            
-            // Guardar como sugerencia pendiente para que addTag la remueva cuando se complete
-            setPendingAiSuggestion(suggestion);
-            setSaveStatus({ message: 'Selecciona un jugador y haz clic en Etiquetar', type: 'success' });
-            setTimeout(() => setSaveStatus(null), 2000);
-            return;
+        // La acción existe exactamente - SIEMPRE pedir que seleccione jugador manualmente
+        // Esto evita asignar el jugador equivocado a la jugada
+        setSelectedAction(accionExacta);
+        
+        if (videoRef.current) {
+            const timeParts = suggestion.timestamp.split(':').map(Number);
+            const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
+            videoRef.current.currentTime = timestamp;
         }
+        
+        // Guardar como sugerencia pendiente para que addTag la remueva cuando se complete
+        setPendingAiSuggestion(suggestion);
+        setSaveStatus({ message: 'Selecciona el jugador correcto y haz clic en Etiquetar', type: 'success' });
+        setTimeout(() => setSaveStatus(null), 3000);
+        return;
+        
+        // CÓDIGO DESACTIVADO: Auto-asignación de jugador (causaba errores en métricas individuales)
+        // El código siguiente ya no se ejecuta pero se mantiene para referencia
         
         // Verificar que hay un partido seleccionado
         if (!selectedMatchId) {
@@ -967,7 +970,7 @@ const VideoTaggerPage: React.FC = () => {
             timestamp: timestamp,
             video_file: videoFileName ?? undefined,
             timestamp_absolute: timestamp_absolute as any,
-            team_id: selectedMatchForTag?.team_id || null,
+            team_id: selectedMatchForTag?.team_id,
             ai_suggested: true
         };
         
@@ -1561,7 +1564,7 @@ const VideoTaggerPage: React.FC = () => {
                         
                         <p className="text-sm text-gray-400 mb-4">
                             Selecciona el rango de tiempo del video que quieres analizar. 
-                            Gemini extraerá 1 frame por segundo y detectará las jugadas.
+                            Gemini extraerá 3 frames por segundo y detectará las jugadas.
                         </p>
                         
                         <div className="grid grid-cols-2 gap-4 mb-4">
