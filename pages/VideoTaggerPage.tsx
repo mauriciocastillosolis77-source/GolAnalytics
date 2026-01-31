@@ -3,7 +3,7 @@ import { supabase } from '../services/supabaseClient';
 import type { Player, Match, Tag, AISuggestion } from '../types';
 import { METRICS } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
-import { EditIcon, TrashIcon, SparklesIcon, CloudUploadIcon, CloudCheckIcon,} from '../components/ui/Icons';
+import { EditIcon, TrashIcon, SparklesIcon, CloudUploadIcon, CloudCheckIcon } from '../components/ui/Icons';
 import { analyzeVideoFrames } from '../services/geminiService';
 import { analyzeVideoSegment, extractFramesFromSegment, type SegmentAnalysisProgress } from '../services/geminiSegmentService';
 import { blobToBase64 } from '../utils/blob';
@@ -919,6 +919,72 @@ const VideoTaggerPage: React.FC = () => {
                             <p className="text-gray-400">Seleccione un partido y cargue videos para empezar</p>
                         )}
                     </div>
+                    
+                    {/* PANEL DE ETIQUETADO RAPIDO - Siempre visible debajo del video */}
+                    <div className="mt-3 bg-gradient-to-r from-gray-700 to-gray-800 rounded-lg p-3 border border-cyan-600/30">
+                        {/* Fila 1: Controles principales */}
+                        <div className="flex items-center gap-2 flex-wrap">
+                            <select 
+                                value={selectedPlayerId} 
+                                onChange={e => setSelectedPlayerId(e.target.value)} 
+                                className="flex-1 min-w-[120px] bg-gray-600 p-2 rounded text-sm" 
+                                disabled={players.length === 0}
+                            >
+                                {players.length > 0 ? players.map(p => (
+                                    <option key={p.id} value={p.id}>{p.numero} - {p.nombre}</option>
+                                )) : <option>Sin jugadores</option>}
+                            </select>
+                            <select 
+                                value={selectedAction} 
+                                onChange={e => setSelectedAction(e.target.value)} 
+                                className="flex-1 min-w-[150px] bg-gray-600 p-2 rounded text-sm"
+                            >
+                                {METRICS.map(m => <option key={m} value={m}>{m}</option>)}
+                            </select>
+                            <button 
+                                onClick={addTag} 
+                                disabled={!selectedPlayerId || !selectedAction || (!activeVideoUrl && !selectedVideo)} 
+                                className="bg-green-600 hover:bg-green-500 px-4 py-2 rounded font-semibold text-sm disabled:bg-gray-600 disabled:cursor-not-allowed whitespace-nowrap"
+                            >
+                                Etiquetar
+                            </button>
+                            <button 
+                                onClick={saveTags} 
+                                disabled={isSaving || tags.filter(t => String(t.id).startsWith('temp-')).length === 0} 
+                                className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded font-semibold text-sm disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center gap-1 whitespace-nowrap"
+                            >
+                                Guardar
+                                {isSaving && <Spinner size="h-3 w-3" />}
+                            </button>
+                        </div>
+                        
+                        {/* Fila 2: Mini referencia de atajos */}
+                        <div className="mt-2 flex items-center gap-1 flex-wrap text-xs">
+                            <span className="text-gray-400 mr-1">Atajos:</span>
+                            <span className="bg-gray-600 px-1.5 py-0.5 rounded"><span className="text-cyan-400">1-8</span> Pases</span>
+                            <span className="bg-gray-600 px-1.5 py-0.5 rounded"><span className="text-cyan-400">9,0</span> 1v1 Def</span>
+                            <span className="bg-gray-600 px-1.5 py-0.5 rounded"><span className="text-cyan-400">Q,W</span> 1v1 Of</span>
+                            <span className="bg-gray-600 px-1.5 py-0.5 rounded"><span className="text-cyan-400">E-Y</span> Aereos</span>
+                            <span className="bg-gray-600 px-1.5 py-0.5 rounded"><span className="text-cyan-400">U,I</span> Trans</span>
+                            <span className="bg-gray-600 px-1.5 py-0.5 rounded"><span className="text-cyan-400">A-H</span> Otros</span>
+                        </div>
+                        
+                        {/* Indicador de accion seleccionada */}
+                        {selectedAction && (
+                            <div className="mt-2 text-center">
+                                <span className="text-xs text-gray-400">Accion seleccionada: </span>
+                                <span className="text-sm font-semibold text-cyan-400">{selectedAction}</span>
+                            </div>
+                        )}
+                        
+                        {/* Status de guardado */}
+                        {saveStatus && (
+                            <div className={`mt-2 p-1.5 rounded text-center text-xs ${saveStatus.type === 'success' ? 'bg-green-800/50 text-green-200' : 'bg-red-800/50 text-red-200'}`}>
+                                {saveStatus.message}
+                            </div>
+                        )}
+                    </div>
+                    
                     {/* BOTÓN seguro */}
                     <button
                         onClick={() => {
@@ -926,7 +992,7 @@ const VideoTaggerPage: React.FC = () => {
                             window.open(activeVideoUrl, '_blank');
                         }}
                         disabled={!activeVideoUrl}
-                        className="mt-4 w-full bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded"
+                        className="mt-2 w-full bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded text-sm"
                     >
                         Abrir video en ventana nueva
                     </button>
@@ -1225,7 +1291,7 @@ const VideoTaggerPage: React.FC = () => {
                                                     className="p-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs"
                                                     title="Ver jugada"
                                                 >
-                                                    <EyeIcon className="w-4 h-4" />
+                                                    Ver
                                                 </button>
                                                 <button 
                                                     onClick={() => {
