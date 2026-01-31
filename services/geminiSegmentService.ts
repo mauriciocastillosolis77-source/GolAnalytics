@@ -48,17 +48,28 @@ REGLAS CRÍTICAS DE TIMESTAMPS:
 - NO inventes timestamps - solo usa los que corresponden a los frames que ves
 - Si una jugada ocurre entre el Frame 3 y Frame 4, usa el timestamp del Frame 3 (cuando inicia la acción)
 
-IMPORTANTE: 
-- Presta atención a secuencias de frames para detectar el RESULTADO de cada acción (logrado/fallado)
-- Un pase es "logrado" si en los frames siguientes un compañero recibe el balón
+REGLAS CRÍTICAS DEL RESULTADO (logrado/fallado):
+- SIEMPRE incluye "logrado" o "fallado" en el nombre de la acción cuando aplique
+- Un pase es "logrado" si en los frames siguientes un compañero del mismo equipo recibe el balón
 - Un pase es "fallado" si en los frames siguientes el rival intercepta o el balón sale
 - Un 1vs1 ofensivo es "logrado" si el jugador supera al defensor
 - Un 1vs1 defensivo es "logrado" si el defensor recupera el balón o bloquea
-${hasTeamUniform ? '- SOLO reporta jugadas de jugadores con el uniforme mostrado en la primera imagen' : ''}
+- Si no puedes determinar el resultado, analiza los frames siguientes cuidadosamente
+- NUNCA devuelvas acciones sin el resultado cuando la métrica lo requiere
+
+${hasTeamUniform ? `REGLAS CRÍTICAS DEL FILTRO DE EQUIPO:
+- SOLO reporta jugadas de jugadores que visten el uniforme de la PRIMERA imagen
+- El equipo rival tiene un uniforme DIFERENTE - IGNORA completamente sus jugadas
+- Si un jugador del equipo rival hace una jugada (aunque sea importante), NO la incluyas
+- Revisa el uniforme de cada jugador ANTES de incluir la jugada
+- En CADA FRAME verifica quién lleva el uniforme correcto` : ''}
+
+OTRAS REGLAS:
 - BUSCA ACTIVAMENTE todas las jugadas: pases, duelos, recuperaciones, pérdidas, tiros, etc.
 - NO omitas jugadas solo porque parecen rutinarias - queremos TODAS las acciones del equipo
+- Analiza TODO el segmento de video, no solo los primeros frames
 
-Lista de métricas (usar EXACTAMENTE estos nombres):
+Lista de métricas (USAR EXACTAMENTE estos nombres, incluyendo "logrado"/"fallado"):
 ${METRICS.join('\n')}
 
 Jugadas ya etiquetadas en este partido (NO sugerir duplicados):
