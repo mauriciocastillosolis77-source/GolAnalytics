@@ -31,7 +31,10 @@ export interface Tag {
   // Nuevos campos añadidos para soportar videos y timestamps absolutos
   video_file?: string;
   timestamp_absolute?: number;
+  team_id?: string | null;
   created_at?: string;
+  // Campo para tracking de sugerencias de IA (entrenamiento de modelo)
+  ai_suggested?: boolean;
 }
 
 export interface AISuggestion {
@@ -119,3 +122,4 @@ export interface TeamAnalysisHistory {
   efectividad_global: number;
   created_at: string;
 }
+
