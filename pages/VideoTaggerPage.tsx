@@ -5,7 +5,7 @@ import { METRICS } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
 import { EditIcon, TrashIcon, SparklesIcon, CloudUploadIcon, CloudCheckIcon } from '../components/ui/Icons';
 import { analyzeVideoFrames } from '../services/geminiService';
-import { analyzeVideoSegment, extractFramesFromSegment, type SegmentAnalysisProgress } from '../services/geminiSegmentService';
+import { analyzeVideoSegment, extractFramesFromSegment, type SegmentAnalysisProgress, type TeamUniformContext } from '../services/geminiSegmentService';
 import { blobToBase64 } from '../utils/blob';
 import AISuggestionsModal from '../components/ai/AISuggestionsModal';
 import { fetchVideosForMatch, createVideoForMatch, Video as VideoMeta } from '../services/videosService';
@@ -796,12 +796,30 @@ const VideoTaggerPage: React.FC = () => {
                 return;
             }
             
+            let teamUniformContext: TeamUniformContext | undefined;
+            
+            if (teamUniformFile) {
+                try {
+                    const uniformBase64 = await blobToBase64(teamUniformFile);
+                    const base64Data = uniformBase64.split(',')[1];
+                    const selectedMatch = matches.find(m => m.id === selectedMatchId);
+                    teamUniformContext = {
+                        uniformBase64: base64Data,
+                        uniformMimeType: teamUniformFile.type || 'image/jpeg',
+                        teamName: selectedMatch?.nombre_equipo
+                    };
+                } catch (err) {
+                    console.warn('No se pudo procesar la imagen del uniforme:', err);
+                }
+            }
+            
             const suggestions = await analyzeVideoSegment(
                 frames,
                 startSeconds,
                 endSeconds,
                 tags,
-                setSegmentProgress
+                setSegmentProgress,
+                teamUniformContext
             );
             
             if (suggestions.length > 0) {
@@ -1468,4 +1486,3 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
-
