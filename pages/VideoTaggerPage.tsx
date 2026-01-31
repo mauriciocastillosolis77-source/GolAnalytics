@@ -468,7 +468,8 @@ const VideoTaggerPage: React.FC = () => {
             }
 
             // Ensure payload includes video_file and timestamp_absolute if present
-            const payload = tempTags.map(({ id, ...tag }) => {
+            // Exclude ai_suggested since it's not in the database schema yet
+            const payload = tempTags.map(({ id, ai_suggested, created_at, ...tag }) => {
                 // normalize undefined timestamp_absolute to null if needed
                 return {
                     ...tag,
@@ -831,6 +832,24 @@ const VideoTaggerPage: React.FC = () => {
             );
             
             if (suggestions.length > 0) {
+                // Guardar sugerencias en ai_suggestions para entrenamiento futuro
+                try {
+                    const { data: { user } } = await supabase.auth.getUser();
+                    if (user && selectedMatchId) {
+                        const records = suggestions.map(s => ({
+                            match_id: selectedMatchId,
+                            user_id: user.id,
+                            metric_name: s.action,
+                            timestamp: s.timestamp,
+                            reasoning: s.description,
+                            status: 'pending'
+                        }));
+                        await supabase.from('ai_suggestions').insert(records);
+                    }
+                } catch (err) {
+                    console.warn('No se pudieron guardar sugerencias para entrenamiento:', err);
+                }
+                
                 setAiSuggestions(suggestions);
                 setIsSuggestionsModalOpen(true);
                 setShowSegmentModal(false);
@@ -846,7 +865,7 @@ const VideoTaggerPage: React.FC = () => {
         }
     };
     
-    const handleAcceptSuggestion = (suggestion: AISuggestion) => {
+    const handleAcceptSuggestion = async (suggestion: AISuggestion) => {
         // Convertir formato: "1_vs_1_ofensivo" → "1 vs 1 ofensivo"
         let accionNormalizada = suggestion.action.replace(/_/g, ' ');
         
@@ -954,6 +973,37 @@ const VideoTaggerPage: React.FC = () => {
         
         setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
         
+        // Guardar feedback de aceptación para entrenamiento
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user && selectedMatchId) {
+                const { data: existingSuggestion } = await supabase
+                    .from('ai_suggestions')
+                    .select('id')
+                    .eq('match_id', selectedMatchId)
+                    .eq('metric_name', suggestion.action)
+                    .eq('timestamp', suggestion.timestamp)
+                    .eq('status', 'pending')
+                    .single();
+                
+                if (existingSuggestion) {
+                    await supabase
+                        .from('ai_suggestions')
+                        .update({ status: 'accepted', feedback_at: new Date().toISOString() })
+                        .eq('id', existingSuggestion.id);
+                    
+                    await supabase.from('ai_feedback').insert({
+                        suggestion_id: existingSuggestion.id,
+                        user_id: user.id,
+                        accepted: true,
+                        correct_metric: accionExacta
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn('No se pudo guardar feedback de aceptación:', err);
+        }
+        
         // Ahora SÍ remover sugerencia porque se procesó completamente
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
         
@@ -967,7 +1017,40 @@ const VideoTaggerPage: React.FC = () => {
         }
     };
 
-    const handleRejectSuggestion = (suggestion: AISuggestion) => {
+    const handleRejectSuggestion = async (suggestion: AISuggestion) => {
+        // Guardar feedback de rechazo para entrenamiento
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user && selectedMatchId) {
+                // Buscar la sugerencia en ai_suggestions y actualizar status
+                const { data: existingSuggestion } = await supabase
+                    .from('ai_suggestions')
+                    .select('id')
+                    .eq('match_id', selectedMatchId)
+                    .eq('metric_name', suggestion.action)
+                    .eq('timestamp', suggestion.timestamp)
+                    .eq('status', 'pending')
+                    .single();
+                
+                if (existingSuggestion) {
+                    // Actualizar status a rejected
+                    await supabase
+                        .from('ai_suggestions')
+                        .update({ status: 'rejected', feedback_at: new Date().toISOString() })
+                        .eq('id', existingSuggestion.id);
+                    
+                    // Guardar feedback
+                    await supabase.from('ai_feedback').insert({
+                        suggestion_id: existingSuggestion.id,
+                        user_id: user.id,
+                        accepted: false
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn('No se pudo guardar feedback de rechazo:', err);
+        }
+        
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
     };
 
