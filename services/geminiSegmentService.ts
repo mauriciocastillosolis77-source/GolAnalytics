@@ -30,21 +30,25 @@ const getSegmentPrompt = (startTime: number, endTime: number, existingTags: Tag[
 
 Los frames representan el segmento del ${formatTimestamp(startTime)} al ${formatTimestamp(endTime)} del partido.
 
-${hasTeamUniform ? `*******************************************************************************
-FILTRO OBLIGATORIO DE EQUIPO - LEE ESTO PRIMERO
-*******************************************************************************
-La PRIMERA imagen adjunta muestra el UNIFORME EXACTO del equipo a analizar${teamName ? ` (${teamName})` : ''}.
-
-REGLA ABSOLUTA: Solo reporta jugadas de jugadores que visten ESE MISMO uniforme.
-- Si el uniforme es de RAYAS (ej: blancas y negras), solo reporta jugadas de jugadores con rayas
-- Si el uniforme es de color SÓLIDO (ej: amarillo), solo reporta jugadas de jugadores con ese color sólido
-- Si el uniforme es OSCURO, solo reporta jugadas de jugadores con uniforme oscuro
-
-IGNORA COMPLETAMENTE cualquier jugada del equipo rival aunque sea importante.
-Por ejemplo:
-- Si el equipo a analizar viste rayas blancas/negras y un jugador amarillo intercepta un pase → NO incluir
-- Si el equipo a analizar viste rayas blancas/negras y un jugador de rayas hace un pase → SÍ incluir
-*******************************************************************************
+${hasTeamUniform ? `
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                    FILTRO DE EQUIPO - MÁXIMA PRIORIDAD                        ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║ La PRIMERA imagen adjunta muestra el UNIFORME del equipo a analizar.          ║
+║ ${teamName ? `Equipo: ${teamName}` : 'Analiza SOLO este equipo.'}                                                        ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║ ANTES de incluir CUALQUIER jugada, VERIFICA:                                  ║
+║ 1. ¿El jugador lleva el MISMO uniforme de la primera imagen?                  ║
+║ 2. Si NO → DESCARTA la jugada inmediatamente                                  ║
+║ 3. Si SÍ → Incluye la jugada                                                  ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║ EJEMPLOS DE DESCARTE:                                                         ║
+║ - Uniforme de referencia: RAYAS → Jugador con camiseta LISA → DESCARTAR       ║
+║ - Uniforme de referencia: AMARILLO → Jugador con camiseta ROJA → DESCARTAR    ║
+║ - Uniforme de referencia: OSCURO → Jugador con camiseta CLARA → DESCARTAR     ║
+║                                                                               ║
+║ Las jugadas del equipo RIVAL son INVISIBLES para ti. NO EXISTEN.              ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
 ` : ''}
 
 MAPEO EXACTO DE FRAMES A TIMESTAMPS:
@@ -67,12 +71,12 @@ REGLAS CRÍTICAS DEL RESULTADO (logrado/fallado):
 - Si no puedes determinar el resultado, analiza los frames siguientes cuidadosamente
 - NUNCA devuelvas acciones sin el resultado cuando la métrica lo requiere
 
-${hasTeamUniform ? `REGLAS CRÍTICAS DEL FILTRO DE EQUIPO:
-- SOLO reporta jugadas de jugadores que visten el uniforme de la PRIMERA imagen
-- El equipo rival tiene un uniforme DIFERENTE - IGNORA completamente sus jugadas
-- Si un jugador del equipo rival hace una jugada (aunque sea importante), NO la incluyas
-- Revisa el uniforme de cada jugador ANTES de incluir la jugada
-- En CADA FRAME verifica quién lleva el uniforme correcto` : ''}
+${hasTeamUniform ? `FILTRO DE EQUIPO - VERIFICACIÓN OBLIGATORIA:
+- Para CADA jugada que vayas a reportar, PRIMERO verifica el uniforme del jugador
+- Si el uniforme NO coincide con la primera imagen → NO incluyas esa jugada
+- Si el uniforme SÍ coincide con la primera imagen → Incluye la jugada
+- El equipo rival NO EXISTE para este análisis, ignora todas sus acciones
+- PENALIZACIÓN: Incluir jugadas del rival es un ERROR GRAVE` : ''}
 
 OTRAS REGLAS:
 - BUSCA ACTIVAMENTE todas las jugadas: pases, duelos, recuperaciones, pérdidas, tiros, etc.
@@ -269,3 +273,4 @@ async function blobToBase64(blob: Blob): Promise<string | null> {
         reader.readAsDataURL(blob);
     });
 }
+
