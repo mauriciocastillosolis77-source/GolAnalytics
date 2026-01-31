@@ -30,11 +30,21 @@ const getSegmentPrompt = (startTime: number, endTime: number, existingTags: Tag[
 
 Los frames representan el segmento del ${formatTimestamp(startTime)} al ${formatTimestamp(endTime)} del partido.
 
-${hasTeamUniform ? `IMPORTANTE - FILTRO DE EQUIPO:
-La PRIMERA imagen que recibes es el uniforme del equipo que estamos analizando${teamName ? ` (${teamName})` : ''}.
-SOLO debes reportar jugadas de los jugadores que visten ESE uniforme.
-IGNORA completamente las jugadas del equipo rival (uniforme diferente).
-Si un jugador del equipo rival hace una jugada, NO la incluyas en tu respuesta.
+${hasTeamUniform ? `*******************************************************************************
+FILTRO OBLIGATORIO DE EQUIPO - LEE ESTO PRIMERO
+*******************************************************************************
+La PRIMERA imagen adjunta muestra el UNIFORME EXACTO del equipo a analizar${teamName ? ` (${teamName})` : ''}.
+
+REGLA ABSOLUTA: Solo reporta jugadas de jugadores que visten ESE MISMO uniforme.
+- Si el uniforme es de RAYAS (ej: blancas y negras), solo reporta jugadas de jugadores con rayas
+- Si el uniforme es de color SÓLIDO (ej: amarillo), solo reporta jugadas de jugadores con ese color sólido
+- Si el uniforme es OSCURO, solo reporta jugadas de jugadores con uniforme oscuro
+
+IGNORA COMPLETAMENTE cualquier jugada del equipo rival aunque sea importante.
+Por ejemplo:
+- Si el equipo a analizar viste rayas blancas/negras y un jugador amarillo intercepta un pase → NO incluir
+- Si el equipo a analizar viste rayas blancas/negras y un jugador de rayas hace un pase → SÍ incluir
+*******************************************************************************
 ` : ''}
 
 MAPEO EXACTO DE FRAMES A TIMESTAMPS:
