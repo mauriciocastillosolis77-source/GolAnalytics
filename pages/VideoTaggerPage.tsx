@@ -908,14 +908,11 @@ const VideoTaggerPage: React.FC = () => {
                 videoRef.current.currentTime = timestamp;
             }
             
-            // Remover la sugerencia del modal
+            // Remover SOLO esta sugerencia del modal - NO cerrar modal
             setAiSuggestions(prev => prev.filter(s => s !== suggestion));
             
             // Guardar como sugerencia pendiente para que addTag la remueva cuando se complete
             setPendingAiSuggestion(suggestion);
-            
-            // Cerrar el modal
-            setIsSuggestionsModalOpen(false);
             
             setSaveStatus({ 
                 message: `"${accionNormalizada}" requiere ajuste. Selecciona la acción correcta.`, 
@@ -935,17 +932,15 @@ const VideoTaggerPage: React.FC = () => {
             videoRef.current.currentTime = timestamp;
         }
         
-        // Remover la sugerencia del modal inmediatamente
+        // Remover SOLO esta sugerencia del modal - NO cerrar modal
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
         
         // Guardar como sugerencia pendiente para que addTag la remueva cuando se complete
         setPendingAiSuggestion(suggestion);
         
-        // Cerrar el modal para que el usuario pueda seleccionar jugador y etiquetar
-        setIsSuggestionsModalOpen(false);
-        
         setSaveStatus({ message: 'Acción pre-llenada. Selecciona jugador y haz clic en Etiquetar', type: 'success' });
         setTimeout(() => setSaveStatus(null), 4000);
+        // NO hacer return aquí - permitir que el usuario siga viendo el modal
         return;
         
         // CÓDIGO DESACTIVADO: Auto-asignación de jugador (causaba errores en métricas individuales)
