@@ -30,11 +30,25 @@ const getSegmentPrompt = (startTime: number, endTime: number, existingTags: Tag[
 
 Los frames representan el segmento del ${formatTimestamp(startTime)} al ${formatTimestamp(endTime)} del partido.
 
-${hasTeamUniform ? `IMPORTANTE - FILTRO DE EQUIPO:
-La PRIMERA imagen que recibes es el uniforme del equipo que estamos analizando${teamName ? ` (${teamName})` : ''}.
-SOLO debes reportar jugadas de los jugadores que visten ESE uniforme.
-IGNORA completamente las jugadas del equipo rival (uniforme diferente).
-Si un jugador del equipo rival hace una jugada, NO la incluyas en tu respuesta.
+${hasTeamUniform ? `
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                    FILTRO DE EQUIPO - MÁXIMA PRIORIDAD                        ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║ La PRIMERA imagen adjunta muestra el UNIFORME del equipo a analizar.          ║
+║ ${teamName ? `Equipo: ${teamName}` : 'Analiza SOLO este equipo.'}                                                        ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║ ANTES de incluir CUALQUIER jugada, VERIFICA:                                  ║
+║ 1. ¿El jugador lleva el MISMO uniforme de la primera imagen?                  ║
+║ 2. Si NO → DESCARTA la jugada inmediatamente                                  ║
+║ 3. Si SÍ → Incluye la jugada                                                  ║
+╠═══════════════════════════════════════════════════════════════════════════════╣
+║ EJEMPLOS DE DESCARTE:                                                         ║
+║ - Uniforme de referencia: RAYAS → Jugador con camiseta LISA → DESCARTAR       ║
+║ - Uniforme de referencia: AMARILLO → Jugador con camiseta ROJA → DESCARTAR    ║
+║ - Uniforme de referencia: OSCURO → Jugador con camiseta CLARA → DESCARTAR     ║
+║                                                                               ║
+║ Las jugadas del equipo RIVAL son INVISIBLES para ti. NO EXISTEN.              ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
 ` : ''}
 
 MAPEO EXACTO DE FRAMES A TIMESTAMPS:
@@ -48,17 +62,28 @@ REGLAS CRÍTICAS DE TIMESTAMPS:
 - NO inventes timestamps - solo usa los que corresponden a los frames que ves
 - Si una jugada ocurre entre el Frame 3 y Frame 4, usa el timestamp del Frame 3 (cuando inicia la acción)
 
-IMPORTANTE: 
-- Presta atención a secuencias de frames para detectar el RESULTADO de cada acción (logrado/fallado)
-- Un pase es "logrado" si en los frames siguientes un compañero recibe el balón
+REGLAS CRÍTICAS DEL RESULTADO (logrado/fallado):
+- SIEMPRE incluye "logrado" o "fallado" en el nombre de la acción cuando aplique
+- Un pase es "logrado" si en los frames siguientes un compañero del mismo equipo recibe el balón
 - Un pase es "fallado" si en los frames siguientes el rival intercepta o el balón sale
 - Un 1vs1 ofensivo es "logrado" si el jugador supera al defensor
 - Un 1vs1 defensivo es "logrado" si el defensor recupera el balón o bloquea
-${hasTeamUniform ? '- SOLO reporta jugadas de jugadores con el uniforme mostrado en la primera imagen' : ''}
+- Si no puedes determinar el resultado, analiza los frames siguientes cuidadosamente
+- NUNCA devuelvas acciones sin el resultado cuando la métrica lo requiere
+
+${hasTeamUniform ? `FILTRO DE EQUIPO - VERIFICACIÓN OBLIGATORIA:
+- Para CADA jugada que vayas a reportar, PRIMERO verifica el uniforme del jugador
+- Si el uniforme NO coincide con la primera imagen → NO incluyas esa jugada
+- Si el uniforme SÍ coincide con la primera imagen → Incluye la jugada
+- El equipo rival NO EXISTE para este análisis, ignora todas sus acciones
+- PENALIZACIÓN: Incluir jugadas del rival es un ERROR GRAVE` : ''}
+
+OTRAS REGLAS:
 - BUSCA ACTIVAMENTE todas las jugadas: pases, duelos, recuperaciones, pérdidas, tiros, etc.
 - NO omitas jugadas solo porque parecen rutinarias - queremos TODAS las acciones del equipo
+- Analiza TODO el segmento de video, no solo los primeros frames
 
-Lista de métricas (usar EXACTAMENTE estos nombres):
+Lista de métricas (USAR EXACTAMENTE estos nombres, incluyendo "logrado"/"fallado"):
 ${METRICS.join('\n')}
 
 Jugadas ya etiquetadas en este partido (NO sugerir duplicados):
@@ -248,3 +273,4 @@ async function blobToBase64(blob: Blob): Promise<string | null> {
         reader.readAsDataURL(blob);
     });
 }
+

@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { supabase } from '../services/supabaseClient';
 import type { Player, Match, Tag, AISuggestion } from '../types';
 import { METRICS } from '../constants';
@@ -59,6 +59,7 @@ const VideoTaggerPage: React.FC = () => {
     const [isCustomAnalyzing, setIsCustomAnalyzing] = useState(false);
     const [aiSuggestions, setAiSuggestions] = useState<AISuggestion[]>([]);
     const [isSuggestionsModalOpen, setIsSuggestionsModalOpen] = useState(false);
+    const [pendingAiSuggestion, setPendingAiSuggestion] = useState<AISuggestion | null>(null);
     
     // Batch Analysis State
     const [isBatchAnalyzing, setIsBatchAnalyzing] = useState(false);
@@ -84,6 +85,14 @@ const VideoTaggerPage: React.FC = () => {
     
     // Derived state: any AI analysis is running
     const isAnyAnalysisRunning = isGeminiAnalyzing || isCustomAnalyzing || isBatchAnalyzing || isSegmentAnalyzing;
+
+    // Filtrar jugadores por equipo del partido seleccionado
+    const filteredPlayers = useMemo(() => {
+        if (!selectedMatchId) return players;
+        const selectedMatch = matches.find(m => m.id === selectedMatchId);
+        if (!selectedMatch?.team_id) return players;
+        return players.filter(p => p.team_id === selectedMatch.team_id);
+    }, [players, selectedMatchId, matches]);
 
     // Keyboard shortcuts mapping: key -> action from METRICS
     const KEYBOARD_SHORTCUTS: Record<string, string> = {
@@ -145,8 +154,16 @@ const VideoTaggerPage: React.FC = () => {
                 setTags(tagsData || []);
                 const { data: playersData } = await supabase.from('players').select('*');
                 setPlayers(playersData || []);
-                if (playersData && playersData.length > 0 && !selectedPlayerId) {
-                    setSelectedPlayerId(playersData[0].id);
+                
+                // Filtrar jugadores por equipo del partido y seleccionar el primero
+                const selectedMatch = matches.find(m => m.id === selectedMatchId);
+                if (playersData && playersData.length > 0) {
+                    const teamPlayers = selectedMatch?.team_id 
+                        ? playersData.filter(p => p.team_id === selectedMatch.team_id)
+                        : playersData;
+                    if (teamPlayers.length > 0) {
+                        setSelectedPlayerId(teamPlayers[0].id);
+                    }
                 }
 
                 // Fetch videos metadata for the match
@@ -344,7 +361,7 @@ const VideoTaggerPage: React.FC = () => {
             timestamp: relativeTime,
             video_file: videoFileName ?? undefined,
             timestamp_absolute: timestamp_absolute as any,
-            team_id: selectedMatchForTag?.team_id || null
+            team_id: selectedMatchForTag?.team_id
         };
         setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
         
@@ -415,6 +432,7 @@ const VideoTaggerPage: React.FC = () => {
         const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
         const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
 
+        const selectedMatchForTag = matches.find(m => m.id === selectedMatchId);
         const newTag: Tag = {
             id: `temp-${Date.now()}`,
             match_id: selectedMatchId,
@@ -423,9 +441,17 @@ const VideoTaggerPage: React.FC = () => {
             resultado: resultado,
             timestamp: relativeTime,
             video_file: videoFileName ?? undefined,
-            timestamp_absolute: timestamp_absolute as any
+            timestamp_absolute: timestamp_absolute as any,
+            team_id: selectedMatchForTag?.team_id,
+            ai_suggested: pendingAiSuggestion !== null
         };
         setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
+        
+        // Si había una sugerencia de IA pendiente, removerla
+        if (pendingAiSuggestion) {
+            setAiSuggestions(prev => prev.filter(s => s !== pendingAiSuggestion));
+            setPendingAiSuggestion(null);
+        }
     };
 
     // Handler for deleting a tag
@@ -460,7 +486,8 @@ const VideoTaggerPage: React.FC = () => {
             }
 
             // Ensure payload includes video_file and timestamp_absolute if present
-            const payload = tempTags.map(({ id, ...tag }) => {
+            // Exclude ai_suggested since it's not in the database schema yet
+            const payload = tempTags.map(({ id, ai_suggested, created_at, ...tag }) => {
                 // normalize undefined timestamp_absolute to null if needed
                 return {
                     ...tag,
@@ -787,7 +814,7 @@ const VideoTaggerPage: React.FC = () => {
                 canvasRef.current,
                 startSeconds,
                 endSeconds,
-                1,
+                3,
                 setSegmentProgress
             );
             
@@ -823,6 +850,24 @@ const VideoTaggerPage: React.FC = () => {
             );
             
             if (suggestions.length > 0) {
+                // Guardar sugerencias en ai_suggestions para entrenamiento futuro
+                try {
+                    const { data: { user } } = await supabase.auth.getUser();
+                    if (user && selectedMatchId) {
+                        const records = suggestions.map(s => ({
+                            match_id: selectedMatchId,
+                            user_id: user.id,
+                            metric_name: s.action,
+                            timestamp: s.timestamp,
+                            reasoning: s.description,
+                            status: 'pending'
+                        }));
+                        await supabase.from('ai_suggestions').insert(records);
+                    }
+                } catch (err) {
+                    console.warn('No se pudieron guardar sugerencias para entrenamiento:', err);
+                }
+                
                 setAiSuggestions(suggestions);
                 setIsSuggestionsModalOpen(true);
                 setShowSegmentModal(false);
@@ -838,53 +883,202 @@ const VideoTaggerPage: React.FC = () => {
         }
     };
     
-    const handleAcceptSuggestion = (suggestion: AISuggestion) => {
+    const handleAcceptSuggestion = async (suggestion: AISuggestion) => {
         // Convertir formato: "1_vs_1_ofensivo" → "1 vs 1 ofensivo"
-        let accionBase = suggestion.action.replace(/_/g, ' ');
+        let accionNormalizada = suggestion.action.replace(/_/g, ' ');
         
-        // Buscar si la acción base existe con "logrado" o "fallado"
-        const opcionLogrado = `${accionBase} logrado`;
-        const opcionFallado = `${accionBase} fallado`;
+        // Verificar si la acción existe exactamente en METRICS
+        const accionExacta = METRICS.find(m => m.toLowerCase() === accionNormalizada.toLowerCase());
         
-        let accionFinal = '';
-        
-        // Verificar qué opciones existen
-        if (METRICS.includes(accionBase)) {
-            // La acción existe tal cual (ej: "Recuperación de balón")
-            accionFinal = accionBase;
-        } else if (METRICS.includes(opcionLogrado) || METRICS.includes(opcionFallado)) {
-            // La acción necesita logrado/fallado - usar la primera que exista
-            if (METRICS.includes(opcionLogrado)) {
-                accionFinal = opcionLogrado;
-            } else {
-                accionFinal = opcionFallado;
+        if (!accionExacta) {
+            // La acción no coincide exactamente - buscar coincidencia parcial
+            const coincidenciaParcial = METRICS.find(m => 
+                m.toLowerCase().startsWith(accionNormalizada.toLowerCase()) ||
+                accionNormalizada.toLowerCase().includes(m.toLowerCase().split(' ')[0])
+            );
+            
+            if (coincidenciaParcial) {
+                setSelectedAction(coincidenciaParcial);
             }
-        } else {
-            // Acción no encontrada en ningún formato
-            alert(`Acción "${accionBase}" no encontrada. Las opciones más cercanas son:\n- ${opcionLogrado}\n- ${opcionFallado}\n\nPor favor, selecciona manualmente.`);
-            handleRejectSuggestion(suggestion);
+            
+            // Mover video al timestamp
+            if (videoRef.current) {
+                const timeParts = suggestion.timestamp.split(':').map(Number);
+                const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
+                videoRef.current.currentTime = timestamp;
+            }
+            
+            // Remover SOLO esta sugerencia del modal - NO cerrar modal
+            setAiSuggestions(prev => prev.filter(s => s !== suggestion));
+            
+            // Guardar como sugerencia pendiente para que addTag la remueva cuando se complete
+            setPendingAiSuggestion(suggestion);
+            
+            setSaveStatus({ 
+                message: `"${accionNormalizada}" requiere ajuste. Selecciona la acción correcta.`, 
+                type: 'error' 
+            });
+            setTimeout(() => setSaveStatus(null), 4000);
             return;
         }
         
-        // Pre-llenar el formulario con la acción sugerida
-        setSelectedAction(accionFinal);
+        // La acción existe exactamente - SIEMPRE pedir que seleccione jugador manualmente
+        // Esto evita asignar el jugador equivocado a la jugada
+        setSelectedAction(accionExacta);
         
-        // Mover el video al timestamp de la sugerencia
         if (videoRef.current) {
             const timeParts = suggestion.timestamp.split(':').map(Number);
             const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
             videoRef.current.currentTime = timestamp;
         }
         
-        // Cerrar modal y remover sugerencia
-        setIsSuggestionsModalOpen(false);
+        // Remover SOLO esta sugerencia del modal - NO cerrar modal
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
         
-        // Mensaje informativo
-        alert(`Acción "${accionFinal}" seleccionada. Verifica si es correcta y ajusta "logrado/fallado" si es necesario antes de etiquetar.`);
+        // Guardar como sugerencia pendiente para que addTag la remueva cuando se complete
+        setPendingAiSuggestion(suggestion);
+        
+        setSaveStatus({ message: 'Acción pre-llenada. Selecciona jugador y haz clic en Etiquetar', type: 'success' });
+        setTimeout(() => setSaveStatus(null), 4000);
+        // NO hacer return aquí - permitir que el usuario siga viendo el modal
+        return;
+        
+        // CÓDIGO DESACTIVADO: Auto-asignación de jugador (causaba errores en métricas individuales)
+        // El código siguiente ya no se ejecuta pero se mantiene para referencia
+        
+        // Verificar que hay un partido seleccionado
+        if (!selectedMatchId) {
+            setSaveStatus({ message: 'Selecciona un partido primero', type: 'error' });
+            setTimeout(() => setSaveStatus(null), 2000);
+            return;
+        }
+        
+        // Tenemos acción válida y jugador - crear tag usando la misma lógica de addTagWithAction
+        const timeParts = suggestion.timestamp.split(':').map(Number);
+        const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
+        
+        // Usar la misma lógica de parsing que addTagWithAction
+        const actionParts = accionExacta.split(' ');
+        let resultado = '';
+        if (actionParts.includes('logrado')) resultado = 'logrado';
+        else if (actionParts.includes('fallado')) resultado = 'fallado';
+        else if (accionExacta === "Transición ofensiva lograda") resultado = 'logrado';
+        else if (accionExacta === "Transición ofensiva no lograda") resultado = 'no logrado';
+        
+        let accion = accionExacta;
+        if (
+            accionExacta === "Transición ofensiva lograda" ||
+            accionExacta === "Transición ofensiva no lograda" ||
+            accionExacta === "Recuperación de balón" ||
+            accionExacta === "Pérdida de balón" ||
+            accionExacta === "Atajadas" ||
+            accionExacta === "Goles a favor" ||
+            accionExacta === "Goles recibidos" ||
+            accionExacta === "Tiros a portería"
+        ) {
+            accion = accionExacta;
+        } else {
+            accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
+        }
+        
+        const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
+        const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
+        const timestamp_absolute = (videoFileName ? (videoStartOffset + timestamp) : undefined);
+        
+        const selectedMatchForTag = matches.find(m => m.id === selectedMatchId);
+        const newTag: Tag = {
+            id: `temp-${Date.now()}`,
+            match_id: selectedMatchId,
+            player_id: selectedPlayerId,
+            accion: accion,
+            resultado: resultado,
+            timestamp: timestamp,
+            video_file: videoFileName ?? undefined,
+            timestamp_absolute: timestamp_absolute as any,
+            team_id: selectedMatchForTag?.team_id,
+            ai_suggested: true
+        };
+        
+        setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
+        
+        // Guardar feedback de aceptación para entrenamiento
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user && selectedMatchId) {
+                const { data: existingSuggestion } = await supabase
+                    .from('ai_suggestions')
+                    .select('id')
+                    .eq('match_id', selectedMatchId)
+                    .eq('metric_name', suggestion.action)
+                    .eq('timestamp', suggestion.timestamp)
+                    .eq('status', 'pending')
+                    .single();
+                
+                if (existingSuggestion) {
+                    await supabase
+                        .from('ai_suggestions')
+                        .update({ status: 'accepted', feedback_at: new Date().toISOString() })
+                        .eq('id', existingSuggestion.id);
+                    
+                    await supabase.from('ai_feedback').insert({
+                        suggestion_id: existingSuggestion.id,
+                        user_id: user.id,
+                        accepted: true,
+                        correct_metric: accionExacta
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn('No se pudo guardar feedback de aceptación:', err);
+        }
+        
+        // Ahora SÍ remover sugerencia porque se procesó completamente
+        setAiSuggestions(prev => prev.filter(s => s !== suggestion));
+        
+        // Feedback visual
+        setSaveStatus({ message: `✓ IA: ${accionExacta}`, type: 'success' });
+        setTimeout(() => setSaveStatus(null), 1500);
+        
+        // Mover video al timestamp
+        if (videoRef.current) {
+            videoRef.current.currentTime = timestamp;
+        }
     };
 
-    const handleRejectSuggestion = (suggestion: AISuggestion) => {
+    const handleRejectSuggestion = async (suggestion: AISuggestion) => {
+        // Guardar feedback de rechazo para entrenamiento
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user && selectedMatchId) {
+                // Buscar la sugerencia en ai_suggestions y actualizar status
+                const { data: existingSuggestion } = await supabase
+                    .from('ai_suggestions')
+                    .select('id')
+                    .eq('match_id', selectedMatchId)
+                    .eq('metric_name', suggestion.action)
+                    .eq('timestamp', suggestion.timestamp)
+                    .eq('status', 'pending')
+                    .single();
+                
+                if (existingSuggestion) {
+                    // Actualizar status a rejected
+                    await supabase
+                        .from('ai_suggestions')
+                        .update({ status: 'rejected', feedback_at: new Date().toISOString() })
+                        .eq('id', existingSuggestion.id);
+                    
+                    // Guardar feedback
+                    await supabase.from('ai_feedback').insert({
+                        suggestion_id: existingSuggestion.id,
+                        user_id: user.id,
+                        accepted: false
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn('No se pudo guardar feedback de rechazo:', err);
+        }
+        
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
     };
 
@@ -946,11 +1140,11 @@ const VideoTaggerPage: React.FC = () => {
                                 value={selectedPlayerId} 
                                 onChange={e => setSelectedPlayerId(e.target.value)} 
                                 className="flex-1 min-w-[120px] bg-gray-600 p-2 rounded text-sm" 
-                                disabled={players.length === 0}
+                                disabled={filteredPlayers.length === 0}
                             >
-                                {players.length > 0 ? players.map(p => (
+                                {filteredPlayers.length > 0 ? filteredPlayers.map(p => (
                                     <option key={p.id} value={p.id}>{p.numero} - {p.nombre}</option>
-                                )) : <option>Sin jugadores</option>}
+                                )) : <option>Sin jugadores del equipo</option>}
                             </select>
                             <select 
                                 value={selectedAction} 
@@ -1170,10 +1364,10 @@ const VideoTaggerPage: React.FC = () => {
                 <div className="bg-gray-800 rounded-lg p-4">
                     <h3 className="text-lg font-semibold mb-2 text-white">3. Etiquetar Jugada</h3>
                     <label className="block text-sm text-gray-400 mb-1">Jugador</label>
-                    <select value={selectedPlayerId} onChange={e => setSelectedPlayerId(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-2" disabled={players.length === 0}>
-                        {players.length > 0 ? players.map(p => (
+                    <select value={selectedPlayerId} onChange={e => setSelectedPlayerId(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-2" disabled={filteredPlayers.length === 0}>
+                        {filteredPlayers.length > 0 ? filteredPlayers.map(p => (
                             <option key={p.id} value={p.id}>{p.numero} - {p.nombre}</option>
-                        )) : <option>Cargue archivo de jugadores</option>}
+                        )) : <option>Sin jugadores del equipo</option>}
                     </select>
                     <label className="block text-sm text-gray-400 mb-1">Acción</label>
                     <select value={selectedAction} onChange={e => setSelectedAction(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-4">
@@ -1395,7 +1589,7 @@ const VideoTaggerPage: React.FC = () => {
                         
                         <p className="text-sm text-gray-400 mb-4">
                             Selecciona el rango de tiempo del video que quieres analizar. 
-                            Gemini extraerá 1 frame por segundo y detectará las jugadas.
+                            Gemini extraerá 3 frames por segundo y detectará las jugadas.
                         </p>
                         
                         <div className="grid grid-cols-2 gap-4 mb-4">
