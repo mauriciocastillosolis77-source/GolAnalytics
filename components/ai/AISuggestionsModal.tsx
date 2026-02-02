@@ -1,15 +1,16 @@
 import React from 'react';
 import type { AISuggestion } from '../../types';
-import { CheckIcon, CloseIcon, SparklesIcon } from '../ui/Icons';
+import { CheckIcon, CloseIcon, SparklesIcon, EyeIcon } from '../ui/Icons';
 
 interface AISuggestionsModalProps {
   suggestions: AISuggestion[];
   onAccept: (suggestion: AISuggestion) => void;
   onReject: (suggestion: AISuggestion) => void;
+  onPreview: (suggestion: AISuggestion) => void;
   onClose: () => void;
 }
 
-const AISuggestionsModal: React.FC<AISuggestionsModalProps> = ({ suggestions, onAccept, onReject, onClose }) => {
+const AISuggestionsModal: React.FC<AISuggestionsModalProps> = ({ suggestions, onAccept, onReject, onPreview, onClose }) => {
   return (
     <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
       <div className="bg-gray-800 rounded-lg shadow-xl w-full max-w-2xl max-h-[80vh] flex flex-col">
@@ -46,9 +47,18 @@ const AISuggestionsModal: React.FC<AISuggestionsModalProps> = ({ suggestions, on
                 </div>
                 <div className="flex gap-2">
                   <button
+                    onClick={() => onPreview(suggestion)}
+                    className="p-2 bg-blue-600 hover:bg-blue-500 rounded-full text-white transition-colors"
+                    aria-label="Ver en video"
+                    title="Ver en video"
+                  >
+                    <EyeIcon />
+                  </button>
+                  <button
                     onClick={() => onAccept(suggestion)}
                     className="p-2 bg-green-600 hover:bg-green-500 rounded-full text-white transition-colors"
                     aria-label="Aceptar sugerencia"
+                    title="Aceptar"
                   >
                     <CheckIcon />
                   </button>
@@ -56,6 +66,7 @@ const AISuggestionsModal: React.FC<AISuggestionsModalProps> = ({ suggestions, on
                     onClick={() => onReject(suggestion)}
                     className="p-2 bg-red-600 hover:bg-red-500 rounded-full text-white transition-colors"
                     aria-label="Rechazar sugerencia"
+                    title="Rechazar"
                   >
                     <CloseIcon />
                   </button>
