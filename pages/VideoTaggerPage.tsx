@@ -908,22 +908,18 @@ const VideoTaggerPage: React.FC = () => {
                 videoRef.current.currentTime = timestamp;
             }
             
-            // Remover SOLO esta sugerencia del modal - NO cerrar modal
-            setAiSuggestions(prev => prev.filter(s => s !== suggestion));
-            
-            // Guardar como sugerencia pendiente para que addTag la remueva cuando se complete
-            setPendingAiSuggestion(suggestion);
+            // Al aceptar, cerramos el modal para permitir la selección de jugador
+            setIsSuggestionsModalOpen(false);
             
             setSaveStatus({ 
-                message: `"${accionNormalizada}" requiere ajuste. Selecciona la acción correcta.`, 
-                type: 'error' 
+                message: `Acción pre-llenada. Selecciona el jugador y haz clic en "Etiquetar Jugada".`, 
+                type: 'success' 
             });
             setTimeout(() => setSaveStatus(null), 4000);
             return;
         }
         
-        // La acción existe exactamente - SIEMPRE pedir que seleccione jugador manualmente
-        // Esto evita asignar el jugador equivocado a la jugada
+        // La acción existe exactamente
         setSelectedAction(accionExacta);
         
         if (videoRef.current) {
@@ -932,11 +928,10 @@ const VideoTaggerPage: React.FC = () => {
             videoRef.current.currentTime = timestamp;
         }
         
-        // Remover SOLO esta sugerencia del modal - NO cerrar modal
+        // Remover de la lista y cerrar modal para que el usuario pueda etiquetar
         setAiSuggestions(prev => prev.filter(s => s !== suggestion));
-        
-        // Guardar como sugerencia pendiente para que addTag la remueva cuando se complete
         setPendingAiSuggestion(suggestion);
+        setIsSuggestionsModalOpen(false);
         
         setSaveStatus({ message: 'Acción pre-llenada. Selecciona jugador y haz clic en Etiquetar', type: 'success' });
         setTimeout(() => setSaveStatus(null), 4000);
@@ -1110,15 +1105,41 @@ const VideoTaggerPage: React.FC = () => {
             <div className="flex-1 flex flex-col gap-4">
                 <div className="bg-gray-800 rounded-lg p-4 flex flex-col">
                     {/* VIDEO, altura fija */}
-                    <div className="min-h-[300px] max-h-[350px] flex items-center justify-center bg-black rounded-md">
+                    <div className="min-h-[300px] max-h-[450px] flex items-center justify-center bg-black rounded-md relative group">
                         {activeVideoUrl ? (
-                            <video
-                                ref={videoRef}
-                                src={activeVideoUrl}
-                                controls
-                                className="max-h-full w-full"
-                                onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
-                            ></video>
+                            <>
+                                <video
+                                    ref={videoRef}
+                                    src={activeVideoUrl}
+                                    controls
+                                    playsInline
+                                    className="max-h-full w-full"
+                                    onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
+                                ></video>
+                                {/* Botones de salto de 5s - Solo visibles al pasar el mouse sobre el video */}
+                                <div className="absolute bottom-12 left-1/2 transform -translate-x-1/2 flex space-x-8 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                                    <button 
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            if (videoRef.current) videoRef.current.currentTime -= 5;
+                                        }}
+                                        className="bg-black/60 hover:bg-black/90 text-white px-3 py-1 rounded-full text-sm font-bold border border-white/20 pointer-events-auto shadow-lg"
+                                        title="Retroceder 5 segundos"
+                                    >
+                                        -5s
+                                    </button>
+                                    <button 
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            if (videoRef.current) videoRef.current.currentTime += 5;
+                                        }}
+                                        className="bg-black/60 hover:bg-black/90 text-white px-3 py-1 rounded-full text-sm font-bold border border-white/20 pointer-events-auto shadow-lg"
+                                        title="Adelantar 5 segundos"
+                                    >
+                                        +5s
+                                    </button>
+                                </div>
+                            </>
                         ) : selectedVideo ? (
                             // Note: registered video metadata does not contain the actual file blob.
                             // We still allow tagging based on metadata (video_file + start_offset_seconds).
