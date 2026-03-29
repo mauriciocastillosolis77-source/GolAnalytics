@@ -1155,18 +1155,48 @@ const VideoTaggerPage: React.FC = () => {
                     
                     {/* PANEL DE ETIQUETADO RAPIDO - Siempre visible debajo del video */}
                     <div className="mt-3 bg-gradient-to-r from-gray-700 to-gray-800 rounded-lg p-3 border border-cyan-600/30">
-                        {/* Fila 1: Controles principales */}
+                        {/* Grilla de Jugadores */}
+                        {filteredPlayers.length > 0 ? (
+                            <>
+                                <p className="text-xs text-cyan-400 mb-1 font-semibold">
+                                    {(() => {
+                                        const p = filteredPlayers.find(pl => pl.id === selectedPlayerId);
+                                        if (!p) return 'Selecciona un jugador';
+                                        const parts = p.nombre.trim().split(/\s+/);
+                                        const firstName = parts[0] || '';
+                                        const lastName = parts.length > 1 ? parts[parts.length - 1] : '';
+                                        return `Etiquetando: #${p.numero} ${firstName} ${lastName}`;
+                                    })()}
+                                </p>
+                                <div className="grid grid-cols-3 gap-1 mb-2">
+                                    {filteredPlayers.map(p => {
+                                        const parts = p.nombre.trim().split(/\s+/);
+                                        const firstName = parts[0] || '';
+                                        const lastName = parts.length > 1 ? parts[parts.length - 1] : '';
+                                        const label = `#${p.numero} ${firstName} ${lastName ? lastName[0] + '.' : ''}`;
+                                        const isActive = p.id === selectedPlayerId;
+                                        return (
+                                            <button
+                                                key={p.id}
+                                                onClick={() => setSelectedPlayerId(p.id)}
+                                                className={`px-1 py-1.5 rounded text-xs font-semibold border-2 transition-all truncate ${
+                                                    isActive
+                                                        ? 'bg-cyan-600 border-cyan-300 text-white scale-105'
+                                                        : 'bg-gray-600 hover:bg-gray-500 border-transparent text-gray-200'
+                                                }`}
+                                                title={p.nombre}
+                                            >
+                                                {label}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </>
+                        ) : (
+                            <p className="text-xs text-gray-400 mb-2">Sin jugadores cargados para este partido.</p>
+                        )}
+                        {/* Fila de acción: select + Etiquetar + Guardar */}
                         <div className="flex items-center gap-2 flex-wrap">
-                            <select 
-                                value={selectedPlayerId} 
-                                onChange={e => setSelectedPlayerId(e.target.value)} 
-                                className="flex-1 min-w-[120px] bg-gray-600 p-2 rounded text-sm" 
-                                disabled={filteredPlayers.length === 0}
-                            >
-                                {filteredPlayers.length > 0 ? filteredPlayers.map(p => (
-                                    <option key={p.id} value={p.id}>{p.numero} - {p.nombre}</option>
-                                )) : <option>Sin jugadores del equipo</option>}
-                            </select>
                             <select 
                                 value={selectedAction} 
                                 onChange={e => setSelectedAction(e.target.value)} 
