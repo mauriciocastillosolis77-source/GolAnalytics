@@ -1139,7 +1139,6 @@ const VideoTaggerPage: React.FC = () => {
         }
 
         // ── Player selection ──────────────────────────────────────────────
-        // Supports "jugador 7", "jugador siete", "número 7", "número siete"
         const playerPattern = /(?:jugador|número|numero)\s+(\w+)/;
         const playerMatch = text.match(playerPattern);
         if (playerMatch) {
@@ -1158,8 +1157,67 @@ const VideoTaggerPage: React.FC = () => {
             return;
         }
 
-        // ── Action selection ──────────────────────────────────────────────
-        const matchedMetric = METRICS.find(m => text.includes(m.toLowerCase()));
+        // ── VÍA 1: Atajo por nombre de tecla ────────────────────────────
+        // Di "tecla 3", "tecla Q", "letra efe", etc.
+        const LETTER_MAP: Record<string, string> = {
+            'cu': 'q', 'q': 'q',
+            'doble v': 'w', 'doble u': 'w', 'uve doble': 'w', 'w': 'w',
+            'e': 'e',
+            'erre': 'r', 'r': 'r',
+            'te': 't', 't': 't',
+            'i griega': 'y', 'ye': 'y', 'y': 'y',
+            'u': 'u',
+            'i': 'i',
+            'a': 'a',
+            'ese': 's', 's': 's',
+            'de': 'd', 'd': 'd',
+            'efe': 'f', 'f': 'f',
+            'ge': 'g', 'g': 'g',
+            'hache': 'h', 'h': 'h',
+            'uno': '1', '1': '1',
+            'dos': '2', '2': '2',
+            'tres': '3', '3': '3',
+            'cuatro': '4', '4': '4',
+            'cinco': '5', '5': '5',
+            'seis': '6', '6': '6',
+            'siete': '7', '7': '7',
+            'ocho': '8', '8': '8',
+            'nueve': '9', '9': '9',
+            'cero': '0', '0': '0',
+        };
+        const shortcutPattern = /(?:tecla|letra|key)\s+(.+)/;
+        const shortcutMatch = text.match(shortcutPattern);
+        if (shortcutMatch) {
+            const spokenKey = shortcutMatch[1].trim();
+            const mappedKey = LETTER_MAP[spokenKey];
+            if (mappedKey && KEYBOARD_SHORTCUTS[mappedKey]) {
+                const action = KEYBOARD_SHORTCUTS[mappedKey];
+                setSelectedAction(action);
+                show(`🎯 Tecla ${spokenKey.toUpperCase()}: ${action}`);
+            } else {
+                show(`⚠ Tecla no reconocida: "${spokenKey}"`);
+            }
+            return;
+        }
+
+        // ── VÍA 2: Nombre completo de la acción con sinónimos ────────────
+        // Normaliza variaciones comunes del reconocedor de voz
+        const normalize = (s: string) => s
+            .replace(/\bcontra\b/g, 'vs')
+            .replace(/\b1 vs 1\b|\buno vs uno\b|\buno contra uno\b/g, '1 vs 1')
+            .replace(/\báreo\b|\bhereo\b|\baereo\b/g, 'aéreo')
+            .replace(/\bperdida\b/g, 'pérdida')
+            .replace(/\btransicion\b/g, 'transición')
+            .replace(/\bdefensiva\b/g, 'defensivo')
+            .replace(/\bofensiva\b(?! lograda| no lograda)/g, 'ofensivo')
+            .replace(/\bfallada\b/g, 'fallado')
+            .replace(/\blograda\b(?! no)/g, 'logrado')
+            .replace(/\bno lograda\b/g, 'no lograda');
+
+        const normalizedText = normalize(text);
+        const matchedMetric = METRICS.find(m =>
+            normalizedText.includes(normalize(m.toLowerCase()))
+        );
         if (matchedMetric) {
             setSelectedAction(matchedMetric);
             show(`🎯 Acción: ${matchedMetric}`);
