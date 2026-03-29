@@ -82,7 +82,15 @@ const VideoTaggerPage: React.FC = () => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [currentTime, setCurrentTime] = useState(0);
     const [showShortcutsGuide, setShowShortcutsGuide] = useState(false);
-    
+
+    // Voice Commands State
+    const [isVoiceActive, setIsVoiceActive] = useState(false);
+    const [voiceTranscript, setVoiceTranscript] = useState('');
+    const [voiceStatus, setVoiceStatus] = useState<string>('');
+    const recognitionRef = useRef<any>(null);
+    const isVoiceActiveRef = useRef(false);
+    const processVoiceCommandRef = useRef<(t: string) => void>(() => {});
+
     // Derived state: any AI analysis is running
     const isAnyAnalysisRunning = isGeminiAnalyzing || isCustomAnalyzing || isBatchAnalyzing || isSegmentAnalyzing;
 
@@ -1086,6 +1094,143 @@ const VideoTaggerPage: React.FC = () => {
         }
     };
 
+    // ── VOICE COMMANDS ────────────────────────────────────────────────────────
+    // Map Spanish number words to digits (covers jersey numbers 1-25)
+    const SPANISH_NUMBERS: Record<string, number> = {
+        'uno': 1, 'dos': 2, 'tres': 3, 'cuatro': 4, 'cinco': 5,
+        'seis': 6, 'siete': 7, 'ocho': 8, 'nueve': 9, 'diez': 10,
+        'once': 11, 'doce': 12, 'trece': 13, 'catorce': 14, 'quince': 15,
+        'dieciséis': 16, 'dieciseis': 16, 'diecisiete': 17, 'dieciocho': 18,
+        'diecinueve': 19, 'veinte': 20, 'veintiuno': 21, 'veintidós': 22,
+        'veintidos': 22, 'veintitrés': 23, 'veintitres': 23,
+        'veinticuatro': 24, 'veinticinco': 25,
+    };
+
+    // Keep the processVoiceCommand ref updated on every render so it
+    // always closes over the latest state (avoids stale-closure bugs).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    processVoiceCommandRef.current = (transcript: string) => {
+        const text = transcript.toLowerCase().trim();
+        const show = (msg: string) => {
+            setVoiceStatus(msg);
+            setTimeout(() => setVoiceStatus(''), 2500);
+        };
+
+        // ── Video controls ────────────────────────────────────────────────
+        if (/pausar|pausa|para\b|detener/.test(text)) {
+            videoRef.current?.pause();
+            show('⏸ Video pausado');
+            return;
+        }
+        if (/reproducir|play|continuar|reanudar/.test(text)) {
+            videoRef.current?.play();
+            show('▶ Video reproduciendo');
+            return;
+        }
+        if (/atrás|atras|regresar|retroceder/.test(text)) {
+            if (videoRef.current) videoRef.current.currentTime -= 5;
+            show('⏪ -5 segundos');
+            return;
+        }
+        if (/adelante|avanzar|adelantar/.test(text)) {
+            if (videoRef.current) videoRef.current.currentTime += 5;
+            show('⏩ +5 segundos');
+            return;
+        }
+
+        // ── Player selection ──────────────────────────────────────────────
+        // Supports "jugador 7", "jugador siete", "número 7", "número siete"
+        const playerPattern = /(?:jugador|número|numero)\s+(\w+)/;
+        const playerMatch = text.match(playerPattern);
+        if (playerMatch) {
+            const raw = playerMatch[1];
+            const numero = parseInt(raw) || SPANISH_NUMBERS[raw] || null;
+            if (numero !== null) {
+                const found = filteredPlayers.find(p => p.numero === numero);
+                if (found) {
+                    setSelectedPlayerId(found.id);
+                    const parts = found.nombre.trim().split(/\s+/);
+                    show(`✅ Jugador #${found.numero} ${parts[0]}`);
+                } else {
+                    show(`⚠ No encontré jugador #${numero}`);
+                }
+            }
+            return;
+        }
+
+        // ── Action selection ──────────────────────────────────────────────
+        const matchedMetric = METRICS.find(m => text.includes(m.toLowerCase()));
+        if (matchedMetric) {
+            setSelectedAction(matchedMetric);
+            show(`🎯 Acción: ${matchedMetric}`);
+            return;
+        }
+
+        // ── Tag & Save ────────────────────────────────────────────────────
+        if (/etiquetar|etiqueta\b|agregar jugada/.test(text)) {
+            if (!selectedPlayerId) { show('⚠ Primero selecciona un jugador'); return; }
+            if (!activeVideoUrl && !selectedVideo) { show('⚠ No hay video cargado'); return; }
+            addTag();
+            show('✅ Jugada etiquetada');
+            return;
+        }
+        if (/guardar/.test(text)) {
+            saveTags();
+            show('💾 Guardando jugadas...');
+            return;
+        }
+
+        show(`❓ No entendí: "${transcript}"`);
+    };
+
+    const startVoice = () => {
+        const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            alert('Tu navegador no soporta comandos de voz. Usa Chrome o Edge.');
+            return;
+        }
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'es-ES';
+        recognition.continuous = true;
+        recognition.interimResults = false;
+
+        recognition.onresult = (event: any) => {
+            const last = event.results[event.results.length - 1];
+            const transcript = last[0].transcript;
+            setVoiceTranscript(transcript);
+            processVoiceCommandRef.current(transcript);
+        };
+        recognition.onerror = (event: any) => {
+            if (event.error !== 'no-speech') {
+                setIsVoiceActive(false);
+                isVoiceActiveRef.current = false;
+            }
+        };
+        recognition.onend = () => {
+            // Auto-restart while voice is still supposed to be active
+            if (isVoiceActiveRef.current) recognition.start();
+        };
+
+        recognition.start();
+        recognitionRef.current = recognition;
+        isVoiceActiveRef.current = true;
+        setIsVoiceActive(true);
+        setVoiceTranscript('');
+    };
+
+    const stopVoice = () => {
+        isVoiceActiveRef.current = false;
+        recognitionRef.current?.stop();
+        recognitionRef.current = null;
+        setIsVoiceActive(false);
+        setVoiceTranscript('');
+        setVoiceStatus('');
+    };
+
+    // Cleanup on unmount
+    useEffect(() => () => { stopVoice(); }, []);
+    // ── END VOICE COMMANDS ────────────────────────────────────────────────────
+
     if (isLoading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
 
     return (
@@ -1155,6 +1300,30 @@ const VideoTaggerPage: React.FC = () => {
                     
                     {/* PANEL DE ETIQUETADO RAPIDO - Siempre visible debajo del video */}
                     <div className="mt-3 bg-gradient-to-r from-gray-700 to-gray-800 rounded-lg p-3 border border-cyan-600/30">
+                        {/* Botón de Comandos de Voz */}
+                        <div className="flex items-center gap-2 mb-2">
+                            <button
+                                onClick={isVoiceActive ? stopVoice : startVoice}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all border-2 ${
+                                    isVoiceActive
+                                        ? 'bg-red-600 border-red-400 text-white animate-pulse'
+                                        : 'bg-gray-600 border-gray-500 text-gray-200 hover:bg-gray-500'
+                                }`}
+                                title={isVoiceActive ? 'Desactivar voz' : 'Activar comandos de voz'}
+                            >
+                                🎤 {isVoiceActive ? 'Voz activa' : 'Activar voz'}
+                            </button>
+                            {isVoiceActive && voiceTranscript && (
+                                <span className="text-xs text-gray-300 italic truncate max-w-[180px]">
+                                    "{voiceTranscript}"
+                                </span>
+                            )}
+                        </div>
+                        {voiceStatus && (
+                            <div className="mb-2 px-2 py-1 bg-gray-900/70 rounded text-xs text-cyan-300 font-semibold">
+                                {voiceStatus}
+                            </div>
+                        )}
                         {/* Grilla de Jugadores */}
                         {filteredPlayers.length > 0 ? (
                             <>
@@ -1731,3 +1900,4 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
