@@ -1139,7 +1139,9 @@ const VideoTaggerPage: React.FC = () => {
         }
 
         // ── Player selection ──────────────────────────────────────────────
-        const playerPattern = /(?:jugador|número|numero)\s+(\w+)/;
+        // SOLO "jugador X" — nunca "número X" para evitar ambigüedad con atajos
+        // Acepta: "jugador 11", "jugador once", "jugador número 11", "jugador número once"
+        const playerPattern = /jugador\s+(?:número\s+|numero\s+)?(\w+)/;
         const playerMatch = text.match(playerPattern);
         if (playerMatch) {
             const raw = playerMatch[1];
@@ -1153,12 +1155,14 @@ const VideoTaggerPage: React.FC = () => {
                 } else {
                     show(`⚠ No encontré jugador #${numero}`);
                 }
+            } else {
+                show(`⚠ No entendí el número: "${raw}"`);
             }
             return;
         }
 
         // ── VÍA 1: Atajo por nombre de tecla ────────────────────────────
-        // Di "tecla 3", "tecla Q", "letra efe", etc.
+        // Di "tecla 3", "número 3", "letra Q", "letra efe", etc.
         const LETTER_MAP: Record<string, string> = {
             'cu': 'q', 'q': 'q',
             'doble v': 'w', 'doble u': 'w', 'uve doble': 'w', 'w': 'w',
@@ -1185,7 +1189,8 @@ const VideoTaggerPage: React.FC = () => {
             'nueve': '9', '9': '9',
             'cero': '0', '0': '0',
         };
-        const shortcutPattern = /(?:tecla|letra|key)\s+(.+)/;
+        // "número" ahora es SOLO para atajos (ya no es ambiguo con jugadores)
+        const shortcutPattern = /(?:tecla|letra|key|número|numero)\s+(.+)/;
         const shortcutMatch = text.match(shortcutPattern);
         if (shortcutMatch) {
             const spokenKey = shortcutMatch[1].trim();
@@ -1958,4 +1963,5 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
 
