@@ -1352,9 +1352,21 @@ const VideoTaggerPage: React.FC = () => {
                                             // Abre el video en una ventana nueva para usarla en segunda pantalla
                                             const html = `<!DOCTYPE html>
 <html style="margin:0;padding:0;background:#000;width:100%;height:100%;">
-<head><title>Video - GolAnalytics</title></head>
-<body style="margin:0;padding:0;background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;">
-<video src="${activeVideoUrl}" controls autoplay style="max-width:100%;max-height:100vh;"></video>
+<head><title>Video - GolAnalytics</title>
+<style>
+  body { margin:0; padding:0; background:#000; display:flex; flex-direction:column; align-items:center; justify-content:center; width:100vw; height:100vh; font-family:sans-serif; }
+  video { max-width:100%; max-height:calc(100vh - 60px); }
+  .controls { display:flex; gap:12px; margin-top:10px; }
+  button { background:#1e293b; color:#fff; border:1px solid #475569; border-radius:8px; padding:8px 20px; font-size:15px; font-weight:bold; cursor:pointer; }
+  button:hover { background:#0e7490; }
+</style>
+</head>
+<body>
+<video id="vid" src="${activeVideoUrl}" controls autoplay></video>
+<div class="controls">
+  <button onclick="document.getElementById('vid').currentTime -= 10">⏪ -10s</button>
+  <button onclick="document.getElementById('vid').currentTime += 10">+10s ⏩</button>
+</div>
 </body></html>`;
                                             const blob = new Blob([html], { type: 'text/html' });
                                             const url = URL.createObjectURL(blob);
