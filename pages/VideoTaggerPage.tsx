@@ -1323,27 +1323,47 @@ const VideoTaggerPage: React.FC = () => {
                                     className="max-h-full w-full"
                                     onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
                                 ></video>
-                                {/* Botones de salto de 5s - Solo visibles al pasar el mouse sobre el video */}
-                                <div className="absolute bottom-12 left-1/2 transform -translate-x-1/2 flex space-x-8 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                                    <button 
+                                {/* Barra superior: botones de salto + pantalla completa, visible al hacer hover */}
+                                <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button
                                         onClick={(e) => {
                                             e.preventDefault();
                                             if (videoRef.current) videoRef.current.currentTime -= 5;
                                         }}
-                                        className="bg-black/60 hover:bg-black/90 text-white px-3 py-1 rounded-full text-sm font-bold border border-white/20 pointer-events-auto shadow-lg"
+                                        className="bg-black/70 hover:bg-black/90 text-white px-2 py-1 rounded text-xs font-bold border border-white/20 shadow"
                                         title="Retroceder 5 segundos"
                                     >
-                                        -5s
+                                        ⏪ -5s
                                     </button>
-                                    <button 
+                                    <button
                                         onClick={(e) => {
                                             e.preventDefault();
                                             if (videoRef.current) videoRef.current.currentTime += 5;
                                         }}
-                                        className="bg-black/60 hover:bg-black/90 text-white px-3 py-1 rounded-full text-sm font-bold border border-white/20 pointer-events-auto shadow-lg"
+                                        className="bg-black/70 hover:bg-black/90 text-white px-2 py-1 rounded text-xs font-bold border border-white/20 shadow"
                                         title="Adelantar 5 segundos"
                                     >
-                                        +5s
+                                        +5s ⏩
+                                    </button>
+                                    <button
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            if (!activeVideoUrl) return;
+                                            // Abre el video en una ventana nueva para usarla en segunda pantalla
+                                            const html = `<!DOCTYPE html>
+<html style="margin:0;padding:0;background:#000;width:100%;height:100%;">
+<head><title>Video - GolAnalytics</title></head>
+<body style="margin:0;padding:0;background:#000;display:flex;align-items:center;justify-content:center;width:100vw;height:100vh;">
+<video src="${activeVideoUrl}" controls autoplay style="max-width:100%;max-height:100vh;"></video>
+</body></html>`;
+                                            const blob = new Blob([html], { type: 'text/html' });
+                                            const url = URL.createObjectURL(blob);
+                                            window.open(url, '_blank', 'width=1280,height=720');
+                                        }}
+                                        className="bg-cyan-700/80 hover:bg-cyan-600 text-white px-2 py-1 rounded text-xs font-bold border border-cyan-400/40 shadow"
+                                        title="Abrir video en nueva ventana (segunda pantalla)"
+                                    >
+                                        ↗ Nueva ventana
                                     </button>
                                 </div>
                             </>
