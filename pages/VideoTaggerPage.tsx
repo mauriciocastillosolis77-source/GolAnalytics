@@ -327,7 +327,7 @@ const VideoTaggerPage: React.FC = () => {
 
     // Handler for adding a tag with a specific action (used by keyboard shortcuts)
     const addTagWithAction = (actionName: string) => {
-        if (!selectedPlayerId || !videoRef.current) return;
+        if (!selectedPlayerId) return;
         if (!activeVideoUrl && !selectedVideo) return;
 
         const actionParts = actionName.split(' ');
@@ -354,7 +354,7 @@ const VideoTaggerPage: React.FC = () => {
             accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
         }
 
-        const relativeTime = Math.floor(videoRef.current.currentTime);
+        const relativeTime = videoRef.current ? Math.floor(videoRef.current.currentTime) : 0;
         const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
         const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
         const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
@@ -410,7 +410,8 @@ const VideoTaggerPage: React.FC = () => {
 
     // Handler for adding a tag (jugada)
     const addTag = () => {
-        if (!selectedPlayerId || !videoRef.current) return;
+        if (!selectedPlayerId) return;
+        if (!activeVideoUrl && !selectedVideo) return;
 
         const actionParts = selectedAction.split(' ');
 
@@ -434,7 +435,7 @@ const VideoTaggerPage: React.FC = () => {
             accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
         }
 
-        const relativeTime = Math.floor(videoRef.current.currentTime);
+        const relativeTime = videoRef.current ? Math.floor(videoRef.current.currentTime) : 0;
         // Determine video_file and timestamp_absolute
         const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
         const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
@@ -1994,5 +1995,6 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
 
 
