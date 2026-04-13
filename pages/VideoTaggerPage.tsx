@@ -1320,7 +1320,6 @@ const VideoTaggerPage: React.FC = () => {
                                     ref={videoRef}
                                     src={activeVideoUrl}
                                     controls
-                                    playsInline
                                     className="max-h-full w-full"
                                     onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
                                 ></video>
