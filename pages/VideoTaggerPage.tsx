@@ -1311,7 +1311,7 @@ const VideoTaggerPage: React.FC = () => {
             )}
 
             {/* Left Column: Video and Tagged Plays */}
-            <div className="flex-1 flex flex-col gap-4">
+            <div className="flex-1 flex flex-col gap-4 overflow-y-auto">
                 <div className="bg-gray-800 rounded-lg p-4 flex flex-col">
                     {/* VIDEO, altura fija */}
                     <div className="min-h-[300px] max-h-[450px] flex items-center justify-center bg-black rounded-md relative group">
@@ -1995,6 +1995,7 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
 
 
 
