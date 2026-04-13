@@ -354,7 +354,9 @@ const VideoTaggerPage: React.FC = () => {
             accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
         }
 
-        const relativeTime = videoRef.current ? Math.floor(videoRef.current.currentTime) : 0;
+        // Usar currentTime del estado: se actualiza desde el video principal (onTimeUpdate)
+        // O desde la ventana secundaria (postMessage). Siempre tiene el tiempo correcto.
+        const relativeTime = Math.floor(currentTime);
         const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
         const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
         const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
@@ -435,7 +437,9 @@ const VideoTaggerPage: React.FC = () => {
             accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
         }
 
-        const relativeTime = videoRef.current ? Math.floor(videoRef.current.currentTime) : 0;
+        // Usar currentTime del estado: se actualiza desde el video principal (onTimeUpdate)
+        // O desde la ventana secundaria (postMessage). Siempre tiene el tiempo correcto.
+        const relativeTime = Math.floor(currentTime);
         // Determine video_file and timestamp_absolute
         const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
         const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
@@ -1295,6 +1299,18 @@ const VideoTaggerPage: React.FC = () => {
     useEffect(() => () => { stopVoice(); }, []);
     // ── END VOICE COMMANDS ────────────────────────────────────────────────────
 
+    // Sincronizar tiempo desde la ventana secundaria (nueva ventana de video)
+    // La ventana secundaria envía postMessage con el currentTime cada 500ms
+    useEffect(() => {
+        const handler = (e: MessageEvent) => {
+            if (e.data?.type === 'gol_timeupdate' && typeof e.data.time === 'number') {
+                setCurrentTime(e.data.time);
+            }
+        };
+        window.addEventListener('message', handler);
+        return () => window.removeEventListener('message', handler);
+    }, []);
+
     if (isLoading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
 
     return (
@@ -1368,6 +1384,23 @@ const VideoTaggerPage: React.FC = () => {
   <button onclick="document.getElementById('vid').currentTime -= 10">⏪ -10s</button>
   <button onclick="document.getElementById('vid').currentTime += 10">+10s ⏩</button>
 </div>
+<script>
+  var vid = document.getElementById('vid');
+  var lastSent = 0;
+  vid.addEventListener('timeupdate', function() {
+    var now = Date.now();
+    if (now - lastSent >= 500) {
+      lastSent = now;
+      if (window.opener) window.opener.postMessage({type:'gol_timeupdate', time: vid.currentTime}, '*');
+    }
+  });
+  vid.addEventListener('pause', function() {
+    if (window.opener) window.opener.postMessage({type:'gol_timeupdate', time: vid.currentTime}, '*');
+  });
+  vid.addEventListener('seeked', function() {
+    if (window.opener) window.opener.postMessage({type:'gol_timeupdate', time: vid.currentTime}, '*');
+  });
+</script>
 </body></html>`;
                                             const blob = new Blob([html], { type: 'text/html' });
                                             const url = URL.createObjectURL(blob);
