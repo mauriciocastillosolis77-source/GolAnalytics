@@ -327,7 +327,7 @@ const VideoTaggerPage: React.FC = () => {
 
     // Handler for adding a tag with a specific action (used by keyboard shortcuts)
     const addTagWithAction = (actionName: string) => {
-        if (!selectedPlayerId || !videoRef.current) return;
+        if (!selectedPlayerId) return;
         if (!activeVideoUrl && !selectedVideo) return;
 
         const actionParts = actionName.split(' ');
@@ -354,7 +354,9 @@ const VideoTaggerPage: React.FC = () => {
             accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
         }
 
-        const relativeTime = Math.floor(videoRef.current.currentTime);
+        // Usar currentTime del estado: se actualiza desde el video principal (onTimeUpdate)
+        // O desde la ventana secundaria (postMessage). Siempre tiene el tiempo correcto.
+        const relativeTime = Math.floor(currentTime);
         const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
         const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
         const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
@@ -410,7 +412,8 @@ const VideoTaggerPage: React.FC = () => {
 
     // Handler for adding a tag (jugada)
     const addTag = () => {
-        if (!selectedPlayerId || !videoRef.current) return;
+        if (!selectedPlayerId) return;
+        if (!activeVideoUrl && !selectedVideo) return;
 
         const actionParts = selectedAction.split(' ');
 
@@ -434,7 +437,9 @@ const VideoTaggerPage: React.FC = () => {
             accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
         }
 
-        const relativeTime = Math.floor(videoRef.current.currentTime);
+        // Usar currentTime del estado: se actualiza desde el video principal (onTimeUpdate)
+        // O desde la ventana secundaria (postMessage). Siempre tiene el tiempo correcto.
+        const relativeTime = Math.floor(currentTime);
         // Determine video_file and timestamp_absolute
         const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
         const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
@@ -1294,6 +1299,18 @@ const VideoTaggerPage: React.FC = () => {
     useEffect(() => () => { stopVoice(); }, []);
     // ── END VOICE COMMANDS ────────────────────────────────────────────────────
 
+    // Sincronizar tiempo desde la ventana secundaria (nueva ventana de video)
+    // La ventana secundaria envía postMessage con el currentTime cada 500ms
+    useEffect(() => {
+        const handler = (e: MessageEvent) => {
+            if (e.data?.type === 'gol_timeupdate' && typeof e.data.time === 'number') {
+                setCurrentTime(e.data.time);
+            }
+        };
+        window.addEventListener('message', handler);
+        return () => window.removeEventListener('message', handler);
+    }, []);
+
     if (isLoading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
 
     return (
@@ -1310,7 +1327,7 @@ const VideoTaggerPage: React.FC = () => {
             )}
 
             {/* Left Column: Video and Tagged Plays */}
-            <div className="flex-1 flex flex-col gap-4">
+            <div className="flex-1 flex flex-col gap-4 overflow-y-auto">
                 <div className="bg-gray-800 rounded-lg p-4 flex flex-col">
                     {/* VIDEO, altura fija */}
                     <div className="min-h-[300px] max-h-[450px] flex items-center justify-center bg-black rounded-md relative group">
@@ -1320,31 +1337,79 @@ const VideoTaggerPage: React.FC = () => {
                                     ref={videoRef}
                                     src={activeVideoUrl}
                                     controls
-                                    playsInline
                                     className="max-h-full w-full"
                                     onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
                                 ></video>
-                                {/* Botones de salto de 5s - Solo visibles al pasar el mouse sobre el video */}
-                                <div className="absolute bottom-12 left-1/2 transform -translate-x-1/2 flex space-x-8 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                                    <button 
+                                {/* Barra superior: botones de salto + pantalla completa, visible al hacer hover */}
+                                <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button
                                         onClick={(e) => {
                                             e.preventDefault();
                                             if (videoRef.current) videoRef.current.currentTime -= 5;
                                         }}
-                                        className="bg-black/60 hover:bg-black/90 text-white px-3 py-1 rounded-full text-sm font-bold border border-white/20 pointer-events-auto shadow-lg"
+                                        className="bg-black/70 hover:bg-black/90 text-white px-2 py-1 rounded text-xs font-bold border border-white/20 shadow"
                                         title="Retroceder 5 segundos"
                                     >
-                                        -5s
+                                        ⏪ -5s
                                     </button>
-                                    <button 
+                                    <button
                                         onClick={(e) => {
                                             e.preventDefault();
                                             if (videoRef.current) videoRef.current.currentTime += 5;
                                         }}
-                                        className="bg-black/60 hover:bg-black/90 text-white px-3 py-1 rounded-full text-sm font-bold border border-white/20 pointer-events-auto shadow-lg"
+                                        className="bg-black/70 hover:bg-black/90 text-white px-2 py-1 rounded text-xs font-bold border border-white/20 shadow"
                                         title="Adelantar 5 segundos"
                                     >
-                                        +5s
+                                        +5s ⏩
+                                    </button>
+                                    <button
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            if (!activeVideoUrl) return;
+                                            // Abre el video en una ventana nueva para usarla en segunda pantalla
+                                            const html = `<!DOCTYPE html>
+<html style="margin:0;padding:0;background:#000;width:100%;height:100%;">
+<head><title>Video - GolAnalytics</title>
+<style>
+  body { margin:0; padding:0; background:#000; display:flex; flex-direction:column; align-items:center; justify-content:center; width:100vw; height:100vh; font-family:sans-serif; }
+  video { max-width:100%; max-height:calc(100vh - 60px); }
+  .controls { display:flex; gap:12px; margin-top:10px; }
+  button { background:#1e293b; color:#fff; border:1px solid #475569; border-radius:8px; padding:8px 20px; font-size:15px; font-weight:bold; cursor:pointer; }
+  button:hover { background:#0e7490; }
+</style>
+</head>
+<body>
+<video id="vid" src="${activeVideoUrl}" controls autoplay></video>
+<div class="controls">
+  <button onclick="document.getElementById('vid').currentTime -= 10">⏪ -10s</button>
+  <button onclick="document.getElementById('vid').currentTime += 10">+10s ⏩</button>
+</div>
+<script>
+  var vid = document.getElementById('vid');
+  var lastSent = 0;
+  vid.addEventListener('timeupdate', function() {
+    var now = Date.now();
+    if (now - lastSent >= 500) {
+      lastSent = now;
+      if (window.opener) window.opener.postMessage({type:'gol_timeupdate', time: vid.currentTime}, '*');
+    }
+  });
+  vid.addEventListener('pause', function() {
+    if (window.opener) window.opener.postMessage({type:'gol_timeupdate', time: vid.currentTime}, '*');
+  });
+  vid.addEventListener('seeked', function() {
+    if (window.opener) window.opener.postMessage({type:'gol_timeupdate', time: vid.currentTime}, '*');
+  });
+</script>
+</body></html>`;
+                                            const blob = new Blob([html], { type: 'text/html' });
+                                            const url = URL.createObjectURL(blob);
+                                            window.open(url, '_blank', 'width=1280,height=720');
+                                        }}
+                                        className="bg-cyan-700/80 hover:bg-cyan-600 text-white px-2 py-1 rounded text-xs font-bold border border-cyan-400/40 shadow"
+                                        title="Abrir video en nueva ventana (segunda pantalla)"
+                                    >
+                                        ↗ Nueva ventana
                                     </button>
                                 </div>
                             </>
@@ -1963,5 +2028,7 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
+
 
 
