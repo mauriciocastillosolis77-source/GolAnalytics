@@ -1269,7 +1269,11 @@ const VideoTaggerPage: React.FC = () => {
             processVoiceCommandRef.current(transcript);
         };
         recognition.onerror = (event: any) => {
-            if (event.error !== 'no-speech') {
+            // Solo los errores de permiso son fatales (sin micrófono disponible).
+            // 'network', 'aborted', 'no-speech', etc. son transitorios —
+            // el handler onend se encarga del reinicio automático.
+            const fatalErrors = ['not-allowed', 'service-not-allowed'];
+            if (fatalErrors.includes(event.error)) {
                 setIsVoiceActive(false);
                 isVoiceActiveRef.current = false;
             }
