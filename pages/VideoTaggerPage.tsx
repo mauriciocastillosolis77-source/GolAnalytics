@@ -1258,59 +1258,69 @@ const VideoTaggerPage: React.FC = () => {
             return;
         }
 
-        // IMPORTANTE: continuous = true es necesario cuando hay un video reproduciéndose.
-        // Con continuous = false, el audio de fondo del video termina la sesión
-        // antes de que el usuario pueda hablar, haciendo que nada se reconozca.
-        //
-        // "restarting" evita loops: si onend dispara varias veces rápido
-        // (ej. Windows no tiene el audio listo), solo se programa un reinicio.
-        let restarting = false;
+        isVoiceActiveRef.current = true;
+        setIsVoiceActive(true);
+        setVoiceTranscript('');
 
         const createAndStart = () => {
+            // Si ya no debe estar activo, no reiniciar
             if (!isVoiceActiveRef.current) return;
-            if (restarting) return;
 
-            const rec = new SpeechRecognition();
-            rec.lang = 'es-ES';
-            rec.continuous = true;
-            rec.interimResults = false;
+            // Limpiar instancia anterior antes de crear una nueva
+            if (recognitionRef.current) {
+                try { recognitionRef.current.stop(); } catch (_) {}
+                recognitionRef.current = null;
+            }
 
-            rec.onresult = (event: any) => {
+            const recognition = new SpeechRecognition();
+            recognition.lang = 'es-ES';
+            recognition.continuous = true;
+            recognition.interimResults = false;
+
+            recognition.onresult = (event: any) => {
                 const last = event.results[event.results.length - 1];
                 const transcript = last[0].transcript;
                 setVoiceTranscript(transcript);
                 processVoiceCommandRef.current(transcript);
             };
-            rec.onerror = (event: any) => {
-                const fatalErrors = ['not-allowed', 'service-not-allowed'];
+
+            recognition.onerror = (event: any) => {
+                console.warn('Voice recognition error:', event.error);
+                const fatalErrors = ['not-allowed', 'service-not-allowed', 'audio-capture'];
                 if (fatalErrors.includes(event.error)) {
                     setIsVoiceActive(false);
                     isVoiceActiveRef.current = false;
+                    recognitionRef.current = null;
+                    setVoiceStatus('⚠ Sin acceso al micrófono. Revisa los permisos.');
+                    setTimeout(() => setVoiceStatus(''), 5000);
                 }
+                // Errores no fatales (network, no-speech, aborted):
+                // onend se encarga del reinicio automático
             };
-            rec.onend = () => {
-                recognitionRef.current = null;
-                if (isVoiceActiveRef.current && !restarting) {
-                    restarting = true;
-                    setTimeout(() => {
-                        restarting = false;
-                        createAndStart();
-                    }, 200);
-                }
+
+            recognition.onend = () => {
+                if (!isVoiceActiveRef.current) return;
+                // Delay de 300ms para que Chrome libere el dispositivo
+                // correctamente antes de crear una nueva instancia
+                setTimeout(createAndStart, 300);
             };
-            rec.start();
-            recognitionRef.current = rec;
+
+            try {
+                recognition.start();
+                recognitionRef.current = recognition;
+            } catch (err) {
+                console.warn('Error starting recognition, reintentando...', err);
+                // Si falla el start, reintenta después de 1 segundo
+                setTimeout(createAndStart, 1000);
+            }
         };
 
-        isVoiceActiveRef.current = true;
-        setIsVoiceActive(true);
-        setVoiceTranscript('');
         createAndStart();
     };
 
     const stopVoice = () => {
         isVoiceActiveRef.current = false;
-        recognitionRef.current?.abort();
+        recognitionRef.current?.stop();
         recognitionRef.current = null;
         setIsVoiceActive(false);
         setVoiceTranscript('');
@@ -2050,3 +2060,4 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
