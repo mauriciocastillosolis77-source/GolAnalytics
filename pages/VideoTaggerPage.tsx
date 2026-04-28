@@ -1258,10 +1258,15 @@ const VideoTaggerPage: React.FC = () => {
             return;
         }
 
-        // Crea una instancia NUEVA cada vez (inicial y en cada reinicio automático).
-        // Reutilizar la misma instancia después de onend provoca un estado "zombie"
-        // en Chrome/Edge en Windows donde aparece activa pero no reconoce nada.
+        // restartTimer evita que se acumulen múltiples timers de reinicio.
+        // Sin este control, un loop de reinicios rápidos satura el audio de Windows
+        // y provoca bloqueos de ~30 segundos en el micrófono.
+        let restartTimer: ReturnType<typeof setTimeout> | null = null;
+
         const createAndStart = () => {
+            // No arrancar si la voz fue desactivada durante el delay de reinicio.
+            if (!isVoiceActiveRef.current) return;
+
             const rec = new SpeechRecognition();
             rec.lang = 'es-ES';
             rec.continuous = false;
@@ -1274,9 +1279,6 @@ const VideoTaggerPage: React.FC = () => {
                 processVoiceCommandRef.current(transcript);
             };
             rec.onerror = (event: any) => {
-                // Solo los errores de permiso son fatales (sin micrófono disponible).
-                // 'network', 'aborted', 'no-speech', etc. son transitorios —
-                // el handler onend se encarga del reinicio con instancia nueva.
                 const fatalErrors = ['not-allowed', 'service-not-allowed'];
                 if (fatalErrors.includes(event.error)) {
                     setIsVoiceActive(false);
@@ -1284,12 +1286,14 @@ const VideoTaggerPage: React.FC = () => {
                 }
             };
             rec.onend = () => {
-                // Al terminar: si la voz sigue activa, crear instancia nueva y arrancar.
-                // El delay de 250ms le da tiempo al sistema de audio de Windows para
-                // liberar el recurso antes de que la nueva instancia intente capturarlo.
-                if (isVoiceActiveRef.current) {
-                    recognitionRef.current = null;
-                    setTimeout(createAndStart, 250);
+                recognitionRef.current = null;
+                // Solo programar un reinicio si la voz sigue activa Y no hay
+                // ya uno pendiente. Esto rompe el loop de reinicios rápidos.
+                if (isVoiceActiveRef.current && !restartTimer) {
+                    restartTimer = setTimeout(() => {
+                        restartTimer = null;
+                        createAndStart();
+                    }, 350);
                 }
             };
             rec.start();
@@ -1304,7 +1308,9 @@ const VideoTaggerPage: React.FC = () => {
 
     const stopVoice = () => {
         isVoiceActiveRef.current = false;
-        recognitionRef.current?.stop();
+        // abort() termina inmediatamente sin procesar audio pendiente,
+        // evitando que onend dispare un reinicio después de desactivar.
+        recognitionRef.current?.abort();
         recognitionRef.current = null;
         setIsVoiceActive(false);
         setVoiceTranscript('');
@@ -2044,5 +2050,4 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
-
 
