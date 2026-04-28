@@ -1258,18 +1258,21 @@ const VideoTaggerPage: React.FC = () => {
             return;
         }
 
-        // restartTimer evita que se acumulen múltiples timers de reinicio.
-        // Sin este control, un loop de reinicios rápidos satura el audio de Windows
-        // y provoca bloqueos de ~30 segundos en el micrófono.
-        let restartTimer: ReturnType<typeof setTimeout> | null = null;
+        // IMPORTANTE: continuous = true es necesario cuando hay un video reproduciéndose.
+        // Con continuous = false, el audio de fondo del video termina la sesión
+        // antes de que el usuario pueda hablar, haciendo que nada se reconozca.
+        //
+        // "restarting" evita loops: si onend dispara varias veces rápido
+        // (ej. Windows no tiene el audio listo), solo se programa un reinicio.
+        let restarting = false;
 
         const createAndStart = () => {
-            // No arrancar si la voz fue desactivada durante el delay de reinicio.
             if (!isVoiceActiveRef.current) return;
+            if (restarting) return;
 
             const rec = new SpeechRecognition();
             rec.lang = 'es-ES';
-            rec.continuous = false;
+            rec.continuous = true;
             rec.interimResults = false;
 
             rec.onresult = (event: any) => {
@@ -1287,13 +1290,12 @@ const VideoTaggerPage: React.FC = () => {
             };
             rec.onend = () => {
                 recognitionRef.current = null;
-                // Solo programar un reinicio si la voz sigue activa Y no hay
-                // ya uno pendiente. Esto rompe el loop de reinicios rápidos.
-                if (isVoiceActiveRef.current && !restartTimer) {
-                    restartTimer = setTimeout(() => {
-                        restartTimer = null;
+                if (isVoiceActiveRef.current && !restarting) {
+                    restarting = true;
+                    setTimeout(() => {
+                        restarting = false;
                         createAndStart();
-                    }, 350);
+                    }, 200);
                 }
             };
             rec.start();
@@ -1308,8 +1310,6 @@ const VideoTaggerPage: React.FC = () => {
 
     const stopVoice = () => {
         isVoiceActiveRef.current = false;
-        // abort() termina inmediatamente sin procesar audio pendiente,
-        // evitando que onend dispare un reinicio después de desactivar.
         recognitionRef.current?.abort();
         recognitionRef.current = null;
         setIsVoiceActive(false);
@@ -2050,4 +2050,3 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
-
