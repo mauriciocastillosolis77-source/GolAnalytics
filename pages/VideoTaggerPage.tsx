@@ -1116,7 +1116,9 @@ const VideoTaggerPage: React.FC = () => {
     // always closes over the latest state (avoids stale-closure bugs).
     // eslint-disable-next-line react-hooks/exhaustive-deps
     processVoiceCommandRef.current = (transcript: string) => {
-        const text = transcript.toLowerCase().trim();
+        // Chrome puede insertar comas y puntos en la transcripción
+        // ("Pase corto, ofensivo, fallado."). Los eliminamos antes de comparar.
+        const text = transcript.toLowerCase().trim().replace(/[.,;:!?¿¡]/g, '');
         const show = (msg: string) => {
             setVoiceStatus(msg);
             setTimeout(() => setVoiceStatus(''), 2500);
@@ -2071,6 +2073,10 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
+
+
+
 
 
 
