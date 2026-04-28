@@ -1102,6 +1102,7 @@ const VideoTaggerPage: React.FC = () => {
     // ── VOICE COMMANDS ────────────────────────────────────────────────────────
     // Map Spanish number words to digits (covers jersey numbers 1-25)
     const SPANISH_NUMBERS: Record<string, number> = {
+        'cero': 0,
         'uno': 1, 'dos': 2, 'tres': 3, 'cuatro': 4, 'cinco': 5,
         'seis': 6, 'siete': 7, 'ocho': 8, 'nueve': 9, 'diez': 10,
         'once': 11, 'doce': 12, 'trece': 13, 'catorce': 14, 'quince': 15,
@@ -1150,7 +1151,10 @@ const VideoTaggerPage: React.FC = () => {
         const playerMatch = text.match(playerPattern);
         if (playerMatch) {
             const raw = playerMatch[1];
-            const numero = parseInt(raw) || SPANISH_NUMBERS[raw] || null;
+            // Usar ?? en lugar de || para que el número 0 (cero) no sea descartado
+            // como falso. parseInt("cero") = NaN (falso), SPANISH_NUMBERS["cero"] = 0.
+            const parsed = parseInt(raw);
+            const numero = !isNaN(parsed) ? parsed : (SPANISH_NUMBERS[raw] ?? null);
             if (numero !== null) {
                 const found = filteredPlayers.find(p => p.numero === numero);
                 if (found) {
@@ -1220,6 +1224,10 @@ const VideoTaggerPage: React.FC = () => {
             .replace(/\btransicion\b/g, 'transición')
             .replace(/\bdefensiva\b/g, 'defensivo')
             .replace(/\bofensiva\b(?! lograda| no lograda)/g, 'ofensivo')
+            // Chrome con acento latinoamericano transcribe "ll" como "y" (yeísmo)
+            // → "fallado" puede llegar como "fayado" o "falado"
+            .replace(/\bfayado\b/g, 'fallado')
+            .replace(/\bfalado\b/g, 'fallado')
             .replace(/\bfallada\b/g, 'fallado')
             .replace(/\blograda\b(?! no)/g, 'logrado')
             .replace(/\bno lograda\b/g, 'no lograda');
@@ -2063,6 +2071,11 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
+
+
+
+
 
 
 
