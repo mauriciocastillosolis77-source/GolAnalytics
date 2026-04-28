@@ -1262,11 +1262,17 @@ const VideoTaggerPage: React.FC = () => {
         setIsVoiceActive(true);
         setVoiceTranscript('');
 
+        // hadResult: true si la sesión terminó habiendo reconocido algo.
+        // Determina el delay de reinicio:
+        //   - Con reconocimiento previo → 100ms (el usuario acaba de hablar, reiniciar rápido)
+        //   - Sin reconocimiento (silencio / no-speech) → 2500ms (evita el loop
+        //     de reinicios rápidos que satura el audio de Windows y genera el
+        //     bloqueo de ~10 segundos que el usuario experimenta)
+        let hadResult = false;
+
         const createAndStart = () => {
-            // Si ya no debe estar activo, no reiniciar
             if (!isVoiceActiveRef.current) return;
 
-            // Limpiar instancia anterior antes de crear una nueva
             if (recognitionRef.current) {
                 try { recognitionRef.current.stop(); } catch (_) {}
                 recognitionRef.current = null;
@@ -1278,6 +1284,7 @@ const VideoTaggerPage: React.FC = () => {
             recognition.interimResults = false;
 
             recognition.onresult = (event: any) => {
+                hadResult = true;
                 const last = event.results[event.results.length - 1];
                 const transcript = last[0].transcript;
                 setVoiceTranscript(transcript);
@@ -1285,7 +1292,6 @@ const VideoTaggerPage: React.FC = () => {
             };
 
             recognition.onerror = (event: any) => {
-                console.warn('Voice recognition error:', event.error);
                 const fatalErrors = ['not-allowed', 'service-not-allowed', 'audio-capture'];
                 if (fatalErrors.includes(event.error)) {
                     setIsVoiceActive(false);
@@ -1294,23 +1300,20 @@ const VideoTaggerPage: React.FC = () => {
                     setVoiceStatus('⚠ Sin acceso al micrófono. Revisa los permisos.');
                     setTimeout(() => setVoiceStatus(''), 5000);
                 }
-                // Errores no fatales (network, no-speech, aborted):
-                // onend se encarga del reinicio automático
             };
 
             recognition.onend = () => {
+                recognitionRef.current = null;
                 if (!isVoiceActiveRef.current) return;
-                // Delay de 300ms para que Chrome libere el dispositivo
-                // correctamente antes de crear una nueva instancia
-                setTimeout(createAndStart, 300);
+                const delay = hadResult ? 100 : 2500;
+                hadResult = false;
+                setTimeout(createAndStart, delay);
             };
 
             try {
                 recognition.start();
                 recognitionRef.current = recognition;
             } catch (err) {
-                console.warn('Error starting recognition, reintentando...', err);
-                // Si falla el start, reintenta después de 1 segundo
                 setTimeout(createAndStart, 1000);
             }
         };
@@ -2060,4 +2063,9 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
+
+
+
+
 
