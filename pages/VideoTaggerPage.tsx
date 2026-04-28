@@ -1257,37 +1257,47 @@ const VideoTaggerPage: React.FC = () => {
             alert('Tu navegador no soporta comandos de voz. Usa Chrome o Edge.');
             return;
         }
-        const recognition = new SpeechRecognition();
-        recognition.lang = 'es-ES';
-        recognition.continuous = true;
-        recognition.interimResults = false;
 
-        recognition.onresult = (event: any) => {
-            const last = event.results[event.results.length - 1];
-            const transcript = last[0].transcript;
-            setVoiceTranscript(transcript);
-            processVoiceCommandRef.current(transcript);
-        };
-        recognition.onerror = (event: any) => {
-            // Solo los errores de permiso son fatales (sin micrófono disponible).
-            // 'network', 'aborted', 'no-speech', etc. son transitorios —
-            // el handler onend se encarga del reinicio automático.
-            const fatalErrors = ['not-allowed', 'service-not-allowed'];
-            if (fatalErrors.includes(event.error)) {
-                setIsVoiceActive(false);
-                isVoiceActiveRef.current = false;
-            }
-        };
-        recognition.onend = () => {
-            // Auto-restart while voice is still supposed to be active
-            if (isVoiceActiveRef.current) recognition.start();
+        // Crea una instancia NUEVA cada vez (inicial y en cada reinicio automático).
+        // Reutilizar la misma instancia después de onend provoca un estado "zombie"
+        // en Chrome/Edge en Windows donde aparece activa pero no reconoce nada.
+        const createAndStart = () => {
+            const rec = new SpeechRecognition();
+            rec.lang = 'es-ES';
+            rec.continuous = true;
+            rec.interimResults = false;
+
+            rec.onresult = (event: any) => {
+                const last = event.results[event.results.length - 1];
+                const transcript = last[0].transcript;
+                setVoiceTranscript(transcript);
+                processVoiceCommandRef.current(transcript);
+            };
+            rec.onerror = (event: any) => {
+                // Solo los errores de permiso son fatales (sin micrófono disponible).
+                // 'network', 'aborted', 'no-speech', etc. son transitorios —
+                // el handler onend se encarga del reinicio con instancia nueva.
+                const fatalErrors = ['not-allowed', 'service-not-allowed'];
+                if (fatalErrors.includes(event.error)) {
+                    setIsVoiceActive(false);
+                    isVoiceActiveRef.current = false;
+                }
+            };
+            rec.onend = () => {
+                // Al terminar: si la voz sigue activa, crear instancia nueva y arrancar.
+                if (isVoiceActiveRef.current) {
+                    recognitionRef.current = null;
+                    createAndStart();
+                }
+            };
+            rec.start();
+            recognitionRef.current = rec;
         };
 
-        recognition.start();
-        recognitionRef.current = recognition;
         isVoiceActiveRef.current = true;
         setIsVoiceActive(true);
         setVoiceTranscript('');
+        createAndStart();
     };
 
     const stopVoice = () => {
@@ -2032,7 +2042,6 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
-
 
 
 
