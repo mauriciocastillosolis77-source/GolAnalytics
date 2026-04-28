@@ -1264,7 +1264,7 @@ const VideoTaggerPage: React.FC = () => {
         const createAndStart = () => {
             const rec = new SpeechRecognition();
             rec.lang = 'es-ES';
-            rec.continuous = true;
+            rec.continuous = false;
             rec.interimResults = false;
 
             rec.onresult = (event: any) => {
@@ -1285,9 +1285,11 @@ const VideoTaggerPage: React.FC = () => {
             };
             rec.onend = () => {
                 // Al terminar: si la voz sigue activa, crear instancia nueva y arrancar.
+                // El delay de 250ms le da tiempo al sistema de audio de Windows para
+                // liberar el recurso antes de que la nueva instancia intente capturarlo.
                 if (isVoiceActiveRef.current) {
                     recognitionRef.current = null;
-                    createAndStart();
+                    setTimeout(createAndStart, 250);
                 }
             };
             rec.start();
@@ -2042,6 +2044,5 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
-
 
 
