@@ -1102,6 +1102,7 @@ const VideoTaggerPage: React.FC = () => {
     // ── VOICE COMMANDS ────────────────────────────────────────────────────────
     // Map Spanish number words to digits (covers jersey numbers 1-25)
     const SPANISH_NUMBERS: Record<string, number> = {
+        'cero': 0,
         'uno': 1, 'dos': 2, 'tres': 3, 'cuatro': 4, 'cinco': 5,
         'seis': 6, 'siete': 7, 'ocho': 8, 'nueve': 9, 'diez': 10,
         'once': 11, 'doce': 12, 'trece': 13, 'catorce': 14, 'quince': 15,
@@ -1115,7 +1116,9 @@ const VideoTaggerPage: React.FC = () => {
     // always closes over the latest state (avoids stale-closure bugs).
     // eslint-disable-next-line react-hooks/exhaustive-deps
     processVoiceCommandRef.current = (transcript: string) => {
-        const text = transcript.toLowerCase().trim();
+        // Chrome puede insertar comas y puntos en la transcripción
+        // ("Pase corto, ofensivo, fallado."). Los eliminamos antes de comparar.
+        const text = transcript.toLowerCase().trim().replace(/[.,;:!?¿¡]/g, '');
         const show = (msg: string) => {
             setVoiceStatus(msg);
             setTimeout(() => setVoiceStatus(''), 2500);
@@ -1150,7 +1153,10 @@ const VideoTaggerPage: React.FC = () => {
         const playerMatch = text.match(playerPattern);
         if (playerMatch) {
             const raw = playerMatch[1];
-            const numero = parseInt(raw) || SPANISH_NUMBERS[raw] || null;
+            // Usar ?? en lugar de || para que el número 0 (cero) no sea descartado
+            // como falso. parseInt("cero") = NaN (falso), SPANISH_NUMBERS["cero"] = 0.
+            const parsed = parseInt(raw);
+            const numero = !isNaN(parsed) ? parsed : (SPANISH_NUMBERS[raw] ?? null);
             if (numero !== null) {
                 const found = filteredPlayers.find(p => p.numero === numero);
                 if (found) {
@@ -1220,6 +1226,10 @@ const VideoTaggerPage: React.FC = () => {
             .replace(/\btransicion\b/g, 'transición')
             .replace(/\bdefensiva\b/g, 'defensivo')
             .replace(/\bofensiva\b(?! lograda| no lograda)/g, 'ofensivo')
+            // Chrome con acento latinoamericano transcribe "ll" como "y" (yeísmo)
+            // → "fallado" puede llegar como "fayado" o "falado"
+            .replace(/\bfayado\b/g, 'fallado')
+            .replace(/\bfalado\b/g, 'fallado')
             .replace(/\bfallada\b/g, 'fallado')
             .replace(/\blograda\b(?! no)/g, 'logrado')
             .replace(/\bno lograda\b/g, 'no lograda');
@@ -1257,33 +1267,87 @@ const VideoTaggerPage: React.FC = () => {
             alert('Tu navegador no soporta comandos de voz. Usa Chrome o Edge.');
             return;
         }
-        const recognition = new SpeechRecognition();
-        recognition.lang = 'es-ES';
-        recognition.continuous = true;
-        recognition.interimResults = false;
 
-        recognition.onresult = (event: any) => {
-            const last = event.results[event.results.length - 1];
-            const transcript = last[0].transcript;
-            setVoiceTranscript(transcript);
-            processVoiceCommandRef.current(transcript);
-        };
-        recognition.onerror = (event: any) => {
-            if (event.error !== 'no-speech') {
-                setIsVoiceActive(false);
-                isVoiceActiveRef.current = false;
-            }
-        };
-        recognition.onend = () => {
-            // Auto-restart while voice is still supposed to be active
-            if (isVoiceActiveRef.current) recognition.start();
-        };
-
-        recognition.start();
-        recognitionRef.current = recognition;
         isVoiceActiveRef.current = true;
         setIsVoiceActive(true);
         setVoiceTranscript('');
+
+        // hadResult: true si la sesión terminó habiendo reconocido algo.
+        // Determina el delay de reinicio:
+        //   - Con reconocimiento previo → 100ms (el usuario acaba de hablar, reiniciar rápido)
+        //   - Sin reconocimiento (silencio / no-speech) → 800ms
+        let hadResult = false;
+
+        // isRestarting: previene que onerror + onend (que Edge dispara juntos en silencio)
+        // programen dos timers simultáneos de createAndStart, lo que genera instancias
+        // duplicadas que se saturan y dejan el botón activo pero sin escuchar.
+        let isRestarting = false;
+
+        const scheduleRestart = (delay: number) => {
+            if (!isVoiceActiveRef.current) return;
+            if (isRestarting) return; // ya hay un reinicio programado, ignorar duplicado
+            isRestarting = true;
+            setTimeout(() => {
+                isRestarting = false;
+                createAndStart();
+            }, delay);
+        };
+
+        const createAndStart = () => {
+            if (!isVoiceActiveRef.current) return;
+
+            if (recognitionRef.current) {
+                try { recognitionRef.current.stop(); } catch (_) {}
+                recognitionRef.current = null;
+            }
+
+            const recognition = new SpeechRecognition();
+            recognition.lang = 'es-ES';
+            recognition.continuous = true;
+            recognition.interimResults = false;
+
+            recognition.onresult = (event: any) => {
+                hadResult = true;
+                const last = event.results[event.results.length - 1];
+                const transcript = last[0].transcript;
+                setVoiceTranscript(transcript);
+                processVoiceCommandRef.current(transcript);
+            };
+
+            recognition.onerror = (event: any) => {
+                const fatalErrors = ['not-allowed', 'service-not-allowed', 'audio-capture'];
+                if (fatalErrors.includes(event.error)) {
+                    // Error fatal: apagar la voz completamente
+                    setIsVoiceActive(false);
+                    isVoiceActiveRef.current = false;
+                    recognitionRef.current = null;
+                    setVoiceStatus('⚠ Sin acceso al micrófono. Revisa los permisos.');
+                    setTimeout(() => setVoiceStatus(''), 5000);
+                    return;
+                }
+                // 'aborted', 'no-speech' y cualquier otro error son recuperables.
+                // Edge/Windows los lanza tras silencio prolongado seguido de onend.
+                // scheduleRestart se encarga de que solo haya un reinicio pendiente.
+                scheduleRestart(800);
+            };
+
+            recognition.onend = () => {
+                recognitionRef.current = null;
+                if (!isVoiceActiveRef.current) return;
+                const delay = hadResult ? 100 : 800;
+                hadResult = false;
+                scheduleRestart(delay);
+            };
+
+            try {
+                recognition.start();
+                recognitionRef.current = recognition;
+            } catch (err) {
+                scheduleRestart(1000);
+            }
+        };
+
+        createAndStart();
     };
 
     const stopVoice = () => {
@@ -2028,6 +2092,20 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
