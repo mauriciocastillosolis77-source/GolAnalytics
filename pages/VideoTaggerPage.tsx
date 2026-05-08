@@ -1310,6 +1310,11 @@ const VideoTaggerPage: React.FC = () => {
                     setVoiceStatus('⚠ Sin acceso al micrófono. Revisa los permisos.');
                     setTimeout(() => setVoiceStatus(''), 5000);
                 }
+                // 'aborted' y 'no-speech' son errores recuperables (Edge/Windows los lanza
+                // tras silencio prolongado). No apagamos la voz — dejamos que onend
+                // se encargue del reinicio automático con el delay correspondiente.
+                // Cualquier otro error desconocido tampoco apaga la voz para evitar
+                // que una actualización del navegador rompa la sesión silenciosamente.
             };
 
             recognition.onend = () => {
@@ -2073,6 +2078,7 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
 
 
 
