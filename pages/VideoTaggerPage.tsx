@@ -1275,10 +1275,23 @@ const VideoTaggerPage: React.FC = () => {
         // hadResult: true si la sesión terminó habiendo reconocido algo.
         // Determina el delay de reinicio:
         //   - Con reconocimiento previo → 100ms (el usuario acaba de hablar, reiniciar rápido)
-        //   - Sin reconocimiento (silencio / no-speech) → 2500ms (evita el loop
-        //     de reinicios rápidos que satura el audio de Windows y genera el
-        //     bloqueo de ~10 segundos que el usuario experimenta)
+        //   - Sin reconocimiento (silencio / no-speech) → 800ms
         let hadResult = false;
+
+        // isRestarting: previene que onerror + onend (que Edge dispara juntos en silencio)
+        // programen dos timers simultáneos de createAndStart, lo que genera instancias
+        // duplicadas que se saturan y dejan el botón activo pero sin escuchar.
+        let isRestarting = false;
+
+        const scheduleRestart = (delay: number) => {
+            if (!isVoiceActiveRef.current) return;
+            if (isRestarting) return; // ya hay un reinicio programado, ignorar duplicado
+            isRestarting = true;
+            setTimeout(() => {
+                isRestarting = false;
+                createAndStart();
+            }, delay);
+        };
 
         const createAndStart = () => {
             if (!isVoiceActiveRef.current) return;
@@ -1304,32 +1317,33 @@ const VideoTaggerPage: React.FC = () => {
             recognition.onerror = (event: any) => {
                 const fatalErrors = ['not-allowed', 'service-not-allowed', 'audio-capture'];
                 if (fatalErrors.includes(event.error)) {
+                    // Error fatal: apagar la voz completamente
                     setIsVoiceActive(false);
                     isVoiceActiveRef.current = false;
                     recognitionRef.current = null;
                     setVoiceStatus('⚠ Sin acceso al micrófono. Revisa los permisos.');
                     setTimeout(() => setVoiceStatus(''), 5000);
+                    return;
                 }
-                // 'aborted' y 'no-speech' son errores recuperables (Edge/Windows los lanza
-                // tras silencio prolongado). No apagamos la voz — dejamos que onend
-                // se encargue del reinicio automático con el delay correspondiente.
-                // Cualquier otro error desconocido tampoco apaga la voz para evitar
-                // que una actualización del navegador rompa la sesión silenciosamente.
+                // 'aborted', 'no-speech' y cualquier otro error son recuperables.
+                // Edge/Windows los lanza tras silencio prolongado seguido de onend.
+                // scheduleRestart se encarga de que solo haya un reinicio pendiente.
+                scheduleRestart(800);
             };
 
             recognition.onend = () => {
                 recognitionRef.current = null;
                 if (!isVoiceActiveRef.current) return;
-                const delay = hadResult ? 100 : 2500;
+                const delay = hadResult ? 100 : 800;
                 hadResult = false;
-                setTimeout(createAndStart, delay);
+                scheduleRestart(delay);
             };
 
             try {
                 recognition.start();
                 recognitionRef.current = recognition;
             } catch (err) {
-                setTimeout(createAndStart, 1000);
+                scheduleRestart(1000);
             }
         };
 
@@ -2078,6 +2092,8 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
+
 
 
 
