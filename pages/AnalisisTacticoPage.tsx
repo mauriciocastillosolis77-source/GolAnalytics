@@ -16,6 +16,9 @@ const STROKE_WIDTHS = [2, 4, 6, 8];
 const DEFAULT_SECONDS_BEFORE = 8;
 const CLIP_BUCKET = 'tactical-clips';
 
+// Radio de hit-test para handles de selección (coordenadas normalizadas 0-1)
+const HANDLE_R = 0.018;
+
 interface ToolDef {
   type: AnnotationType;
   label: string;
@@ -452,9 +455,7 @@ const AnalisisTacticoPage: React.FC = () => {
   //   redimensionarla. Se activa automáticamente al detectar un hit.
   //
   // Los handles son 2 puntos: p1 (x1,y1) y p2 (x2,y2) de la anotación.
-  // El tamaño del handle en coordenadas normalizadas es HANDLE_R.
-
-  const HANDLE_R = 0.018; // Radio de hit-test para los handles (coordenadas norm.)
+  // El tamaño del handle en coordenadas normalizadas es HANDLE_R (definido globalmente).
 
   // Estado de selección — todo en refs para acceso desde listeners nativos
   const selectedAnnIdRef = useRef<string | null>(null);
@@ -1141,6 +1142,7 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
 
 
