@@ -205,15 +205,67 @@ function drawAnnotation(mainCtx: CanvasRenderingContext2D, ann: TacticalAnnotati
   mainCtx.drawImage(off, 0, 0);
 }
 
-function renderFrame(canvas: HTMLCanvasElement, frameDataUrl: string, annotations: TacticalAnnotation[]) {
+// Renderiza el frame completo: imagen base + todas las anotaciones + handles opcionales
+function renderFrame(
+  canvas: HTMLCanvasElement,
+  frameDataUrl: string,
+  annotations: TacticalAnnotation[],
+  selectedId?: string | null,
+  handleR?: number
+) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const img = new Image();
   img.onload = () => {
-    canvas.width = img.width; canvas.height = img.height;
+    canvas.width = img.width;
+    canvas.height = img.height;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0);
     annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height));
+
+    // Dibujar handles de selección en el mismo onload — misma pasada de renderizado
+    if (selectedId) {
+      const sel = annotations.find(a => a.id === selectedId);
+      if (sel) {
+        const W = canvas.width, H = canvas.height;
+        const hr = (handleR ?? 0.018) * W;
+
+        // Bounding box punteado
+        const bx1 = Math.min(sel.x1, sel.x2 ?? sel.x1) * W - hr;
+        const by1 = Math.min(sel.y1, sel.y2 ?? sel.y1) * H - hr;
+        const bw = Math.abs((sel.x2 ?? sel.x1) - sel.x1) * W + hr * 2;
+        const bh = Math.abs((sel.y2 ?? sel.y1) - sel.y1) * H + hr * 2;
+        ctx.save();
+        ctx.strokeStyle = '#06B6D4';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([5, 4]);
+        ctx.strokeRect(bx1, by1, bw, bh);
+        ctx.setLineDash([]);
+        ctx.restore();
+
+        // Handle p1
+        ctx.save();
+        ctx.fillStyle = '#06B6D4';
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(sel.x1 * W, sel.y1 * H, hr, 0, Math.PI * 2);
+        ctx.fill(); ctx.stroke();
+        ctx.restore();
+
+        // Handle p2
+        if (sel.x2 !== undefined && sel.y2 !== undefined) {
+          ctx.save();
+          ctx.fillStyle = '#06B6D4';
+          ctx.strokeStyle = '#ffffff';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(sel.x2 * W, sel.y2 * H, hr, 0, Math.PI * 2);
+          ctx.fill(); ctx.stroke();
+          ctx.restore();
+        }
+      }
+    }
   };
   img.src = frameDataUrl;
 }
@@ -385,13 +437,9 @@ const AnalisisTacticoPage: React.FC = () => {
   const redrawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas || !frameDataUrl) return;
-    if (selectedAnnId) {
-      redrawWithHandles(annotations, selectedAnnId, frameDataUrl);
-    } else {
-      const allAnns = previewAnn ? [...annotations, previewAnn] : annotations;
-      renderFrame(canvas, frameDataUrl, allAnns);
-    }
-  }, [frameDataUrl, annotations, previewAnn, selectedAnnId, redrawWithHandles]);
+    const allAnns = previewAnn ? [...annotations, previewAnn] : annotations;
+    renderFrame(canvas, frameDataUrl, allAnns, selectedAnnId, HANDLE_R);
+  }, [frameDataUrl, annotations, previewAnn, selectedAnnId]);
 
   useEffect(() => { redrawCanvas(); }, [redrawCanvas]);
 
@@ -449,64 +497,12 @@ const AnalisisTacticoPage: React.FC = () => {
     return px >= minX && px <= maxX && py >= minY && py <= maxY;
   }, []);
 
-  // Redibujar canvas con handles de selección superpuestos
+  // Redibujar canvas con handles — delega todo a renderFrame que maneja el onload
   const redrawWithHandles = useCallback((anns: TacticalAnnotation[], selId: string | null, fdu: string | null) => {
     const canvas = canvasRef.current;
     if (!canvas || !fdu) return;
-    const allAnns = previewAnn ? [...anns, previewAnn] : anns;
-    renderFrame(canvas, fdu, allAnns);
-
-    if (!selId) return;
-    const sel = anns.find(a => a.id === selId);
-    if (!sel) return;
-
-    // Dibujar handles sobre el canvas ya renderizado
-    // Usamos un pequeño timeout para esperar que renderFrame termine (es async por Image.onload)
-    const canvas2 = canvasRef.current;
-    if (!canvas2) return;
-    const img = new Image();
-    img.onload = () => {
-      const ctx = canvas2.getContext('2d');
-      if (!ctx) return;
-      const W = canvas2.width, H = canvas2.height;
-
-      // Handle p1
-      ctx.save();
-      ctx.fillStyle = '#06B6D4';
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(sel.x1 * W, sel.y1 * H, HANDLE_R * W, 0, Math.PI * 2);
-      ctx.fill(); ctx.stroke();
-      ctx.restore();
-
-      // Handle p2
-      if (sel.x2 !== undefined && sel.y2 !== undefined) {
-        ctx.save();
-        ctx.fillStyle = '#06B6D4';
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(sel.x2 * W, sel.y2 * H, HANDLE_R * W, 0, Math.PI * 2);
-        ctx.fill(); ctx.stroke();
-        ctx.restore();
-      }
-
-      // Bounding box de selección
-      const x1 = Math.min(sel.x1, sel.x2 ?? sel.x1) * W;
-      const y1 = Math.min(sel.y1, sel.y2 ?? sel.y1) * H;
-      const bw = Math.abs((sel.x2 ?? sel.x1) - sel.x1) * W;
-      const bh = Math.abs((sel.y2 ?? sel.y1) - sel.y1) * H;
-      ctx.save();
-      ctx.strokeStyle = '#06B6D4';
-      ctx.lineWidth = 1;
-      ctx.setLineDash([4, 3]);
-      ctx.strokeRect(x1 - HANDLE_R * W, y1 - HANDLE_R * H, bw + HANDLE_R * W * 2, bh + HANDLE_R * H * 2);
-      ctx.setLineDash([]);
-      ctx.restore();
-    };
-    img.src = fdu;
-  }, [previewAnn]);
+    renderFrame(canvas, fdu, anns, selId, HANDLE_R);
+  }, []);
 
   // Listeners nativos a nivel de document
   useEffect(() => {
@@ -527,8 +523,11 @@ const AnalisisTacticoPage: React.FC = () => {
             return a;
           });
           annotationsRef.current = updated;
-          // Redibujar con handles
-          redrawWithHandles(updated, selectedAnnIdRef.current, frameDataUrlRef.current);
+          // Redibujar usando renderFrame unificado con handles
+          const canvas = canvasRef.current;
+          if (canvas && frameDataUrlRef.current) {
+            renderFrame(canvas, frameDataUrlRef.current, updated, selectedAnnIdRef.current, HANDLE_R);
+          }
           return updated;
         });
         return;
