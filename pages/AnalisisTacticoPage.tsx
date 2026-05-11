@@ -311,6 +311,7 @@ const AnalisisTacticoPage: React.FC = () => {
 
   const [selectedAnalysis, setSelectedAnalysis] = useState<TacticalAnalysis | null>(null);
   const reviewCanvasRef = useRef<HTMLCanvasElement>(null);
+  const reviewVideoRef = useRef<HTMLVideoElement>(null);
   const [clipUrl, setClipUrl] = useState<string | null>(null);
   const [loadingClip, setLoadingClip] = useState(false);
 
@@ -389,24 +390,6 @@ const AnalisisTacticoPage: React.FC = () => {
   }, [frameDataUrl, annotations, previewAnn]);
 
   useEffect(() => { redrawCanvas(); }, [redrawCanvas]);
-
-  // ─── Canvas de revisión ───────────────────────────────────────────────────
-
-  const renderReviewFrame = useCallback(() => {
-    const canvas = reviewCanvasRef.current;
-    if (!canvas || !selectedAnalysis || !clipUrl) return;
-    const tmp = document.createElement('video');
-    tmp.src = clipUrl; tmp.crossOrigin = 'anonymous';
-    tmp.onloadeddata = () => { tmp.currentTime = tmp.duration - 0.05; };
-    tmp.onseeked = () => {
-      const off = makeOffscreen(tmp.videoWidth, tmp.videoHeight);
-      off.getContext('2d')!.drawImage(tmp, 0, 0);
-      renderFrame(canvas, off.toDataURL('image/jpeg', 0.92), selectedAnalysis.annotations);
-    };
-    tmp.load();
-  }, [clipUrl, selectedAnalysis]);
-
-  useEffect(() => { if (view === 'review' && clipUrl) renderReviewFrame(); }, [view, clipUrl, renderReviewFrame]);
 
   // ─── FIX: Listeners de dibujo a nivel de document ─────────────────────────
   // Registrados con addEventListener nativo para garantizar que mouseup
@@ -660,13 +643,49 @@ const AnalisisTacticoPage: React.FC = () => {
         {loadingClip ? (
           <div className="flex items-center gap-3 bg-gray-800 rounded-xl p-6 text-gray-400"><Spinner /><span className="text-sm">Cargando análisis...</span></div>
         ) : clipUrl ? (
-          <>
-            <div className="bg-gray-900 rounded-xl overflow-hidden border border-gray-700"><canvas ref={reviewCanvasRef} className="w-full h-auto" /></div>
-            <div className="bg-gray-800 rounded-xl p-4 space-y-3">
-              <p className="text-sm font-medium text-gray-300">Contexto del partido</p>
-              <video src={clipUrl} className="w-full rounded-lg" controls autoPlay playsInline />
+          <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+            <p className="text-sm font-medium text-gray-300">Contexto del partido</p>
+            <p className="text-xs text-gray-500">El video se detiene en el frame con las anotaciones</p>
+            {/* Contenedor con posición relativa para superponer canvas sobre video */}
+            <div className="relative rounded-lg overflow-hidden bg-black">
+              <video
+                ref={reviewVideoRef}
+                src={clipUrl}
+                className="w-full block"
+                controls
+                playsInline
+                onEnded={() => {
+                  // Al terminar el video: capturar el último frame y dibujar anotaciones encima
+                  const video = reviewVideoRef.current;
+                  const canvas = reviewCanvasRef.current;
+                  if (!video || !canvas || !selectedAnalysis) return;
+                  canvas.width = video.videoWidth;
+                  canvas.height = video.videoHeight;
+                  const ctx = canvas.getContext('2d');
+                  if (!ctx) return;
+                  // Dibujar el frame final del video
+                  ctx.drawImage(video, 0, 0);
+                  // Dibujar anotaciones usando el sistema offscreen
+                  selectedAnalysis.annotations.forEach(ann =>
+                    drawAnnotation(ctx, ann, canvas.width, canvas.height)
+                  );
+                  // Mostrar el canvas superpuesto
+                  canvas.style.display = 'block';
+                }}
+                onPlay={() => {
+                  // Al dar play: ocultar el canvas para ver el video limpio
+                  const canvas = reviewCanvasRef.current;
+                  if (canvas) canvas.style.display = 'none';
+                }}
+              />
+              {/* Canvas superpuesto — oculto durante reproducción, visible al terminar */}
+              <canvas
+                ref={reviewCanvasRef}
+                className="absolute inset-0 w-full h-full"
+                style={{ display: 'none' }}
+              />
             </div>
-          </>
+          </div>
         ) : (
           <div className="bg-gray-800 rounded-xl p-6 text-center space-y-2">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-10 h-10 mx-auto text-gray-600"><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" /></svg>
@@ -968,5 +987,6 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
 
