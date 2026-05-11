@@ -123,3 +123,71 @@ export interface TeamAnalysisHistory {
   created_at: string;
 }
 
+// ─── Análisis Táctico ────────────────────────────────────────────────────────
+
+export type AnnotationType =
+  | 'arrow'           // Flecha recta — dirección de jugador o balón
+  | 'arrow_curved'    // Flecha curva — trayectoria arqueada
+  | 'arrow_player'    // Línea punteada + punta — movimiento de jugador sin balón
+  | 'line'            // Línea recta sin punta — distancias, referencias
+  | 'line_dashed'     // Línea punteada — líneas de fuera de juego, referencias
+  | 'zone_rect'       // Rectángulo semitransparente — zona de presión, carril
+  | 'zone_ellipse'    // Elipse semitransparente — área de cobertura, radio de acción
+  | 'spotlight'       // Círculo de foco — resalta un jugador oscureciendo el resto
+  | 'player_circle'   // Círculo con número/letra — marca a un jugador específico
+  | 'text';           // Caja de texto — etiqueta táctica
+
+export interface TacticalAnnotation {
+  id: string;
+  type: AnnotationType;
+
+  // Coordenadas normalizadas (0–1) relativas al tamaño del frame capturado.
+  // Se reconstruyen sobre cualquier tamaño de canvas multiplicando por width/height.
+  x1: number;
+  y1: number;
+  x2?: number;  // Extremo final — arrow, line, zone_rect, zone_ellipse
+  y2?: number;
+
+  color: string;
+  strokeWidth?: number;
+
+  // ── Campos específicos por tipo ──────────────────────────────────────────
+
+  // arrow_curved: punto de control de la curva Bézier (normalizado 0–1)
+  curvature?: number;   // Desplazamiento perpendicular al eje x1y1→x2y2 (-1 a 1)
+
+  // zone_rect / zone_ellipse / spotlight: relleno semitransparente
+  opacity?: number;     // 0–1, default 0.25 para zonas, 0.6 para spotlight
+  filled?: boolean;     // true = relleno + borde, false = solo borde
+
+  // player_circle: número o letra dentro del círculo
+  label?: string;       // Ej. "6", "A", "GK"
+
+  // text: contenido de la etiqueta
+  text?: string;
+
+  // arrow_player / line_dashed: indica al renderer que use trazado punteado
+  // (se infiere del type, pero se puede forzar)
+  dashed?: boolean;
+}
+
+export interface TacticalAnalysis {
+  id: string;
+  match_id: string;
+  team_id: string;
+  timestamp_video: number;    // Segundos desde el inicio del video
+  annotations: TacticalAnnotation[];
+  description?: string;       // Texto libre opcional del entrenador
+  created_by: string;         // UUID del usuario que creó el análisis
+  created_at: string;
+}
+
+export interface TacticalAnalysisInsert {
+  match_id: string;
+  team_id: string;
+  timestamp_video: number;
+  annotations: TacticalAnnotation[];
+  description?: string;
+  created_by: string;
+}
+
