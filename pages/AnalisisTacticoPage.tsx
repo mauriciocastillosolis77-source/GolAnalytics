@@ -4,6 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
 import type { Match, TacticalAnalysis, TacticalAnnotation, TacticalAnalysisInsert, AnnotationType } from '../types';
+import { fetchVideosForMatch, type Video as VideoMeta } from '../services/videosService';
 
 // ─── Constantes ──────────────────────────────────────────────────────────────
 
@@ -19,7 +20,6 @@ const TOOL_COLORS = [
 ];
 
 const STROKE_WIDTHS = [2, 4, 6, 8];
-
 const DEFAULT_SECONDS_BEFORE = 5;
 
 interface ToolDef {
@@ -142,7 +142,26 @@ const TOOLS: ToolDef[] = [
   },
 ];
 
-// ─── Helpers de canvas ────────────────────────────────────────────────────────
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// Convierte segundos a MM:SS o HH:MM:SS
+const formatTime = (s: number): string => {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = Math.floor(s % 60);
+  if (h > 0) return `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  return `${m}:${String(sec).padStart(2, '0')}`;
+};
+
+// Convierte string MM:SS a segundos
+const parseOffset = (str: string): number => {
+  const parts = str.split(':').map(Number);
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  return 0;
+};
+
+// ─── Canvas helpers ───────────────────────────────────────────────────────────
 
 function drawArrowhead(
   ctx: CanvasRenderingContext2D,
@@ -200,7 +219,6 @@ function drawAnnotation(
       ctx.moveTo(x1, y1);
       ctx.quadraticCurveTo(cpx, cpy, x2, y2);
       ctx.stroke();
-      // punta: tangente al final de la curva
       const tx = x2 - cpx;
       const ty = y2 - cpy;
       const tlen = Math.sqrt(tx * tx + ty * ty) || 1;
@@ -261,7 +279,6 @@ function drawAnnotation(
       const scx = (x1 + x2) / 2;
       const scy = (y1 + y2) / 2;
       const sr = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2) / 2;
-      // oscurece fuera del círculo
       ctx.save();
       ctx.fillStyle = 'rgba(0,0,0,0.55)';
       ctx.fillRect(0, 0, W, H);
@@ -270,7 +287,6 @@ function drawAnnotation(
       ctx.arc(scx, scy, sr, 0, Math.PI * 2);
       ctx.fill();
       ctx.restore();
-      // borde del spotlight
       ctx.beginPath();
       ctx.arc(scx, scy, sr, 0, Math.PI * 2);
       ctx.strokeStyle = ann.color;
@@ -329,18 +345,24 @@ const AnalisisTacticoPage: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // ── Filtros de revisión ──
+  // ── Filtros de lista ──
   const [filterMatchId, setFilterMatchId] = useState<string>('all');
   const [filterTorneo, setFilterTorneo] = useState<string>('all');
   const [filterCategoria, setFilterCategoria] = useState<string>('all');
 
-  // ── Video y captura de frame ──
+  // ── Selección de partido y video (igual que VideoTaggerPage) ──
+  const [selectedMatchId, setSelectedMatchId] = useState<string>('');
+  const [matchVideos, setMatchVideos] = useState<VideoMeta[]>([]);
+  const [loadingVideos, setLoadingVideos] = useState(false);
+  const [selectedVideoId, setSelectedVideoId] = useState<string>('');
+  const [selectedVideo, setSelectedVideo] = useState<VideoMeta | null>(null);
+
+  // ── Video físico y frame ──
   const videoRef = useRef<HTMLVideoElement>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoFileName, setVideoFileName] = useState<string>('');
   const [frameTimestamp, setFrameTimestamp] = useState<number | null>(null);
   const [frameDataUrl, setFrameDataUrl] = useState<string | null>(null);
-  const [selectedMatchId, setSelectedMatchId] = useState<string>('');
   const [secondsBefore, setSecondsBefore] = useState<number>(DEFAULT_SECONDS_BEFORE);
 
   // ── Canvas de dibujo ──
@@ -352,16 +374,15 @@ const AnalisisTacticoPage: React.FC = () => {
   const [description, setDescription] = useState<string>('');
   const [playerLabel, setPlayerLabel] = useState<string>('');
   const [textInput, setTextInput] = useState<string>('');
-
-  // ── Dibujo en progreso ──
   const isDrawing = useRef(false);
   const drawStart = useRef<{ x: number; y: number } | null>(null);
   const [previewAnn, setPreviewAnn] = useState<TacticalAnnotation | null>(null);
 
-  // ── Vista de análisis guardado ──
+  // ── Revisión ──
   const [selectedAnalysis, setSelectedAnalysis] = useState<TacticalAnalysis | null>(null);
   const reviewCanvasRef = useRef<HTMLCanvasElement>(null);
   const reviewVideoRef = useRef<HTMLVideoElement>(null);
+  const [reviewVideoUrl, setReviewVideoUrl] = useState<string | null>(null);
 
   // ── Vista activa ──
   const [view, setView] = useState<'list' | 'create' | 'review'>('list');
@@ -373,7 +394,6 @@ const AnalisisTacticoPage: React.FC = () => {
       setLoadingData(true);
       setError(null);
       try {
-        // Partidos — auxiliar solo ve su equipo
         let matchQuery = supabase.from('matches').select('*').order('fecha', { ascending: false });
         if (!isAdmin && profile?.team_id) {
           matchQuery = matchQuery.eq('team_id', profile.team_id);
@@ -382,7 +402,6 @@ const AnalisisTacticoPage: React.FC = () => {
         if (mErr) throw mErr;
         setMatches(matchesData || []);
 
-        // Análisis tácticos
         let analysisQuery = supabase
           .from('tactical_analysis')
           .select('*')
@@ -403,7 +422,49 @@ const AnalisisTacticoPage: React.FC = () => {
     fetchData();
   }, [isAdmin, profile?.team_id]);
 
-  // ─── Opciones de filtro ────────────────────────────────────────────────────
+  // ─── Cuando cambia el partido, cargar sus videos (igual que VideoTaggerPage) ──
+
+  useEffect(() => {
+    if (!selectedMatchId) {
+      setMatchVideos([]);
+      setSelectedVideoId('');
+      setSelectedVideo(null);
+      return;
+    }
+    const loadVideos = async () => {
+      setLoadingVideos(true);
+      try {
+        const videosData = await fetchVideosForMatch(selectedMatchId);
+        setMatchVideos(videosData || []);
+        // Auto-seleccionar el primero si hay videos
+        if (videosData && videosData.length > 0) {
+          setSelectedVideoId(videosData[0].id);
+          setSelectedVideo(videosData[0]);
+        } else {
+          setSelectedVideoId('');
+          setSelectedVideo(null);
+        }
+      } catch (err) {
+        console.warn('No se pudieron cargar los videos del partido', err);
+        setMatchVideos([]);
+      } finally {
+        setLoadingVideos(false);
+      }
+    };
+    loadVideos();
+  }, [selectedMatchId]);
+
+  // Sincronizar selectedVideo cuando cambia selectedVideoId
+  useEffect(() => {
+    const v = matchVideos.find(x => x.id === selectedVideoId) || null;
+    setSelectedVideo(v);
+    // Resetear frame y anotaciones al cambiar de video
+    setFrameDataUrl(null);
+    setFrameTimestamp(null);
+    setAnnotations([]);
+  }, [selectedVideoId, matchVideos]);
+
+  // ─── Opciones de filtro para la lista ─────────────────────────────────────
 
   const torneos = [...new Set(matches.map(m => m.torneo).filter(Boolean))];
   const categorias = [...new Set(matches.map(m => m.categoria).filter(Boolean))];
@@ -421,7 +482,21 @@ const AnalisisTacticoPage: React.FC = () => {
     return true;
   });
 
-  // ─── Cargar video ──────────────────────────────────────────────────────────
+  // ─── Helpers de tiempo ─────────────────────────────────────────────────────
+
+  // Timestamp absoluto del partido = offset del video + segundos dentro del archivo
+  const getAbsoluteTimestamp = (video: VideoMeta, tsInFile: number): number => {
+    const offset = parseOffset(video.start_offset_seconds?.toString() ?? '0');
+    return offset + tsInFile;
+  };
+
+  const getMatchLabel = (matchId: string) => {
+    const m = matches.find(x => x.id === matchId);
+    if (!m) return matchId;
+    return `${m.nombre_equipo} vs ${m.rival} — J${m.jornada} (${m.torneo})`;
+  };
+
+  // ─── Cargar video físico ───────────────────────────────────────────────────
 
   const handleVideoLoad = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -453,7 +528,7 @@ const AnalisisTacticoPage: React.FC = () => {
     setPreviewAnn(null);
   }, []);
 
-  // ─── Dibujar sobre canvas ─────────────────────────────────────────────────
+  // ─── Dibujar en canvas ─────────────────────────────────────────────────────
 
   const redrawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
@@ -538,7 +613,7 @@ const AnalisisTacticoPage: React.FC = () => {
   // ─── Guardar análisis ─────────────────────────────────────────────────────
 
   const saveAnalysis = async () => {
-    if (!selectedMatchId || frameTimestamp === null || annotations.length === 0) return;
+    if (!selectedMatchId || !selectedVideoId || frameTimestamp === null || annotations.length === 0) return;
     setSaving(true);
     try {
       const match = matches.find(m => m.id === selectedMatchId);
@@ -546,6 +621,7 @@ const AnalisisTacticoPage: React.FC = () => {
       const payload: TacticalAnalysisInsert = {
         match_id: selectedMatchId,
         team_id: teamId,
+        video_id: selectedVideoId,
         timestamp_video: frameTimestamp,
         annotations,
         description: description.trim() || undefined,
@@ -558,12 +634,15 @@ const AnalisisTacticoPage: React.FC = () => {
         .single();
       if (insertErr) throw insertErr;
       setAnalyses(prev => [data, ...prev]);
-      // Reset creador
+      // Reset
       setFrameDataUrl(null);
       setFrameTimestamp(null);
       setAnnotations([]);
       setDescription('');
       setSelectedMatchId('');
+      setSelectedVideoId('');
+      setSelectedVideo(null);
+      setMatchVideos([]);
       setView('list');
     } catch (err: any) {
       setError('Error al guardar el análisis.');
@@ -573,24 +652,24 @@ const AnalisisTacticoPage: React.FC = () => {
     }
   };
 
-  // ─── Revisar análisis guardado ─────────────────────────────────────────────
+  // ─── Abrir revisión ───────────────────────────────────────────────────────
 
   const openReview = (analysis: TacticalAnalysis) => {
     setSelectedAnalysis(analysis);
+    setReviewVideoUrl(null);
     setView('review');
   };
 
-  // Reconstruye el frame con anotaciones en el canvas de revisión
-  useEffect(() => {
-    if (view !== 'review' || !selectedAnalysis) return;
-    // El canvas de revisión espera el video cargado para capturar el frame
-    // Se renderiza cuando el video se posiciona en timestamp_video
-  }, [view, selectedAnalysis]);
+  const handleReviewVideoLoad = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (reviewVideoUrl) URL.revokeObjectURL(reviewVideoUrl);
+    setReviewVideoUrl(URL.createObjectURL(file));
+  };
 
   const handleReviewVideoLoaded = () => {
     const video = reviewVideoRef.current;
-    const canvas = reviewCanvasRef.current;
-    if (!video || !canvas || !selectedAnalysis) return;
+    if (!video || !selectedAnalysis) return;
     video.currentTime = selectedAnalysis.timestamp_video;
   };
 
@@ -614,7 +693,6 @@ const AnalisisTacticoPage: React.FC = () => {
     const startAt = Math.max(0, selectedAnalysis.timestamp_video - secondsBefore);
     video.currentTime = startAt;
     video.play();
-    // Detener en el frame del análisis
     const stopAt = selectedAnalysis.timestamp_video;
     const checkTime = () => {
       if (video.currentTime >= stopAt) {
@@ -623,18 +701,6 @@ const AnalisisTacticoPage: React.FC = () => {
       }
     };
     video.addEventListener('timeupdate', checkTime);
-  };
-
-  const formatTime = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = Math.floor(s % 60);
-    return `${m}:${sec.toString().padStart(2, '0')}`;
-  };
-
-  const getMatchLabel = (matchId: string) => {
-    const m = matches.find(x => x.id === matchId);
-    if (!m) return matchId;
-    return `${m.nombre_equipo} vs ${m.rival} — J${m.jornada} (${m.torneo})`;
   };
 
   // ─── Render ────────────────────────────────────────────────────────────────
@@ -647,13 +713,22 @@ const AnalisisTacticoPage: React.FC = () => {
     );
   }
 
-  // ── Vista: Revisión de análisis ──
+  // ── Vista: Revisión ──
   if (view === 'review' && selectedAnalysis) {
+    // Buscar el video registrado para mostrar su nombre y calcular timestamp absoluto
+    const reviewVideo = analyses
+      ? null
+      : null; // se resuelve abajo con un efecto si se necesita
+    const match = matches.find(m => m.id === selectedAnalysis.match_id);
+    const date = new Date(selectedAnalysis.created_at).toLocaleDateString('es-MX', {
+      day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
+    });
+
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-3">
           <button
-            onClick={() => { setView('list'); setSelectedAnalysis(null); }}
+            onClick={() => { setView('list'); setSelectedAnalysis(null); setReviewVideoUrl(null); }}
             className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm"
           >
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
@@ -664,59 +739,82 @@ const AnalisisTacticoPage: React.FC = () => {
           <h2 className="text-lg font-bold text-white">Revisión de Análisis</h2>
         </div>
 
+        {/* Info del análisis */}
         <div className="bg-gray-800 rounded-xl p-4 space-y-2">
           <p className="text-cyan-400 text-sm font-medium">{getMatchLabel(selectedAnalysis.match_id)}</p>
-          <p className="text-gray-400 text-xs">Frame: {formatTime(selectedAnalysis.timestamp_video)}</p>
+          <div className="flex flex-wrap gap-4 text-xs text-gray-400">
+            <span>
+              ⏱ En el video: <span className="text-white font-medium">{formatTime(selectedAnalysis.timestamp_video)}</span>
+            </span>
+            <span className="text-gray-600">·</span>
+            <span>{date}</span>
+          </div>
           {selectedAnalysis.description && (
-            <p className="text-gray-300 text-sm bg-gray-700/50 rounded p-2">{selectedAnalysis.description}</p>
+            <p className="text-gray-300 text-sm bg-gray-700/50 rounded p-2 mt-1">{selectedAnalysis.description}</p>
           )}
         </div>
 
         {/* Canvas reconstruido */}
-        <div className="bg-gray-900 rounded-xl overflow-hidden">
-          <canvas ref={reviewCanvasRef} className="w-full h-auto" />
-        </div>
-
-        {/* Reproducción con video */}
-        {videoUrl ? (
-          <div className="bg-gray-800 rounded-xl p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <p className="text-sm text-gray-400">Reproducir desde <span className="text-white font-medium">{secondsBefore}s</span> antes del frame</p>
-              <div className="flex items-center gap-2">
-                <label className="text-xs text-gray-500">Segundos antes:</label>
-                <input
-                  type="number"
-                  min={1} max={30}
-                  value={secondsBefore}
-                  onChange={e => setSecondsBefore(Number(e.target.value))}
-                  className="w-14 bg-gray-700 text-white text-center rounded px-2 py-1 text-sm border border-gray-600"
-                />
-              </div>
+        {reviewVideoUrl ? (
+          <>
+            <div className="bg-gray-900 rounded-xl overflow-hidden border border-gray-700">
+              <canvas ref={reviewCanvasRef} className="w-full h-auto" />
             </div>
-            <button
-              onClick={playFromBefore}
-              className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors"
-            >
-              <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-              Reproducir contexto
-            </button>
-            <video
-              ref={reviewVideoRef}
-              src={videoUrl}
-              className="w-full rounded-lg"
-              controls
-              onLoadedData={handleReviewVideoLoaded}
-              onSeeked={handleReviewSeeked}
-            />
-          </div>
+            <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <p className="text-sm text-gray-400">
+                  Reproducir desde <span className="text-white font-medium">{secondsBefore}s</span> antes del frame
+                </p>
+                <div className="flex items-center gap-2">
+                  <label className="text-xs text-gray-500">Segundos antes:</label>
+                  <input
+                    type="number"
+                    min={1} max={30}
+                    value={secondsBefore}
+                    onChange={e => setSecondsBefore(Number(e.target.value))}
+                    className="w-14 bg-gray-700 text-white text-center rounded px-2 py-1 text-sm border border-gray-600"
+                  />
+                </div>
+              </div>
+              <button
+                onClick={playFromBefore}
+                className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+                Reproducir contexto
+              </button>
+              <video
+                ref={reviewVideoRef}
+                src={reviewVideoUrl}
+                className="w-full rounded-lg"
+                controls
+                onLoadedData={handleReviewVideoLoaded}
+                onSeeked={handleReviewSeeked}
+              />
+            </div>
+          </>
         ) : (
-          <div className="bg-gray-800 rounded-xl p-4 text-center">
-            <p className="text-gray-500 text-sm">Carga el mismo video para reproducir el contexto</p>
-            <label className="mt-2 inline-block cursor-pointer px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm transition-colors">
+          <div className="bg-gray-800 rounded-xl p-6 text-center space-y-3">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-10 h-10 mx-auto text-gray-600">
+              <rect x="2" y="3" width="20" height="14" rx="2" />
+              <path d="M8 21h8M12 17v4" />
+            </svg>
+            <div>
+              <p className="text-gray-400 text-sm">
+                Carga el archivo <span className="text-white font-medium">{selectedAnalysis.video_id}</span> para reconstruir el frame y reproducir el contexto
+              </p>
+              <p className="text-gray-600 text-xs mt-1">
+                El frame se posicionará automáticamente en {formatTime(selectedAnalysis.timestamp_video)}
+              </p>
+            </div>
+            <label className="inline-flex items-center gap-2 cursor-pointer px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+                <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" />
+              </svg>
               Cargar video
-              <input type="file" accept="video/*" className="hidden" onChange={handleVideoLoad} />
+              <input type="file" accept="video/*" className="hidden" onChange={handleReviewVideoLoad} />
             </label>
           </div>
         )}
@@ -728,7 +826,6 @@ const AnalisisTacticoPage: React.FC = () => {
   if (view === 'create' && isAdmin) {
     return (
       <div className="space-y-4">
-        {/* Header */}
         <div className="flex items-center gap-3">
           <button
             onClick={() => setView('list')}
@@ -746,56 +843,140 @@ const AnalisisTacticoPage: React.FC = () => {
           <div className="bg-red-900/40 border border-red-500 rounded-lg p-3 text-red-300 text-sm">{error}</div>
         )}
 
-        {/* Configuración del análisis */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="bg-gray-800 rounded-xl p-4 space-y-3">
-            <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Partido</h3>
-            <select
-              value={selectedMatchId}
-              onChange={e => setSelectedMatchId(e.target.value)}
-              className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none"
-            >
-              <option value="">Selecciona un partido</option>
-              {matches.map(m => (
-                <option key={m.id} value={m.id}>
-                  {m.nombre_equipo} vs {m.rival} — J{m.jornada} ({m.torneo})
-                </option>
-              ))}
-            </select>
-          </div>
+        {/* Paso 1: Partido */}
+        <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+          <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+            <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">1</span>
+            Selecciona el partido
+          </h3>
+          <select
+            value={selectedMatchId}
+            onChange={e => {
+              setSelectedMatchId(e.target.value);
+              setFrameDataUrl(null);
+              setFrameTimestamp(null);
+              setAnnotations([]);
+            }}
+            className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none"
+          >
+            <option value="">Selecciona un partido</option>
+            {matches.map(m => (
+              <option key={m.id} value={m.id}>
+                {m.nombre_equipo} vs {m.rival} — J{m.jornada} · {m.torneo} · {m.categoria}
+              </option>
+            ))}
+          </select>
+        </div>
 
+        {/* Paso 2: Video registrado */}
+        {selectedMatchId && (
           <div className="bg-gray-800 rounded-xl p-4 space-y-3">
-            <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Video</h3>
+            <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">2</span>
+              Selecciona el video del partido
+            </h3>
+
+            {loadingVideos ? (
+              <div className="flex items-center gap-2 text-gray-400 text-sm">
+                <Spinner /> Cargando videos...
+              </div>
+            ) : matchVideos.length === 0 ? (
+              <div className="bg-amber-900/30 border border-amber-700 rounded-lg p-3">
+                <p className="text-amber-300 text-sm">Este partido no tiene videos registrados. Regístralos primero en el Etiquetador.</p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {matchVideos.map(v => {
+                  const offset = parseOffset(v.start_offset_seconds?.toString() ?? '0');
+                  return (
+                    <label
+                      key={v.id}
+                      className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+                        selectedVideoId === v.id
+                          ? 'border-cyan-500 bg-cyan-900/20'
+                          : 'border-gray-700 hover:border-gray-500'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="video"
+                        value={v.id}
+                        checked={selectedVideoId === v.id}
+                        onChange={() => setSelectedVideoId(v.id)}
+                        className="accent-cyan-500"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-white text-sm font-medium truncate">{v.video_file}</p>
+                        <p className="text-gray-500 text-xs">
+                          Inicia en el minuto <span className="text-gray-300">{formatTime(offset)}</span> del partido
+                        </p>
+                      </div>
+                      {selectedVideoId === v.id && (
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="w-4 h-4 text-cyan-400 flex-shrink-0">
+                          <path d="M5 13l4 4L19 7" />
+                        </svg>
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Paso 3: Archivo físico del video */}
+        {selectedVideoId && selectedVideo && (
+          <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+            <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">3</span>
+              Carga el archivo de video
+            </h3>
+            <p className="text-gray-500 text-xs">
+              Carga el archivo que corresponde a <span className="text-gray-300 font-medium">{selectedVideo.video_file}</span>
+            </p>
             {videoFileName ? (
               <div className="flex items-center gap-2">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-green-400 flex-shrink-0">
                   <path d="M5 13l4 4L19 7" />
                 </svg>
                 <span className="text-green-400 text-sm truncate">{videoFileName}</span>
+                <label className="ml-auto text-xs text-gray-500 cursor-pointer hover:text-gray-300 underline flex-shrink-0">
+                  Cambiar
+                  <input type="file" accept="video/*" className="hidden" onChange={handleVideoLoad} />
+                </label>
               </div>
             ) : (
               <label className="flex items-center gap-2 cursor-pointer px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-gray-300 transition-colors w-fit">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
                   <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" />
                 </svg>
-                Cargar video
+                Seleccionar archivo
                 <input type="file" accept="video/*" className="hidden" onChange={handleVideoLoad} />
               </label>
             )}
           </div>
-        </div>
+        )}
 
-        {/* Reproductor para capturar frame */}
-        {videoUrl && (
+        {/* Paso 4: Capturar frame */}
+        {videoUrl && selectedVideo && (
           <div className="bg-gray-800 rounded-xl p-4 space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Capturar Frame</h3>
-              {frameTimestamp !== null && (
-                <span className="text-xs text-cyan-400 bg-cyan-900/30 px-2 py-1 rounded">
-                  Frame capturado: {formatTime(frameTimestamp)}
+            <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">4</span>
+              Captura el frame a analizar
+            </h3>
+            {frameTimestamp !== null && selectedVideo && (
+              <div className="flex items-center gap-4 text-xs bg-gray-700/50 rounded-lg px-3 py-2">
+                <span className="text-gray-400">
+                  En el video: <span className="text-white font-medium">{formatTime(frameTimestamp)}</span>
                 </span>
-              )}
-            </div>
+                <span className="text-gray-600">→</span>
+                <span className="text-gray-400">
+                  Minuto del partido: <span className="text-cyan-400 font-medium">
+                    {formatTime(getAbsoluteTimestamp(selectedVideo, frameTimestamp))}
+                  </span>
+                </span>
+              </div>
+            )}
             <video ref={videoRef} src={videoUrl} className="w-full rounded-lg" controls />
             <button
               onClick={captureFrame}
@@ -810,11 +991,15 @@ const AnalisisTacticoPage: React.FC = () => {
           </div>
         )}
 
-        {/* Canvas de dibujo */}
+        {/* Paso 5: Dibujar anotaciones */}
         {frameDataUrl && (
           <div className="space-y-3">
-            {/* Barra de herramientas */}
             <div className="bg-gray-800 rounded-xl p-3 space-y-3">
+              <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
+                <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">5</span>
+                Dibuja las anotaciones
+              </h3>
+
               {/* Herramientas */}
               <div className="flex flex-wrap gap-1.5">
                 {TOOLS.map(tool => (
@@ -923,7 +1108,9 @@ const AnalisisTacticoPage: React.FC = () => {
                   </svg>
                   Limpiar todo
                 </button>
-                <span className="ml-auto text-xs text-gray-500">{annotations.length} anotacion{annotations.length !== 1 ? 'es' : ''}</span>
+                <span className="ml-auto text-xs text-gray-500">
+                  {annotations.length} anotacion{annotations.length !== 1 ? 'es' : ''}
+                </span>
               </div>
             </div>
 
@@ -956,7 +1143,7 @@ const AnalisisTacticoPage: React.FC = () => {
               />
               <button
                 onClick={saveAnalysis}
-                disabled={saving || !selectedMatchId || frameTimestamp === null || annotations.length === 0}
+                disabled={saving || !selectedMatchId || !selectedVideoId || frameTimestamp === null || annotations.length === 0}
                 className="flex items-center gap-2 px-5 py-2.5 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors"
               >
                 {saving ? <Spinner /> : (
@@ -974,15 +1161,16 @@ const AnalisisTacticoPage: React.FC = () => {
     );
   }
 
-  // ── Vista: Lista de análisis (default) ──
+  // ── Vista: Lista ──
   return (
     <div className="space-y-5">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">Análisis Táctico</h1>
           <p className="text-gray-400 text-sm mt-0.5">
-            {isAdmin ? 'Crea y revisa análisis tácticos con anotaciones sobre frames de video.' : 'Revisa los análisis tácticos de tu equipo.'}
+            {isAdmin
+              ? 'Crea y revisa análisis tácticos con anotaciones sobre frames de video.'
+              : 'Revisa los análisis tácticos de tu equipo.'}
           </p>
         </div>
         {isAdmin && (
@@ -1045,14 +1233,16 @@ const AnalisisTacticoPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Lista */}
+      {/* Lista de análisis */}
       {filteredAnalyses.length === 0 ? (
         <div className="text-center py-16 text-gray-500">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-12 h-12 mx-auto mb-3 opacity-40">
             <rect x="3" y="3" width="18" height="18" rx="2" />
             <path d="M3 9h18M9 21V9" />
           </svg>
-          <p className="text-sm">No hay análisis tácticos{filterMatchId !== 'all' || filterTorneo !== 'all' || filterCategoria !== 'all' ? ' con estos filtros' : ' guardados'}.</p>
+          <p className="text-sm">
+            No hay análisis tácticos{filterMatchId !== 'all' || filterTorneo !== 'all' || filterCategoria !== 'all' ? ' con estos filtros' : ' guardados'}.
+          </p>
           {isAdmin && (
             <button
               onClick={() => setView('create')}
@@ -1124,3 +1314,4 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
