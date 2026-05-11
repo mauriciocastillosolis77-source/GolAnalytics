@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { ROLES } from '../../constants';
-import { DashboardIcon, Logo, TaggerIcon, UsersIcon, RendimientoIcon } from '../ui/Icons';
+import { DashboardIcon, Logo, TaggerIcon, UsersIcon, RendimientoIcon, TacticalIcon } from '../ui/Icons';
 
 const _forceTailwindClasses = ["translate-x-0", "-translate-x-64"];
 
@@ -83,6 +83,17 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
             <span className="ml-3">Rendimiento</span>
           </NavLink>
 
+          <NavLink
+            to="/analisis-tactico"
+            className={({ isActive }) =>
+              `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
+            }
+            onClick={() => setSidebarOpen(false)}
+          >
+            <TacticalIcon />
+            <span className="ml-3">Análisis Táctico</span>
+          </NavLink>
+
           {profile?.rol === ROLES.ADMIN && (
             <>
               <NavLink
@@ -118,3 +129,4 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
 };
 
 export default Sidebar;
+
