@@ -181,6 +181,7 @@ export interface TacticalAnalysis {
   description?: string;
   created_by: string;
   created_at: string;
+  clip_storage_path?: string | null;  // Path en bucket tactical-clips — null si no se subió
 }
 
 export interface TacticalAnalysisInsert {
@@ -191,6 +192,8 @@ export interface TacticalAnalysisInsert {
   annotations: TacticalAnnotation[];
   description?: string;
   created_by: string;
+  clip_storage_path?: string | null;
 }
+
 
 
