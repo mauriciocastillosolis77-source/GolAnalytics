@@ -89,31 +89,15 @@ const parseOffset = (val: any): number => {
   return parseFloat(str) || 0;
 };
 
-// ─── Sistema de renderizado con aislamiento total por offscreen canvas ────────
-//
-// PROBLEMA ORIGINAL: globalCompositeOperation = 'destination-out' en el canvas
-// principal borraba píxeles del DOM completo del navegador, dejando la pantalla
-// en negro. Esto ocurre porque el contexto 2D del canvas es compartido y las
-// operaciones de compositing afectan todo lo dibujado hasta ese momento.
-//
-// SOLUCIÓN INTEGRAL: cada anotación se renderiza en su propio canvas offscreen
-// completamente aislado del DOM. El resultado se compone sobre el canvas
-// principal con drawImage(), que es una operación segura que nunca afecta
-// el estado del contexto principal ni el DOM del navegador.
+// ─── Canvas rendering ─────────────────────────────────────────────────────────
 
 function makeOffscreen(W: number, H: number): HTMLCanvasElement {
   const c = document.createElement('canvas');
-  c.width = W;
-  c.height = H;
+  c.width = W; c.height = H;
   return c;
 }
 
-function drawArrowhead(
-  ctx: CanvasRenderingContext2D,
-  x1: number, y1: number,
-  x2: number, y2: number,
-  size: number
-) {
+function drawArrowhead(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number, size: number) {
   const angle = Math.atan2(y2 - y1, x2 - x1);
   ctx.beginPath();
   ctx.moveTo(x2, y2);
@@ -123,52 +107,26 @@ function drawArrowhead(
   ctx.fill();
 }
 
-// Dibuja una anotación sobre el canvas principal usando un offscreen canvas
-// aislado para cada operación, luego compone el resultado con drawImage.
-function drawAnnotation(
-  mainCtx: CanvasRenderingContext2D,
-  ann: TacticalAnnotation,
-  W: number,
-  H: number
-) {
-  const x1 = ann.x1 * W;
-  const y1 = ann.y1 * H;
-  const x2 = (ann.x2 ?? ann.x1) * W;
-  const y2 = (ann.y2 ?? ann.y1) * H;
+function drawAnnotation(mainCtx: CanvasRenderingContext2D, ann: TacticalAnnotation, W: number, H: number) {
+  const x1 = ann.x1 * W, y1 = ann.y1 * H;
+  const x2 = (ann.x2 ?? ann.x1) * W, y2 = (ann.y2 ?? ann.y1) * H;
   const sw = ann.strokeWidth ?? 3;
   const opacity = ann.opacity ?? 0.28;
 
-  // ── SPOTLIGHT: canvas offscreen exclusivo con destination-out aislado ──────
-  // Esta es la operación crítica que causaba el bug. Al hacerla en un canvas
-  // completamente separado del DOM, destination-out solo afecta ese canvas
-  // temporal, nunca el principal ni el navegador.
   if (ann.type === 'spotlight') {
-    const scx = (x1 + x2) / 2;
-    const scy = (y1 + y2) / 2;
+    const scx = (x1 + x2) / 2, scy = (y1 + y2) / 2;
     const sr = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2) / 2;
     if (sr < 2) return;
-
-    // Offscreen exclusivo para el efecto de oscurecimiento
     const off = makeOffscreen(W, H);
     const offCtx = off.getContext('2d')!;
-
-    // 1. Fondo oscuro en el offscreen
     offCtx.fillStyle = 'rgba(0,0,0,0.62)';
     offCtx.fillRect(0, 0, W, H);
-
-    // 2. destination-out SOLO en el offscreen — recorta el círculo iluminado
     offCtx.globalCompositeOperation = 'destination-out';
     offCtx.beginPath();
     offCtx.arc(scx, scy, sr, 0, Math.PI * 2);
     offCtx.fill();
-
-    // 3. Resetear compositing del offscreen antes de componer
     offCtx.globalCompositeOperation = 'source-over';
-
-    // 4. Componer sobre el canvas principal con drawImage (operación segura)
     mainCtx.drawImage(off, 0, 0);
-
-    // 5. Borde del círculo directamente en el canvas principal (sin compositing)
     mainCtx.save();
     mainCtx.strokeStyle = ann.color;
     mainCtx.lineWidth = sw;
@@ -179,12 +137,8 @@ function drawAnnotation(
     return;
   }
 
-  // ── RESTO DE ANOTACIONES: offscreen propio para aislar estado del contexto ─
-  // Aunque no usan destination-out, cada anotación tiene su propio offscreen
-  // para que globalAlpha, setLineDash, etc. nunca contaminen el canvas principal.
   const off = makeOffscreen(W, H);
   const ctx = off.getContext('2d')!;
-
   ctx.strokeStyle = ann.color;
   ctx.fillStyle = ann.color;
   ctx.lineWidth = sw;
@@ -192,129 +146,71 @@ function drawAnnotation(
   ctx.lineJoin = 'round';
 
   switch (ann.type) {
-    case 'arrow': {
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
-      drawArrowhead(ctx, x1, y1, x2, y2, 10 + sw * 2);
-      break;
-    }
+    case 'arrow':
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      drawArrowhead(ctx, x1, y1, x2, y2, 10 + sw * 2); break;
     case 'arrow_curved': {
       const curve = ann.curvature ?? 0.35;
       const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-      const dx = x2 - x1, dy = y2 - y1;
-      const cpx = mx - dy * curve, cpy = my + dx * curve;
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.quadraticCurveTo(cpx, cpy, x2, y2);
-      ctx.stroke();
-      const tx = x2 - cpx, ty = y2 - cpy;
-      const tlen = Math.sqrt(tx * tx + ty * ty) || 1;
-      drawArrowhead(ctx, x2 - (tx / tlen) * 10, y2 - (ty / tlen) * 10, x2, y2, 10 + sw * 2);
-      break;
+      const cpx = mx - (y2 - y1) * curve, cpy = my + (x2 - x1) * curve;
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.quadraticCurveTo(cpx, cpy, x2, y2); ctx.stroke();
+      const tx = x2 - cpx, ty = y2 - cpy, tlen = Math.sqrt(tx * tx + ty * ty) || 1;
+      drawArrowhead(ctx, x2 - (tx / tlen) * 10, y2 - (ty / tlen) * 10, x2, y2, 10 + sw * 2); break;
     }
-    case 'arrow_player': {
-      ctx.setLineDash([8, 5]);
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      drawArrowhead(ctx, x1, y1, x2, y2, 10 + sw * 2);
-      break;
-    }
-    case 'line': {
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
-      break;
-    }
-    case 'line_dashed': {
-      ctx.setLineDash([10, 6]);
-      ctx.beginPath();
-      ctx.moveTo(x1, y1);
-      ctx.lineTo(x2, y2);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      break;
-    }
+    case 'arrow_player':
+      ctx.setLineDash([8, 5]); ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      ctx.setLineDash([]); drawArrowhead(ctx, x1, y1, x2, y2, 10 + sw * 2); break;
+    case 'line':
+      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); break;
+    case 'line_dashed':
+      ctx.setLineDash([10, 6]); ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+      ctx.setLineDash([]); break;
     case 'zone_rect': {
       const rx = Math.min(x1, x2), ry = Math.min(y1, y2);
       const rw = Math.abs(x2 - x1), rh = Math.abs(y2 - y1);
       if (rw < 1 || rh < 1) break;
-      ctx.globalAlpha = opacity;
-      ctx.fillRect(rx, ry, rw, rh);
-      ctx.globalAlpha = 1;
-      ctx.strokeRect(rx, ry, rw, rh);
-      break;
+      ctx.globalAlpha = opacity; ctx.fillRect(rx, ry, rw, rh);
+      ctx.globalAlpha = 1; ctx.strokeRect(rx, ry, rw, rh); break;
     }
     case 'zone_ellipse': {
       const ecx = (x1 + x2) / 2, ecy = (y1 + y2) / 2;
       const erx = Math.abs(x2 - x1) / 2, ery = Math.abs(y2 - y1) / 2;
       if (erx < 1 || ery < 1) break;
-      ctx.beginPath();
-      ctx.ellipse(ecx, ecy, erx, ery, 0, 0, Math.PI * 2);
-      ctx.globalAlpha = opacity;
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      ctx.stroke();
-      break;
+      ctx.beginPath(); ctx.ellipse(ecx, ecy, erx, ery, 0, 0, Math.PI * 2);
+      ctx.globalAlpha = opacity; ctx.fill(); ctx.globalAlpha = 1; ctx.stroke(); break;
     }
     case 'player_circle': {
       const pcx = (x1 + x2) / 2, pcy = (y1 + y2) / 2;
       const pr = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2) / 2;
       if (pr < 1) break;
-      ctx.globalAlpha = 0.85;
-      ctx.beginPath();
-      ctx.arc(pcx, pcy, pr, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.globalAlpha = 1;
-      ctx.stroke();
+      ctx.globalAlpha = 0.85; ctx.beginPath(); ctx.arc(pcx, pcy, pr, 0, Math.PI * 2);
+      ctx.fill(); ctx.globalAlpha = 1; ctx.stroke();
       if (ann.label) {
-        ctx.fillStyle = '#000000';
-        ctx.font = `bold ${Math.max(10, pr * 0.9)}px monospace`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#000'; ctx.font = `bold ${Math.max(10, pr * 0.9)}px monospace`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
         ctx.fillText(ann.label.slice(0, 3), pcx, pcy);
-      }
-      break;
+      } break;
     }
     case 'text': {
       if (!ann.text) break;
-      const fontSize = 14 + sw * 2;
-      ctx.font = `bold ${fontSize}px monospace`;
-      ctx.textAlign = 'left';
-      ctx.textBaseline = 'top';
-      const metrics = ctx.measureText(ann.text);
-      const pad = 4;
+      const fs = 14 + sw * 2;
+      ctx.font = `bold ${fs}px monospace`; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      const m = ctx.measureText(ann.text); const pad = 4;
       ctx.fillStyle = 'rgba(0,0,0,0.65)';
-      ctx.fillRect(x1 - pad, y1 - pad, metrics.width + pad * 2, fontSize + pad * 2);
-      ctx.fillStyle = ann.color;
-      ctx.fillText(ann.text, x1, y1);
-      break;
+      ctx.fillRect(x1 - pad, y1 - pad, m.width + pad * 2, fs + pad * 2);
+      ctx.fillStyle = ann.color; ctx.fillText(ann.text, x1, y1); break;
     }
-    default:
-      break;
+    default: break;
   }
-
-  // Componer el offscreen sobre el canvas principal
   mainCtx.drawImage(off, 0, 0);
 }
 
-// Renderiza el frame completo: imagen base + todas las anotaciones
-function renderFrame(
-  canvas: HTMLCanvasElement,
-  frameDataUrl: string,
-  annotations: TacticalAnnotation[]
-) {
+function renderFrame(canvas: HTMLCanvasElement, frameDataUrl: string, annotations: TacticalAnnotation[]) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const img = new Image();
   img.onload = () => {
-    canvas.width = img.width;
-    canvas.height = img.height;
+    canvas.width = img.width; canvas.height = img.height;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0);
     annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height));
@@ -324,19 +220,12 @@ function renderFrame(
 
 // ─── Extracción de clip ───────────────────────────────────────────────────────
 
-async function extractClip(
-  videoElement: HTMLVideoElement,
-  frameTimestamp: number,
-  secondsBefore: number
-): Promise<Blob> {
+async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: number, secondsBefore: number): Promise<Blob> {
   return new Promise((resolve, reject) => {
     const startAt = Math.max(0, frameTimestamp - secondsBefore);
     const duration = frameTimestamp - startAt;
-    const mimeType = MediaRecorder.isTypeSupported('video/mp4')
-      ? 'video/mp4'
-      : MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
-        ? 'video/webm;codecs=vp9'
-        : 'video/webm';
+    const mimeType = MediaRecorder.isTypeSupported('video/mp4') ? 'video/mp4'
+      : MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
     const stream = (videoElement as any).captureStream?.() ?? (videoElement as any).mozCaptureStream?.();
     if (!stream) { reject(new Error('captureStream no soportado')); return; }
     const recorder = new MediaRecorder(stream, { mimeType });
@@ -347,19 +236,15 @@ async function extractClip(
     videoElement.currentTime = startAt;
     videoElement.onseeked = () => {
       videoElement.onseeked = null;
-      recorder.start();
-      videoElement.play();
+      recorder.start(); videoElement.play();
       const check = () => {
         if (videoElement.currentTime >= frameTimestamp) {
-          videoElement.pause();
-          recorder.stop();
+          videoElement.pause(); recorder.stop();
           stream.getTracks().forEach((t: MediaStreamTrack) => t.stop());
         } else { requestAnimationFrame(check); }
       };
       requestAnimationFrame(check);
-      setTimeout(() => {
-        if (recorder.state === 'recording') { videoElement.pause(); recorder.stop(); }
-      }, (duration + 5) * 1000);
+      setTimeout(() => { if (recorder.state === 'recording') { videoElement.pause(); recorder.stop(); } }, (duration + 5) * 1000);
     };
   });
 }
@@ -406,8 +291,22 @@ const AnalisisTacticoPage: React.FC = () => {
   const [description, setDescription] = useState('');
   const [playerLabel, setPlayerLabel] = useState('');
   const [textInput, setTextInput] = useState('');
+
+  // ── FIX: refs para el estado del dibujo — accesibles desde listeners nativos ──
+  // El bug era: React synthetic events (onMouseUp) se ejecutan después de que
+  // el bundle minificado de Vercel limpia los refs. La solución es registrar
+  // los listeners a nivel de document con addEventListener nativo, que siempre
+  // captura el evento independientemente del estado de React.
   const isDrawing = useRef(false);
   const drawStart = useRef<{ x: number; y: number } | null>(null);
+  const activeToolRef = useRef<AnnotationType>('arrow');
+  const activeColorRef = useRef<string>(TOOL_COLORS[0]);
+  const activeStrokeRef = useRef<number>(3);
+  const playerLabelRef = useRef<string>('');
+  const textInputRef = useRef<string>('');
+  const frameDataUrlRef = useRef<string | null>(null);
+  const annotationsRef = useRef<TacticalAnnotation[]>([]);
+
   const [previewAnn, setPreviewAnn] = useState<TacticalAnnotation | null>(null);
 
   const [selectedAnalysis, setSelectedAnalysis] = useState<TacticalAnalysis | null>(null);
@@ -416,6 +315,15 @@ const AnalisisTacticoPage: React.FC = () => {
   const [loadingClip, setLoadingClip] = useState(false);
 
   const [view, setView] = useState<'list' | 'create' | 'review'>('list');
+
+  // Mantener refs sincronizados con el estado
+  useEffect(() => { activeToolRef.current = activeTool; }, [activeTool]);
+  useEffect(() => { activeColorRef.current = activeColor; }, [activeColor]);
+  useEffect(() => { activeStrokeRef.current = activeStroke; }, [activeStroke]);
+  useEffect(() => { playerLabelRef.current = playerLabel; }, [playerLabel]);
+  useEffect(() => { textInputRef.current = textInput; }, [textInput]);
+  useEffect(() => { frameDataUrlRef.current = frameDataUrl; }, [frameDataUrl]);
+  useEffect(() => { annotationsRef.current = annotations; }, [annotations]);
 
   // ─── Carga inicial ─────────────────────────────────────────────────────────
 
@@ -462,13 +370,13 @@ const AnalisisTacticoPage: React.FC = () => {
 
   useEffect(() => {
     if (view !== 'review' || !selectedAnalysis?.clip_storage_path) { setClipUrl(null); return; }
+    setLoadingClip(true);
     supabase.storage.from(CLIP_BUCKET)
       .createSignedUrl(selectedAnalysis.clip_storage_path!, 3600)
       .then(({ data, error }) => {
         setLoadingClip(false);
         if (!error && data) setClipUrl(data.signedUrl);
       });
-    setLoadingClip(true);
   }, [view, selectedAnalysis]);
 
   // ─── Canvas principal ─────────────────────────────────────────────────────
@@ -488,21 +396,115 @@ const AnalisisTacticoPage: React.FC = () => {
     const canvas = reviewCanvasRef.current;
     if (!canvas || !selectedAnalysis || !clipUrl) return;
     const tmp = document.createElement('video');
-    tmp.src = clipUrl;
-    tmp.crossOrigin = 'anonymous';
+    tmp.src = clipUrl; tmp.crossOrigin = 'anonymous';
     tmp.onloadeddata = () => { tmp.currentTime = tmp.duration - 0.05; };
     tmp.onseeked = () => {
       const off = makeOffscreen(tmp.videoWidth, tmp.videoHeight);
-      const offCtx = off.getContext('2d')!;
-      offCtx.drawImage(tmp, 0, 0);
+      off.getContext('2d')!.drawImage(tmp, 0, 0);
       renderFrame(canvas, off.toDataURL('image/jpeg', 0.92), selectedAnalysis.annotations);
     };
     tmp.load();
   }, [clipUrl, selectedAnalysis]);
 
+  useEffect(() => { if (view === 'review' && clipUrl) renderReviewFrame(); }, [view, clipUrl, renderReviewFrame]);
+
+  // ─── FIX: Listeners de dibujo a nivel de document ─────────────────────────
+  // Registrados con addEventListener nativo para garantizar que mouseup
+  // siempre se capture, incluso cuando el cursor sale del canvas durante el drag.
+  // Usamos refs para leer el estado más reciente sin cerrar sobre valores viejos.
+
+  const getCanvasCoordsFromEvent = useCallback((e: MouseEvent) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    // Verificar que el evento ocurrió dentro o fue iniciado desde el canvas
+    return {
+      x: Math.max(0, Math.min(1, (e.clientX - rect.left) * (canvas.width / rect.width) / canvas.width)),
+      y: Math.max(0, Math.min(1, (e.clientY - rect.top) * (canvas.height / rect.height) / canvas.height)),
+    };
+  }, []);
+
   useEffect(() => {
-    if (view === 'review' && clipUrl) renderReviewFrame();
-  }, [view, clipUrl, renderReviewFrame]);
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isDrawing.current || !drawStart.current) return;
+      if (activeToolRef.current === 'text') return;
+      const canvas = canvasRef.current;
+      if (!canvas || !frameDataUrlRef.current) return;
+      const coords = getCanvasCoordsFromEvent(e);
+      if (!coords) return;
+      setPreviewAnn({
+        id: '__preview__',
+        type: activeToolRef.current,
+        x1: drawStart.current.x, y1: drawStart.current.y,
+        x2: coords.x, y2: coords.y,
+        color: activeColorRef.current,
+        strokeWidth: activeStrokeRef.current,
+        opacity: 0.28,
+        label: playerLabelRef.current || undefined,
+      });
+    };
+
+    const handleMouseUp = (e: MouseEvent) => {
+      // Solo procesar si estábamos dibujando y tenemos un punto de inicio
+      if (!isDrawing.current || !drawStart.current) return;
+      isDrawing.current = false;
+
+      const canvas = canvasRef.current;
+      if (!canvas || !frameDataUrlRef.current) {
+        drawStart.current = null;
+        setPreviewAnn(null);
+        return;
+      }
+
+      const coords = getCanvasCoordsFromEvent(e);
+      const start = drawStart.current;
+      drawStart.current = null;
+      setPreviewAnn(null);
+
+      if (!coords) return;
+
+      // Ignorar clicks sin arrastre (excepto texto)
+      const tool = activeToolRef.current;
+      const dx = Math.abs(coords.x - start.x);
+      const dy = Math.abs(coords.y - start.y);
+      if (tool !== 'text' && dx < 0.005 && dy < 0.005) return;
+
+      const id = `ann_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const newAnn: TacticalAnnotation = {
+        id, type: tool,
+        x1: start.x, y1: start.y,
+        x2: tool === 'text' ? undefined : coords.x,
+        y2: tool === 'text' ? undefined : coords.y,
+        color: activeColorRef.current,
+        strokeWidth: activeStrokeRef.current,
+        opacity: 0.28,
+        label: tool === 'player_circle' ? (playerLabelRef.current || '?') : undefined,
+        text: tool === 'text' ? (textInputRef.current || 'Texto') : undefined,
+        dashed: tool === 'arrow_player' || tool === 'line_dashed',
+      };
+      setAnnotations(prev => [...prev, newAnn]);
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [getCanvasCoordsFromEvent]);
+
+  // onMouseDown sigue en el canvas porque necesitamos saber que el drag
+  // comenzó dentro del canvas, no en cualquier parte de la página.
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas || !frameDataUrlRef.current) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (e.clientX - rect.left) * (canvas.width / rect.width) / canvas.width));
+    const y = Math.max(0, Math.min(1, (e.clientY - rect.top) * (canvas.height / rect.height) / canvas.height));
+    isDrawing.current = true;
+    drawStart.current = { x, y };
+  };
 
   // ─── Filtros ───────────────────────────────────────────────────────────────
 
@@ -539,46 +541,6 @@ const AnalisisTacticoPage: React.FC = () => {
     setFrameTimestamp(v.currentTime);
     setAnnotations([]); setPreviewAnn(null);
   }, []);
-
-  const getCanvasCoords = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const c = canvasRef.current!; const r = c.getBoundingClientRect();
-    return {
-      x: (e.clientX - r.left) * (c.width / r.width) / c.width,
-      y: (e.clientY - r.top) * (c.height / r.height) / c.height,
-    };
-  };
-
-  const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const { x, y } = getCanvasCoords(e);
-    isDrawing.current = true; drawStart.current = { x, y };
-  };
-
-  const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing.current || !drawStart.current || activeTool === 'text') return;
-    const { x, y } = getCanvasCoords(e);
-    setPreviewAnn({ id: '__preview__', type: activeTool, x1: drawStart.current.x, y1: drawStart.current.y, x2: x, y2: y, color: activeColor, strokeWidth: activeStroke, opacity: 0.28, label: playerLabel || undefined });
-  };
-
-  const onMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing.current || !drawStart.current) return;
-    isDrawing.current = false;
-    const { x, y } = getCanvasCoords(e);
-    const dx = Math.abs(x - drawStart.current.x);
-    const dy = Math.abs(y - drawStart.current.y);
-    if (activeTool !== 'text' && dx < 0.005 && dy < 0.005) { setPreviewAnn(null); drawStart.current = null; return; }
-    const id = `ann_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    setAnnotations(prev => [...prev, {
-      id, type: activeTool,
-      x1: drawStart.current!.x, y1: drawStart.current!.y,
-      x2: activeTool === 'text' ? undefined : x,
-      y2: activeTool === 'text' ? undefined : y,
-      color: activeColor, strokeWidth: activeStroke, opacity: 0.28,
-      label: activeTool === 'player_circle' ? (playerLabel || '?') : undefined,
-      text: activeTool === 'text' ? (textInput || 'Texto') : undefined,
-      dashed: activeTool === 'arrow_player' || activeTool === 'line_dashed',
-    }]);
-    setPreviewAnn(null); drawStart.current = null;
-  };
 
   const saveAnalysis = async () => {
     if (!selectedMatchId || !selectedVideoId || frameTimestamp === null || annotations.length === 0) return;
@@ -621,9 +583,7 @@ const AnalisisTacticoPage: React.FC = () => {
   const deleteAnalysis = async (analysis: TacticalAnalysis) => {
     setDeletingId(analysis.id); setConfirmDeleteId(null);
     try {
-      if (analysis.clip_storage_path) {
-        await supabase.storage.from(CLIP_BUCKET).remove([analysis.clip_storage_path]);
-      }
+      if (analysis.clip_storage_path) await supabase.storage.from(CLIP_BUCKET).remove([analysis.clip_storage_path]);
       const { error: de } = await supabase.from('tactical_analysis').delete().eq('id', analysis.id);
       if (de) throw de;
       setAnalyses(prev => prev.filter(a => a.id !== analysis.id));
@@ -810,8 +770,7 @@ const AnalisisTacticoPage: React.FC = () => {
             )}
             <video ref={videoRef} src={videoUrl} className="w-full rounded-lg" controls />
             <button onClick={captureFrame} className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="12" cy="12" r="3" /></svg>
-              Capturar frame actual
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="12" cy="12" r="3" /></svg>Capturar frame actual
             </button>
           </div>
         )}
@@ -878,10 +837,12 @@ const AnalisisTacticoPage: React.FC = () => {
             </div>
 
             <div className="bg-gray-900 rounded-xl overflow-hidden border border-gray-700">
-              <canvas ref={canvasRef} className="w-full h-auto block"
+              <canvas
+                ref={canvasRef}
+                className="w-full h-auto block"
                 style={{ cursor: TOOLS.find(t => t.type === activeTool)?.cursor || 'crosshair' }}
-                onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp}
-                onMouseLeave={() => { if (isDrawing.current) { isDrawing.current = false; setPreviewAnn(null); } }} />
+                onMouseDown={handleCanvasMouseDown}
+              />
             </div>
 
             <div className="bg-gray-800 rounded-xl p-4 space-y-3">
@@ -914,13 +875,10 @@ const AnalisisTacticoPage: React.FC = () => {
         if (!a) return null;
         return <ConfirmDeleteModal analysis={a} onConfirm={() => deleteAnalysis(a)} onCancel={() => setConfirmDeleteId(null)} />;
       })()}
-
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">Análisis Táctico</h1>
-          <p className="text-gray-400 text-sm mt-0.5">
-            {isAdmin ? 'Crea y revisa análisis tácticos con anotaciones sobre frames de video.' : 'Revisa los análisis tácticos de tu equipo.'}
-          </p>
+          <p className="text-gray-400 text-sm mt-0.5">{isAdmin ? 'Crea y revisa análisis tácticos con anotaciones sobre frames de video.' : 'Revisa los análisis tácticos de tu equipo.'}</p>
         </div>
         {isAdmin && (
           <button onClick={() => setView('create')} className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors">
@@ -928,9 +886,7 @@ const AnalisisTacticoPage: React.FC = () => {
           </button>
         )}
       </div>
-
       {error && <div className="bg-red-900/40 border border-red-500 rounded-lg p-3 text-red-300 text-sm">{error}</div>}
-
       <div className="bg-gray-800 rounded-xl p-4">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div>
@@ -953,7 +909,6 @@ const AnalisisTacticoPage: React.FC = () => {
           </div>
         </div>
       </div>
-
       {filteredAnalyses.length === 0 ? (
         <div className="text-center py-16 text-gray-500">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-12 h-12 mx-auto mb-3 opacity-40"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M9 21V9" /></svg>
