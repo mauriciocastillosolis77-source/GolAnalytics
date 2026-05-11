@@ -77,22 +77,250 @@ const formatTime = (s: number): string => {
   return `${m}:${String(sec).padStart(2, '0')}`;
 };
 
-// PUNTO 3 FIX: start_offset_seconds viene de Supabase como número (ej. 1440),
-// no como string MM:SS. Detectamos el tipo antes de parsear.
 const parseOffset = (val: any): number => {
   if (val === null || val === undefined) return 0;
-  // Si ya es número, usarlo directamente
   if (typeof val === 'number') return isNaN(val) ? 0 : val;
-  // Si es string con formato MM:SS o HH:MM:SS
   const str = String(val).trim();
   if (str.includes(':')) {
     const parts = str.split(':').map(Number);
     if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
     if (parts.length === 2) return parts[0] * 60 + parts[1];
   }
-  // Número como string
   return parseFloat(str) || 0;
 };
+
+// ─── Sistema de renderizado con aislamiento total por offscreen canvas ────────
+//
+// PROBLEMA ORIGINAL: globalCompositeOperation = 'destination-out' en el canvas
+// principal borraba píxeles del DOM completo del navegador, dejando la pantalla
+// en negro. Esto ocurre porque el contexto 2D del canvas es compartido y las
+// operaciones de compositing afectan todo lo dibujado hasta ese momento.
+//
+// SOLUCIÓN INTEGRAL: cada anotación se renderiza en su propio canvas offscreen
+// completamente aislado del DOM. El resultado se compone sobre el canvas
+// principal con drawImage(), que es una operación segura que nunca afecta
+// el estado del contexto principal ni el DOM del navegador.
+
+function makeOffscreen(W: number, H: number): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.width = W;
+  c.height = H;
+  return c;
+}
+
+function drawArrowhead(
+  ctx: CanvasRenderingContext2D,
+  x1: number, y1: number,
+  x2: number, y2: number,
+  size: number
+) {
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - size * Math.cos(angle - Math.PI / 7), y2 - size * Math.sin(angle - Math.PI / 7));
+  ctx.lineTo(x2 - size * Math.cos(angle + Math.PI / 7), y2 - size * Math.sin(angle + Math.PI / 7));
+  ctx.closePath();
+  ctx.fill();
+}
+
+// Dibuja una anotación sobre el canvas principal usando un offscreen canvas
+// aislado para cada operación, luego compone el resultado con drawImage.
+function drawAnnotation(
+  mainCtx: CanvasRenderingContext2D,
+  ann: TacticalAnnotation,
+  W: number,
+  H: number
+) {
+  const x1 = ann.x1 * W;
+  const y1 = ann.y1 * H;
+  const x2 = (ann.x2 ?? ann.x1) * W;
+  const y2 = (ann.y2 ?? ann.y1) * H;
+  const sw = ann.strokeWidth ?? 3;
+  const opacity = ann.opacity ?? 0.28;
+
+  // ── SPOTLIGHT: canvas offscreen exclusivo con destination-out aislado ──────
+  // Esta es la operación crítica que causaba el bug. Al hacerla en un canvas
+  // completamente separado del DOM, destination-out solo afecta ese canvas
+  // temporal, nunca el principal ni el navegador.
+  if (ann.type === 'spotlight') {
+    const scx = (x1 + x2) / 2;
+    const scy = (y1 + y2) / 2;
+    const sr = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2) / 2;
+    if (sr < 2) return;
+
+    // Offscreen exclusivo para el efecto de oscurecimiento
+    const off = makeOffscreen(W, H);
+    const offCtx = off.getContext('2d')!;
+
+    // 1. Fondo oscuro en el offscreen
+    offCtx.fillStyle = 'rgba(0,0,0,0.62)';
+    offCtx.fillRect(0, 0, W, H);
+
+    // 2. destination-out SOLO en el offscreen — recorta el círculo iluminado
+    offCtx.globalCompositeOperation = 'destination-out';
+    offCtx.beginPath();
+    offCtx.arc(scx, scy, sr, 0, Math.PI * 2);
+    offCtx.fill();
+
+    // 3. Resetear compositing del offscreen antes de componer
+    offCtx.globalCompositeOperation = 'source-over';
+
+    // 4. Componer sobre el canvas principal con drawImage (operación segura)
+    mainCtx.drawImage(off, 0, 0);
+
+    // 5. Borde del círculo directamente en el canvas principal (sin compositing)
+    mainCtx.save();
+    mainCtx.strokeStyle = ann.color;
+    mainCtx.lineWidth = sw;
+    mainCtx.beginPath();
+    mainCtx.arc(scx, scy, sr, 0, Math.PI * 2);
+    mainCtx.stroke();
+    mainCtx.restore();
+    return;
+  }
+
+  // ── RESTO DE ANOTACIONES: offscreen propio para aislar estado del contexto ─
+  // Aunque no usan destination-out, cada anotación tiene su propio offscreen
+  // para que globalAlpha, setLineDash, etc. nunca contaminen el canvas principal.
+  const off = makeOffscreen(W, H);
+  const ctx = off.getContext('2d')!;
+
+  ctx.strokeStyle = ann.color;
+  ctx.fillStyle = ann.color;
+  ctx.lineWidth = sw;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  switch (ann.type) {
+    case 'arrow': {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      drawArrowhead(ctx, x1, y1, x2, y2, 10 + sw * 2);
+      break;
+    }
+    case 'arrow_curved': {
+      const curve = ann.curvature ?? 0.35;
+      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+      const dx = x2 - x1, dy = y2 - y1;
+      const cpx = mx - dy * curve, cpy = my + dx * curve;
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.quadraticCurveTo(cpx, cpy, x2, y2);
+      ctx.stroke();
+      const tx = x2 - cpx, ty = y2 - cpy;
+      const tlen = Math.sqrt(tx * tx + ty * ty) || 1;
+      drawArrowhead(ctx, x2 - (tx / tlen) * 10, y2 - (ty / tlen) * 10, x2, y2, 10 + sw * 2);
+      break;
+    }
+    case 'arrow_player': {
+      ctx.setLineDash([8, 5]);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      drawArrowhead(ctx, x1, y1, x2, y2, 10 + sw * 2);
+      break;
+    }
+    case 'line': {
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      break;
+    }
+    case 'line_dashed': {
+      ctx.setLineDash([10, 6]);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      break;
+    }
+    case 'zone_rect': {
+      const rx = Math.min(x1, x2), ry = Math.min(y1, y2);
+      const rw = Math.abs(x2 - x1), rh = Math.abs(y2 - y1);
+      if (rw < 1 || rh < 1) break;
+      ctx.globalAlpha = opacity;
+      ctx.fillRect(rx, ry, rw, rh);
+      ctx.globalAlpha = 1;
+      ctx.strokeRect(rx, ry, rw, rh);
+      break;
+    }
+    case 'zone_ellipse': {
+      const ecx = (x1 + x2) / 2, ecy = (y1 + y2) / 2;
+      const erx = Math.abs(x2 - x1) / 2, ery = Math.abs(y2 - y1) / 2;
+      if (erx < 1 || ery < 1) break;
+      ctx.beginPath();
+      ctx.ellipse(ecx, ecy, erx, ery, 0, 0, Math.PI * 2);
+      ctx.globalAlpha = opacity;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.stroke();
+      break;
+    }
+    case 'player_circle': {
+      const pcx = (x1 + x2) / 2, pcy = (y1 + y2) / 2;
+      const pr = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2) / 2;
+      if (pr < 1) break;
+      ctx.globalAlpha = 0.85;
+      ctx.beginPath();
+      ctx.arc(pcx, pcy, pr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.stroke();
+      if (ann.label) {
+        ctx.fillStyle = '#000000';
+        ctx.font = `bold ${Math.max(10, pr * 0.9)}px monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(ann.label.slice(0, 3), pcx, pcy);
+      }
+      break;
+    }
+    case 'text': {
+      if (!ann.text) break;
+      const fontSize = 14 + sw * 2;
+      ctx.font = `bold ${fontSize}px monospace`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      const metrics = ctx.measureText(ann.text);
+      const pad = 4;
+      ctx.fillStyle = 'rgba(0,0,0,0.65)';
+      ctx.fillRect(x1 - pad, y1 - pad, metrics.width + pad * 2, fontSize + pad * 2);
+      ctx.fillStyle = ann.color;
+      ctx.fillText(ann.text, x1, y1);
+      break;
+    }
+    default:
+      break;
+  }
+
+  // Componer el offscreen sobre el canvas principal
+  mainCtx.drawImage(off, 0, 0);
+}
+
+// Renderiza el frame completo: imagen base + todas las anotaciones
+function renderFrame(
+  canvas: HTMLCanvasElement,
+  frameDataUrl: string,
+  annotations: TacticalAnnotation[]
+) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const img = new Image();
+  img.onload = () => {
+    canvas.width = img.width;
+    canvas.height = img.height;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0);
+    annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height));
+  };
+  img.src = frameDataUrl;
+}
 
 // ─── Extracción de clip ───────────────────────────────────────────────────────
 
@@ -104,22 +332,18 @@ async function extractClip(
   return new Promise((resolve, reject) => {
     const startAt = Math.max(0, frameTimestamp - secondsBefore);
     const duration = frameTimestamp - startAt;
-
     const mimeType = MediaRecorder.isTypeSupported('video/mp4')
       ? 'video/mp4'
       : MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
         ? 'video/webm;codecs=vp9'
         : 'video/webm';
-
     const stream = (videoElement as any).captureStream?.() ?? (videoElement as any).mozCaptureStream?.();
     if (!stream) { reject(new Error('captureStream no soportado')); return; }
-
     const recorder = new MediaRecorder(stream, { mimeType });
     const chunks: BlobPart[] = [];
     recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
     recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
     recorder.onerror = e => reject(e);
-
     videoElement.currentTime = startAt;
     videoElement.onseeked = () => {
       videoElement.onseeked = null;
@@ -133,95 +357,11 @@ async function extractClip(
         } else { requestAnimationFrame(check); }
       };
       requestAnimationFrame(check);
-      setTimeout(() => { if (recorder.state === 'recording') { videoElement.pause(); recorder.stop(); } }, (duration + 5) * 1000);
+      setTimeout(() => {
+        if (recorder.state === 'recording') { videoElement.pause(); recorder.stop(); }
+      }, (duration + 5) * 1000);
     };
   });
-}
-
-// ─── Canvas helpers ───────────────────────────────────────────────────────────
-
-function drawArrowhead(ctx: CanvasRenderingContext2D, x1: number, y1: number, x2: number, y2: number, size = 14) {
-  const angle = Math.atan2(y2 - y1, x2 - x1);
-  ctx.beginPath();
-  ctx.moveTo(x2, y2);
-  ctx.lineTo(x2 - size * Math.cos(angle - Math.PI / 7), y2 - size * Math.sin(angle - Math.PI / 7));
-  ctx.lineTo(x2 - size * Math.cos(angle + Math.PI / 7), y2 - size * Math.sin(angle + Math.PI / 7));
-  ctx.closePath();
-  ctx.fill();
-}
-
-function drawAnnotation(ctx: CanvasRenderingContext2D, ann: TacticalAnnotation, W: number, H: number) {
-  const x1 = ann.x1 * W, y1 = ann.y1 * H;
-  const x2 = (ann.x2 ?? ann.x1) * W, y2 = (ann.y2 ?? ann.y1) * H;
-  const sw = ann.strokeWidth ?? 3;
-  const opacity = ann.opacity ?? 0.28;
-  ctx.save();
-  ctx.strokeStyle = ann.color; ctx.fillStyle = ann.color;
-  ctx.lineWidth = sw; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  switch (ann.type) {
-    case 'arrow':
-      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-      drawArrowhead(ctx, x1, y1, x2, y2, 10 + sw * 2); break;
-    case 'arrow_curved': {
-      const curve = ann.curvature ?? 0.35;
-      const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
-      const dx = x2 - x1, dy = y2 - y1;
-      const cpx = mx - dy * curve, cpy = my + dx * curve;
-      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.quadraticCurveTo(cpx, cpy, x2, y2); ctx.stroke();
-      const tx = x2 - cpx, ty = y2 - cpy, tlen = Math.sqrt(tx * tx + ty * ty) || 1;
-      drawArrowhead(ctx, x2 - (tx / tlen) * 10, y2 - (ty / tlen) * 10, x2, y2, 10 + sw * 2); break;
-    }
-    case 'arrow_player':
-      ctx.setLineDash([8, 5]); ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-      ctx.setLineDash([]); drawArrowhead(ctx, x1, y1, x2, y2, 10 + sw * 2); break;
-    case 'line':
-      ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); break;
-    case 'line_dashed':
-      ctx.setLineDash([10, 6]); ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-      ctx.setLineDash([]); break;
-    case 'zone_rect': {
-      const rx = Math.min(x1, x2), ry = Math.min(y1, y2);
-      const rw = Math.abs(x2 - x1), rh = Math.abs(y2 - y1);
-      ctx.globalAlpha = opacity; ctx.fillRect(rx, ry, rw, rh);
-      ctx.globalAlpha = 1; ctx.strokeRect(rx, ry, rw, rh); break;
-    }
-    case 'zone_ellipse': {
-      const ecx = (x1 + x2) / 2, ecy = (y1 + y2) / 2;
-      const erx = Math.abs(x2 - x1) / 2, ery = Math.abs(y2 - y1) / 2;
-      ctx.beginPath(); ctx.ellipse(ecx, ecy, erx, ery, 0, 0, Math.PI * 2);
-      ctx.globalAlpha = opacity; ctx.fill(); ctx.globalAlpha = 1; ctx.stroke(); break;
-    }
-    case 'spotlight': {
-      const scx = (x1 + x2) / 2, scy = (y1 + y2) / 2;
-      const sr = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2) / 2;
-      ctx.save(); ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, H);
-      ctx.globalCompositeOperation = 'destination-out';
-      ctx.beginPath(); ctx.arc(scx, scy, sr, 0, Math.PI * 2); ctx.fill(); ctx.restore();
-      ctx.beginPath(); ctx.arc(scx, scy, sr, 0, Math.PI * 2);
-      ctx.strokeStyle = ann.color; ctx.lineWidth = sw; ctx.stroke(); break;
-    }
-    case 'player_circle': {
-      const pcx = (x1 + x2) / 2, pcy = (y1 + y2) / 2;
-      const pr = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2) / 2;
-      ctx.globalAlpha = 0.85; ctx.beginPath(); ctx.arc(pcx, pcy, pr, 0, Math.PI * 2);
-      ctx.fill(); ctx.globalAlpha = 1; ctx.stroke();
-      if (ann.label) {
-        ctx.fillStyle = '#000'; ctx.font = `bold ${Math.max(10, pr * 0.9)}px monospace`;
-        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-        ctx.fillText(ann.label.slice(0, 3), pcx, pcy);
-      } break;
-    }
-    case 'text':
-      if (ann.text) {
-        const fontSize = 14 + sw * 2;
-        ctx.font = `bold ${fontSize}px monospace`; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
-        const metrics = ctx.measureText(ann.text); const pad = 4;
-        ctx.fillStyle = 'rgba(0,0,0,0.65)';
-        ctx.fillRect(x1 - pad, y1 - pad, metrics.width + pad * 2, fontSize + pad * 2);
-        ctx.fillStyle = ann.color; ctx.fillText(ann.text, x1, y1);
-      } break;
-  }
-  ctx.restore();
 }
 
 // ─── Componente principal ─────────────────────────────────────────────────────
@@ -238,7 +378,6 @@ const AnalisisTacticoPage: React.FC = () => {
   const [uploadProgress, setUploadProgress] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  // ── Eliminar ──
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
@@ -284,25 +423,21 @@ const AnalisisTacticoPage: React.FC = () => {
     const fetchData = async () => {
       setLoadingData(true); setError(null);
       try {
-        let matchQuery = supabase.from('matches').select('*').order('fecha', { ascending: false });
-        if (!isAdmin && profile?.team_id) matchQuery = matchQuery.eq('team_id', profile.team_id);
-        const { data: matchesData, error: mErr } = await matchQuery;
+        let mq = supabase.from('matches').select('*').order('fecha', { ascending: false });
+        if (!isAdmin && profile?.team_id) mq = mq.eq('team_id', profile.team_id);
+        const { data: md, error: mErr } = await mq;
         if (mErr) throw mErr;
-        setMatches(matchesData || []);
-
-        let analysisQuery = supabase.from('tactical_analysis').select('*').order('created_at', { ascending: false });
-        if (!isAdmin && profile?.team_id) analysisQuery = analysisQuery.eq('team_id', profile.team_id);
-        const { data: analysisData, error: aErr } = await analysisQuery;
+        setMatches(md || []);
+        let aq = supabase.from('tactical_analysis').select('*').order('created_at', { ascending: false });
+        if (!isAdmin && profile?.team_id) aq = aq.eq('team_id', profile.team_id);
+        const { data: ad, error: aErr } = await aq;
         if (aErr) throw aErr;
-        setAnalyses(analysisData || []);
-      } catch (err: any) {
-        setError('No se pudieron cargar los datos.');
-      } finally { setLoadingData(false); }
+        setAnalyses(ad || []);
+      } catch { setError('No se pudieron cargar los datos.'); }
+      finally { setLoadingData(false); }
     };
     fetchData();
   }, [isAdmin, profile?.team_id]);
-
-  // ─── Videos del partido ────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!selectedMatchId) { setMatchVideos([]); setSelectedVideoId(''); setSelectedVideo(null); return; }
@@ -311,7 +446,7 @@ const AnalisisTacticoPage: React.FC = () => {
       try {
         const data = await fetchVideosForMatch(selectedMatchId);
         setMatchVideos(data || []);
-        if (data && data.length > 0) { setSelectedVideoId(data[0].id); setSelectedVideo(data[0]); }
+        if (data?.length) { setSelectedVideoId(data[0].id); setSelectedVideo(data[0]); }
         else { setSelectedVideoId(''); setSelectedVideo(null); }
       } catch { setMatchVideos([]); }
       finally { setLoadingVideos(false); }
@@ -325,23 +460,49 @@ const AnalisisTacticoPage: React.FC = () => {
     setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]);
   }, [selectedVideoId, matchVideos]);
 
-  // ─── URL firmada del clip en revisión ─────────────────────────────────────
-
   useEffect(() => {
     if (view !== 'review' || !selectedAnalysis?.clip_storage_path) { setClipUrl(null); return; }
-    const getClipUrl = async () => {
-      setLoadingClip(true);
-      try {
-        const { data, error } = await supabase.storage
-          .from(CLIP_BUCKET)
-          .createSignedUrl(selectedAnalysis.clip_storage_path!, 3600);
-        if (error) throw error;
-        setClipUrl(data.signedUrl);
-      } catch { setClipUrl(null); }
-      finally { setLoadingClip(false); }
-    };
-    getClipUrl();
+    supabase.storage.from(CLIP_BUCKET)
+      .createSignedUrl(selectedAnalysis.clip_storage_path!, 3600)
+      .then(({ data, error }) => {
+        setLoadingClip(false);
+        if (!error && data) setClipUrl(data.signedUrl);
+      });
+    setLoadingClip(true);
   }, [view, selectedAnalysis]);
+
+  // ─── Canvas principal ─────────────────────────────────────────────────────
+
+  const redrawCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !frameDataUrl) return;
+    const allAnns = previewAnn ? [...annotations, previewAnn] : annotations;
+    renderFrame(canvas, frameDataUrl, allAnns);
+  }, [frameDataUrl, annotations, previewAnn]);
+
+  useEffect(() => { redrawCanvas(); }, [redrawCanvas]);
+
+  // ─── Canvas de revisión ───────────────────────────────────────────────────
+
+  const renderReviewFrame = useCallback(() => {
+    const canvas = reviewCanvasRef.current;
+    if (!canvas || !selectedAnalysis || !clipUrl) return;
+    const tmp = document.createElement('video');
+    tmp.src = clipUrl;
+    tmp.crossOrigin = 'anonymous';
+    tmp.onloadeddata = () => { tmp.currentTime = tmp.duration - 0.05; };
+    tmp.onseeked = () => {
+      const off = makeOffscreen(tmp.videoWidth, tmp.videoHeight);
+      const offCtx = off.getContext('2d')!;
+      offCtx.drawImage(tmp, 0, 0);
+      renderFrame(canvas, off.toDataURL('image/jpeg', 0.92), selectedAnalysis.annotations);
+    };
+    tmp.load();
+  }, [clipUrl, selectedAnalysis]);
+
+  useEffect(() => {
+    if (view === 'review' && clipUrl) renderReviewFrame();
+  }, [view, clipUrl, renderReviewFrame]);
 
   // ─── Filtros ───────────────────────────────────────────────────────────────
 
@@ -355,62 +516,35 @@ const AnalisisTacticoPage: React.FC = () => {
     return true;
   });
 
-  const getAbsoluteTimestamp = (video: VideoMeta, ts: number) => parseOffset(video.start_offset_seconds) + ts;
-  const getMatchLabel = (matchId: string) => {
-    const m = matches.find(x => x.id === matchId);
-    return m ? `${m.nombre_equipo} vs ${m.rival} — J${m.jornada} (${m.torneo})` : matchId;
+  const getAbsoluteTs = (video: VideoMeta, ts: number) => parseOffset(video.start_offset_seconds) + ts;
+  const getMatchLabel = (id: string) => {
+    const m = matches.find(x => x.id === id);
+    return m ? `${m.nombre_equipo} vs ${m.rival} — J${m.jornada} (${m.torneo})` : id;
   };
 
-  // ─── Cargar video físico ───────────────────────────────────────────────────
+  // ─── Handlers ─────────────────────────────────────────────────────────────
 
   const handleVideoLoad = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const file = e.target.files?.[0]; if (!file) return;
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     setVideoUrl(URL.createObjectURL(file)); setVideoFileName(file.name);
     setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]);
   };
 
-  // ─── Capturar frame ───────────────────────────────────────────────────────
-
   const captureFrame = useCallback(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    const offscreen = document.createElement('canvas');
-    offscreen.width = video.videoWidth; offscreen.height = video.videoHeight;
-    const ctx = offscreen.getContext('2d');
-    if (!ctx) return;
-    ctx.drawImage(video, 0, 0);
-    setFrameDataUrl(offscreen.toDataURL('image/jpeg', 0.92));
-    setFrameTimestamp(video.currentTime);
+    const v = videoRef.current; if (!v) return;
+    const off = makeOffscreen(v.videoWidth, v.videoHeight);
+    off.getContext('2d')!.drawImage(v, 0, 0);
+    setFrameDataUrl(off.toDataURL('image/jpeg', 0.92));
+    setFrameTimestamp(v.currentTime);
     setAnnotations([]); setPreviewAnn(null);
   }, []);
 
-  // ─── Canvas ────────────────────────────────────────────────────────────────
-
-  const redrawCanvas = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !frameDataUrl) return;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-    const img = new Image();
-    img.onload = () => {
-      canvas.width = img.width; canvas.height = img.height;
-      ctx.drawImage(img, 0, 0);
-      annotations.forEach(a => drawAnnotation(ctx, a, canvas.width, canvas.height));
-      if (previewAnn) drawAnnotation(ctx, previewAnn, canvas.width, canvas.height);
-    };
-    img.src = frameDataUrl;
-  }, [frameDataUrl, annotations, previewAnn]);
-
-  useEffect(() => { redrawCanvas(); }, [redrawCanvas]);
-
   const getCanvasCoords = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current!;
-    const rect = canvas.getBoundingClientRect();
+    const c = canvasRef.current!; const r = c.getBoundingClientRect();
     return {
-      x: (e.clientX - rect.left) * (canvas.width / rect.width) / canvas.width,
-      y: (e.clientY - rect.top) * (canvas.height / rect.height) / canvas.height,
+      x: (e.clientX - r.left) * (c.width / r.width) / c.width,
+      y: (e.clientY - r.top) * (c.height / r.height) / c.height,
     };
   };
 
@@ -429,6 +563,9 @@ const AnalisisTacticoPage: React.FC = () => {
     if (!isDrawing.current || !drawStart.current) return;
     isDrawing.current = false;
     const { x, y } = getCanvasCoords(e);
+    const dx = Math.abs(x - drawStart.current.x);
+    const dy = Math.abs(y - drawStart.current.y);
+    if (activeTool !== 'text' && dx < 0.005 && dy < 0.005) { setPreviewAnn(null); drawStart.current = null; return; }
     const id = `ann_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     setAnnotations(prev => [...prev, {
       id, type: activeTool,
@@ -443,30 +580,24 @@ const AnalisisTacticoPage: React.FC = () => {
     setPreviewAnn(null); drawStart.current = null;
   };
 
-  // ─── Guardar análisis ─────────────────────────────────────────────────────
-
   const saveAnalysis = async () => {
     if (!selectedMatchId || !selectedVideoId || frameTimestamp === null || annotations.length === 0) return;
-    const video = videoRef.current;
-    if (!video) return;
+    const video = videoRef.current; if (!video) return;
     setSaving(true); setError(null);
     let clipStoragePath: string | null = null;
     try {
       setUploadingClip(true); setUploadProgress('Extrayendo clip de video...');
       let clipBlob: Blob | null = null;
       try { clipBlob = await extractClip(video, frameTimestamp, secondsBefore); }
-      catch (clipErr) { console.warn('No se pudo extraer el clip:', clipErr); }
-
+      catch (err) { console.warn('No se pudo extraer el clip:', err); }
       if (clipBlob) {
         setUploadProgress('Subiendo clip a Storage...');
         const ext = clipBlob.type.includes('mp4') ? 'mp4' : 'webm';
         const fileName = `${user!.id}/${selectedMatchId}/${Date.now()}.${ext}`;
-        const { data: uploadData, error: uploadErr } = await supabase.storage
-          .from(CLIP_BUCKET).upload(fileName, clipBlob, { contentType: clipBlob.type, upsert: false });
-        if (uploadErr) console.warn('Error subiendo clip:', uploadErr);
-        else clipStoragePath = uploadData.path;
+        const { data: ud, error: ue } = await supabase.storage.from(CLIP_BUCKET).upload(fileName, clipBlob, { contentType: clipBlob.type, upsert: false });
+        if (ue) console.warn('Error subiendo clip:', ue);
+        else clipStoragePath = ud.path;
       }
-
       setUploadingClip(false); setUploadProgress('Guardando análisis...');
       const match = matches.find(m => m.id === selectedMatchId);
       const teamId = match?.team_id ?? profile?.team_id ?? '';
@@ -476,83 +607,43 @@ const AnalisisTacticoPage: React.FC = () => {
         description: description.trim() || undefined,
         created_by: user!.id, clip_storage_path: clipStoragePath,
       };
-      const { data, error: insertErr } = await supabase.from('tactical_analysis').insert(payload).select().single();
-      if (insertErr) throw insertErr;
+      const { data, error: ie } = await supabase.from('tactical_analysis').insert(payload).select().single();
+      if (ie) throw ie;
       setAnalyses(prev => [data, ...prev]);
       setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]);
       setDescription(''); setSelectedMatchId(''); setSelectedVideoId('');
       setSelectedVideo(null); setMatchVideos([]);
       setUploadProgress(''); setView('list');
-    } catch (err: any) {
-      setError('Error al guardar el análisis.'); console.error(err);
-    } finally { setSaving(false); setUploadingClip(false); setUploadProgress(''); }
+    } catch (err) { setError('Error al guardar el análisis.'); console.error(err); }
+    finally { setSaving(false); setUploadingClip(false); setUploadProgress(''); }
   };
 
-  // ─── Eliminar análisis (PUNTO 2) ──────────────────────────────────────────
-
   const deleteAnalysis = async (analysis: TacticalAnalysis) => {
-    setDeletingId(analysis.id);
-    setConfirmDeleteId(null);
+    setDeletingId(analysis.id); setConfirmDeleteId(null);
     try {
-      // 1. Borrar clip de Storage si existe
       if (analysis.clip_storage_path) {
-        const { error: storageErr } = await supabase.storage
-          .from(CLIP_BUCKET)
-          .remove([analysis.clip_storage_path]);
-        if (storageErr) console.warn('No se pudo borrar el clip de Storage:', storageErr);
+        await supabase.storage.from(CLIP_BUCKET).remove([analysis.clip_storage_path]);
       }
-      // 2. Borrar registro de la tabla
-      const { error: deleteErr } = await supabase
-        .from('tactical_analysis')
-        .delete()
-        .eq('id', analysis.id);
-      if (deleteErr) throw deleteErr;
-
-      // 3. Actualizar estado local
+      const { error: de } = await supabase.from('tactical_analysis').delete().eq('id', analysis.id);
+      if (de) throw de;
       setAnalyses(prev => prev.filter(a => a.id !== analysis.id));
-
-      // Si estábamos en la vista de revisión, volver a la lista
       if (view === 'review' && selectedAnalysis?.id === analysis.id) {
         setSelectedAnalysis(null); setClipUrl(null); setView('list');
       }
-    } catch (err: any) {
-      setError('Error al eliminar el análisis.');
-      console.error(err);
-    } finally { setDeletingId(null); }
+    } catch { setError('Error al eliminar el análisis.'); }
+    finally { setDeletingId(null); }
   };
 
-  // ─── Reconstruir frame en revisión ────────────────────────────────────────
+  // ─── Modal confirmación ───────────────────────────────────────────────────
 
-  const renderReviewFrame = useCallback(() => {
-    const canvas = reviewCanvasRef.current;
-    if (!canvas || !selectedAnalysis || !clipUrl) return;
-    const tempVideo = document.createElement('video');
-    tempVideo.src = clipUrl; tempVideo.crossOrigin = 'anonymous';
-    tempVideo.onloadeddata = () => { tempVideo.currentTime = tempVideo.duration - 0.05; };
-    tempVideo.onseeked = () => {
-      canvas.width = tempVideo.videoWidth; canvas.height = tempVideo.videoHeight;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
-      ctx.drawImage(tempVideo, 0, 0);
-      selectedAnalysis.annotations.forEach(a => drawAnnotation(ctx, a, canvas.width, canvas.height));
-    };
-    tempVideo.load();
-  }, [clipUrl, selectedAnalysis]);
-
-  useEffect(() => { if (view === 'review' && clipUrl) renderReviewFrame(); }, [view, clipUrl, renderReviewFrame]);
-
-  // ─── Modal de confirmación de eliminación ─────────────────────────────────
-
-  const ConfirmDeleteModal: React.FC<{ analysis: TacticalAnalysis; onConfirm: () => void; onCancel: () => void }> = ({ analysis, onConfirm, onCancel }) => {
+  const ConfirmDeleteModal = ({ analysis, onConfirm, onCancel }: { analysis: TacticalAnalysis; onConfirm: () => void; onCancel: () => void }) => {
     const match = matches.find(m => m.id === analysis.match_id);
     return (
       <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
         <div className="bg-gray-800 rounded-xl p-6 max-w-sm w-full border border-red-800 space-y-4">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-red-900/50 flex items-center justify-center flex-shrink-0">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5 text-red-400">
-                <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
-              </svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5 text-red-400"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>
             </div>
             <div>
               <h3 className="text-white font-semibold">Eliminar análisis</h3>
@@ -564,12 +655,8 @@ const AnalisisTacticoPage: React.FC = () => {
             {analysis.clip_storage_path && <span className="block mt-1 text-xs text-gray-500">El clip de video también será eliminado.</span>}
           </p>
           <div className="flex gap-3 justify-end">
-            <button onClick={onCancel} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-sm transition-colors">
-              Cancelar
-            </button>
-            <button onClick={onConfirm} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition-colors">
-              Sí, eliminar
-            </button>
+            <button onClick={onCancel} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-sm transition-colors">Cancelar</button>
+            <button onClick={onConfirm} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition-colors">Sí, eliminar</button>
           </div>
         </div>
       </div>
@@ -580,70 +667,40 @@ const AnalisisTacticoPage: React.FC = () => {
 
   if (loadingData) return <div className="flex items-center justify-center h-64"><Spinner /></div>;
 
-  // ── Vista: Revisión ──
+  // ── Revisión ──
   if (view === 'review' && selectedAnalysis) {
-    const match = matches.find(m => m.id === selectedAnalysis.match_id);
-    const date = new Date(selectedAnalysis.created_at).toLocaleDateString('es-MX', {
-      day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit',
-    });
-
+    const date = new Date(selectedAnalysis.created_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
     return (
       <div className="space-y-4">
-        {/* Confirm delete modal */}
         {confirmDeleteId === selectedAnalysis.id && (
-          <ConfirmDeleteModal
-            analysis={selectedAnalysis}
-            onConfirm={() => deleteAnalysis(selectedAnalysis)}
-            onCancel={() => setConfirmDeleteId(null)}
-          />
+          <ConfirmDeleteModal analysis={selectedAnalysis} onConfirm={() => deleteAnalysis(selectedAnalysis)} onCancel={() => setConfirmDeleteId(null)} />
         )}
-
         <div className="flex items-center justify-between">
-          <button onClick={() => { setView('list'); setSelectedAnalysis(null); setClipUrl(null); }}
-            className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>
-            Volver
+          <button onClick={() => { setView('list'); setSelectedAnalysis(null); setClipUrl(null); }} className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>Volver
           </button>
-          {/* Botón eliminar en revisión — solo Admin */}
           {isAdmin && (
-            <button
-              onClick={() => setConfirmDeleteId(selectedAnalysis.id)}
-              disabled={deletingId === selectedAnalysis.id}
-              className="flex items-center gap-2 px-3 py-1.5 bg-red-900/40 hover:bg-red-900/70 border border-red-800 text-red-400 hover:text-red-300 rounded-lg text-xs transition-colors disabled:opacity-40"
-            >
-              {deletingId === selectedAnalysis.id ? <Spinner /> : (
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5">
-                  <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
-                </svg>
-              )}
+            <button onClick={() => setConfirmDeleteId(selectedAnalysis.id)} disabled={deletingId === selectedAnalysis.id}
+              className="flex items-center gap-2 px-3 py-1.5 bg-red-900/40 hover:bg-red-900/70 border border-red-800 text-red-400 hover:text-red-300 rounded-lg text-xs transition-colors disabled:opacity-40">
+              {deletingId === selectedAnalysis.id ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>}
               Eliminar análisis
             </button>
           )}
         </div>
-
         {error && <div className="bg-red-900/40 border border-red-500 rounded-lg p-3 text-red-300 text-sm">{error}</div>}
-
         <div className="bg-gray-800 rounded-xl p-4 space-y-2">
           <p className="text-cyan-400 text-sm font-medium">{getMatchLabel(selectedAnalysis.match_id)}</p>
           <div className="flex flex-wrap gap-4 text-xs text-gray-400">
             <span>⏱ En el video: <span className="text-white font-medium">{formatTime(selectedAnalysis.timestamp_video)}</span></span>
-            <span className="text-gray-600">·</span>
-            <span>{date}</span>
+            <span className="text-gray-600">·</span><span>{date}</span>
           </div>
-          {selectedAnalysis.description && (
-            <p className="text-gray-300 text-sm bg-gray-700/50 rounded p-2">{selectedAnalysis.description}</p>
-          )}
+          {selectedAnalysis.description && <p className="text-gray-300 text-sm bg-gray-700/50 rounded p-2">{selectedAnalysis.description}</p>}
         </div>
-
         {loadingClip ? (
-          <div className="flex items-center gap-3 bg-gray-800 rounded-xl p-6 text-gray-400">
-            <Spinner /> <span className="text-sm">Cargando análisis...</span>
-          </div>
+          <div className="flex items-center gap-3 bg-gray-800 rounded-xl p-6 text-gray-400"><Spinner /><span className="text-sm">Cargando análisis...</span></div>
         ) : clipUrl ? (
           <>
-            <div className="bg-gray-900 rounded-xl overflow-hidden border border-gray-700">
-              <canvas ref={reviewCanvasRef} className="w-full h-auto" />
-            </div>
+            <div className="bg-gray-900 rounded-xl overflow-hidden border border-gray-700"><canvas ref={reviewCanvasRef} className="w-full h-auto" /></div>
             <div className="bg-gray-800 rounded-xl p-4 space-y-3">
               <p className="text-sm font-medium text-gray-300">Contexto del partido</p>
               <video src={clipUrl} className="w-full rounded-lg" controls autoPlay playsInline />
@@ -651,9 +708,7 @@ const AnalisisTacticoPage: React.FC = () => {
           </>
         ) : (
           <div className="bg-gray-800 rounded-xl p-6 text-center space-y-2">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-10 h-10 mx-auto text-gray-600">
-              <rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" />
-            </svg>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-10 h-10 mx-auto text-gray-600"><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" /></svg>
             <p className="text-gray-400 text-sm">Este análisis no tiene clip de video guardado.</p>
           </div>
         )}
@@ -661,25 +716,22 @@ const AnalisisTacticoPage: React.FC = () => {
     );
   }
 
-  // ── Vista: Crear (solo Admin) ──
+  // ── Crear ──
   if (view === 'create' && isAdmin) {
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-3">
           <button onClick={() => setView('list')} className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>
-            Volver
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>Volver
           </button>
           <h2 className="text-lg font-bold text-white">Nuevo Análisis Táctico</h2>
         </div>
-
         {error && <div className="bg-red-900/40 border border-red-500 rounded-lg p-3 text-red-300 text-sm">{error}</div>}
 
         {/* Paso 1 */}
         <div className="bg-gray-800 rounded-xl p-4 space-y-3">
           <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
-            <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">1</span>
-            Selecciona el partido
+            <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">1</span>Selecciona el partido
           </h3>
           <select value={selectedMatchId} onChange={e => { setSelectedMatchId(e.target.value); setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]); }}
             className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none">
@@ -692,36 +744,26 @@ const AnalisisTacticoPage: React.FC = () => {
         {selectedMatchId && (
           <div className="bg-gray-800 rounded-xl p-4 space-y-3">
             <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
-              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">2</span>
-              Selecciona el video del partido
+              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">2</span>Selecciona el video del partido
             </h3>
-            {loadingVideos ? (
-              <div className="flex items-center gap-2 text-gray-400 text-sm"><Spinner /> Cargando videos...</div>
-            ) : matchVideos.length === 0 ? (
-              <div className="bg-amber-900/30 border border-amber-700 rounded-lg p-3">
-                <p className="text-amber-300 text-sm">Este partido no tiene videos registrados. Regístralos primero en el Etiquetador.</p>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {matchVideos.map(v => {
-                  const offset = parseOffset(v.start_offset_seconds);
-                  return (
-                    <label key={v.id} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selectedVideoId === v.id ? 'border-cyan-500 bg-cyan-900/20' : 'border-gray-700 hover:border-gray-500'}`}>
-                      <input type="radio" name="video" value={v.id} checked={selectedVideoId === v.id} onChange={() => setSelectedVideoId(v.id)} className="accent-cyan-500" />
-                      <div className="flex-1 min-w-0">
-                        <p className="text-white text-sm font-medium truncate">{v.video_file}</p>
-                        <p className="text-gray-500 text-xs">
-                          Inicia en el minuto <span className="text-gray-300 font-medium">{formatTime(offset)}</span> del partido
-                        </p>
-                      </div>
-                      {selectedVideoId === v.id && (
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="w-4 h-4 text-cyan-400 flex-shrink-0"><path d="M5 13l4 4L19 7" /></svg>
-                      )}
-                    </label>
-                  );
-                })}
-              </div>
-            )}
+            {loadingVideos ? <div className="flex items-center gap-2 text-gray-400 text-sm"><Spinner />Cargando videos...</div>
+              : matchVideos.length === 0 ? <div className="bg-amber-900/30 border border-amber-700 rounded-lg p-3"><p className="text-amber-300 text-sm">Este partido no tiene videos registrados. Regístralos primero en el Etiquetador.</p></div>
+              : <div className="space-y-2">
+                  {matchVideos.map(v => {
+                    const offset = parseOffset(v.start_offset_seconds);
+                    return (
+                      <label key={v.id} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selectedVideoId === v.id ? 'border-cyan-500 bg-cyan-900/20' : 'border-gray-700 hover:border-gray-500'}`}>
+                        <input type="radio" name="video" value={v.id} checked={selectedVideoId === v.id} onChange={() => setSelectedVideoId(v.id)} className="accent-cyan-500" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-white text-sm font-medium truncate">{v.video_file}</p>
+                          <p className="text-gray-500 text-xs">Inicia en el minuto <span className="text-gray-300 font-medium">{formatTime(offset)}</span> del partido</p>
+                        </div>
+                        {selectedVideoId === v.id && <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="w-4 h-4 text-cyan-400 flex-shrink-0"><path d="M5 13l4 4L19 7" /></svg>}
+                      </label>
+                    );
+                  })}
+                </div>
+            }
           </div>
         )}
 
@@ -729,23 +771,19 @@ const AnalisisTacticoPage: React.FC = () => {
         {selectedVideoId && selectedVideo && (
           <div className="bg-gray-800 rounded-xl p-4 space-y-3">
             <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
-              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">3</span>
-              Carga el archivo de video
+              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">3</span>Carga el archivo de video
             </h3>
             <p className="text-gray-500 text-xs">Carga el archivo que corresponde a <span className="text-gray-300 font-medium">{selectedVideo.video_file}</span></p>
             {videoFileName ? (
               <div className="flex items-center gap-2">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-green-400 flex-shrink-0"><path d="M5 13l4 4L19 7" /></svg>
                 <span className="text-green-400 text-sm truncate">{videoFileName}</span>
-                <label className="ml-auto text-xs text-gray-500 cursor-pointer hover:text-gray-300 underline flex-shrink-0">
-                  Cambiar<input type="file" accept="video/*" className="hidden" onChange={handleVideoLoad} />
-                </label>
+                <label className="ml-auto text-xs text-gray-500 cursor-pointer hover:text-gray-300 underline flex-shrink-0">Cambiar<input type="file" accept="video/*" className="hidden" onChange={handleVideoLoad} /></label>
               </div>
             ) : (
               <label className="flex items-center gap-2 cursor-pointer px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-sm text-gray-300 transition-colors w-fit">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12" /></svg>
-                Seleccionar archivo
-                <input type="file" accept="video/*" className="hidden" onChange={handleVideoLoad} />
+                Seleccionar archivo<input type="file" accept="video/*" className="hidden" onChange={handleVideoLoad} />
               </label>
             )}
           </div>
@@ -755,8 +793,7 @@ const AnalisisTacticoPage: React.FC = () => {
         {videoUrl && selectedVideo && (
           <div className="bg-gray-800 rounded-xl p-4 space-y-3">
             <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
-              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">4</span>
-              Captura el frame a analizar
+              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">4</span>Captura el frame a analizar
             </h3>
             <div className="flex items-center gap-3 bg-gray-700/50 rounded-lg px-3 py-2">
               <span className="text-xs text-gray-400">Segundos de contexto:</span>
@@ -768,7 +805,7 @@ const AnalisisTacticoPage: React.FC = () => {
               <div className="flex items-center gap-4 text-xs bg-gray-700/50 rounded-lg px-3 py-2">
                 <span className="text-gray-400">En el video: <span className="text-white font-medium">{formatTime(frameTimestamp)}</span></span>
                 <span className="text-gray-600">→</span>
-                <span className="text-gray-400">Minuto del partido: <span className="text-cyan-400 font-medium">{formatTime(getAbsoluteTimestamp(selectedVideo, frameTimestamp))}</span></span>
+                <span className="text-gray-400">Minuto del partido: <span className="text-cyan-400 font-medium">{formatTime(getAbsoluteTs(selectedVideo, frameTimestamp))}</span></span>
               </div>
             )}
             <video ref={videoRef} src={videoUrl} className="w-full rounded-lg" controls />
@@ -784,8 +821,7 @@ const AnalisisTacticoPage: React.FC = () => {
           <div className="space-y-3">
             <div className="bg-gray-800 rounded-xl p-3 space-y-3">
               <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
-                <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">5</span>
-                Dibuja las anotaciones
+                <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">5</span>Dibuja las anotaciones
               </h3>
               <div className="flex flex-wrap gap-1.5">
                 {TOOLS.map(tool => (
@@ -831,13 +867,11 @@ const AnalisisTacticoPage: React.FC = () => {
               <div className="flex items-center gap-2 pt-1 border-t border-gray-700">
                 <button onClick={() => setAnnotations(prev => prev.slice(0, -1))} disabled={annotations.length === 0}
                   className="flex items-center gap-1 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-gray-300 rounded-lg text-xs transition-colors">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M3 10h10a5 5 0 010 10H3" /><path d="M3 10l4-4M3 10l4 4" /></svg>
-                  Deshacer
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M3 10h10a5 5 0 010 10H3" /><path d="M3 10l4-4M3 10l4 4" /></svg>Deshacer
                 </button>
                 <button onClick={() => setAnnotations([])} disabled={annotations.length === 0}
                   className="flex items-center gap-1 px-3 py-1.5 bg-gray-700 hover:bg-red-900/60 disabled:opacity-40 text-gray-300 hover:text-red-400 rounded-lg text-xs transition-colors">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>
-                  Limpiar
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>Limpiar
                 </button>
                 <span className="ml-auto text-xs text-gray-500">{annotations.length} anotacion{annotations.length !== 1 ? 'es' : ''}</span>
               </div>
@@ -856,7 +890,7 @@ const AnalisisTacticoPage: React.FC = () => {
                 className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none resize-none" />
               {(saving || uploadingClip) && uploadProgress && (
                 <div className="flex items-center gap-2 text-cyan-400 text-sm bg-cyan-900/20 rounded-lg px-3 py-2">
-                  <Spinner /> <span>{uploadProgress}</span>
+                  <Spinner /><span>{uploadProgress}</span>
                 </div>
               )}
               <button onClick={saveAnalysis}
@@ -872,20 +906,13 @@ const AnalisisTacticoPage: React.FC = () => {
     );
   }
 
-  // ── Vista: Lista ──
+  // ── Lista ──
   return (
     <div className="space-y-5">
-      {/* Confirm delete modal en lista */}
       {confirmDeleteId && (() => {
-        const analysis = analyses.find(a => a.id === confirmDeleteId);
-        if (!analysis) return null;
-        return (
-          <ConfirmDeleteModal
-            analysis={analysis}
-            onConfirm={() => deleteAnalysis(analysis)}
-            onCancel={() => setConfirmDeleteId(null)}
-          />
-        );
+        const a = analyses.find(x => x.id === confirmDeleteId);
+        if (!a) return null;
+        return <ConfirmDeleteModal analysis={a} onConfirm={() => deleteAnalysis(a)} onCancel={() => setConfirmDeleteId(null)} />;
       })()}
 
       <div className="flex items-center justify-between">
@@ -896,10 +923,8 @@ const AnalisisTacticoPage: React.FC = () => {
           </p>
         </div>
         {isAdmin && (
-          <button onClick={() => setView('create')}
-            className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M12 5v14M5 12h14" /></svg>
-            Nuevo análisis
+          <button onClick={() => setView('create')} className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M12 5v14M5 12h14" /></svg>Nuevo análisis
           </button>
         )}
       </div>
@@ -910,26 +935,20 @@ const AnalisisTacticoPage: React.FC = () => {
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div>
             <label className="block text-xs text-gray-500 mb-1">Torneo</label>
-            <select value={filterTorneo} onChange={e => setFilterTorneo(e.target.value)}
-              className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none">
-              <option value="all">Todos</option>
-              {torneos.map(t => <option key={t} value={t}>{t}</option>)}
+            <select value={filterTorneo} onChange={e => setFilterTorneo(e.target.value)} className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none">
+              <option value="all">Todos</option>{torneos.map(t => <option key={t} value={t}>{t}</option>)}
             </select>
           </div>
           <div>
             <label className="block text-xs text-gray-500 mb-1">Categoría</label>
-            <select value={filterCategoria} onChange={e => setFilterCategoria(e.target.value)}
-              className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none">
-              <option value="all">Todas</option>
-              {categorias.map(c => <option key={c} value={c}>{c}</option>)}
+            <select value={filterCategoria} onChange={e => setFilterCategoria(e.target.value)} className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none">
+              <option value="all">Todas</option>{categorias.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
           </div>
           <div>
             <label className="block text-xs text-gray-500 mb-1">Partido</label>
-            <select value={filterMatchId} onChange={e => setFilterMatchId(e.target.value)}
-              className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none">
-              <option value="all">Todos</option>
-              {matches.map(m => <option key={m.id} value={m.id}>{m.nombre_equipo} vs {m.rival} — J{m.jornada}</option>)}
+            <select value={filterMatchId} onChange={e => setFilterMatchId(e.target.value)} className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none">
+              <option value="all">Todos</option>{matches.map(m => <option key={m.id} value={m.id}>{m.nombre_equipo} vs {m.rival} — J{m.jornada}</option>)}
             </select>
           </div>
         </div>
@@ -937,9 +956,7 @@ const AnalisisTacticoPage: React.FC = () => {
 
       {filteredAnalyses.length === 0 ? (
         <div className="text-center py-16 text-gray-500">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-12 h-12 mx-auto mb-3 opacity-40">
-            <rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M9 21V9" />
-          </svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-12 h-12 mx-auto mb-3 opacity-40"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M9 21V9" /></svg>
           <p className="text-sm">No hay análisis tácticos{filterMatchId !== 'all' || filterTorneo !== 'all' || filterCategoria !== 'all' ? ' con estos filtros' : ' guardados'}.</p>
           {isAdmin && <button onClick={() => setView('create')} className="mt-3 text-cyan-400 hover:text-cyan-300 text-sm underline">Crear el primero</button>}
         </div>
@@ -950,22 +967,12 @@ const AnalisisTacticoPage: React.FC = () => {
             const date = new Date(analysis.created_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
             return (
               <div key={analysis.id} className="bg-gray-800 rounded-xl p-4 border border-gray-700 hover:border-cyan-700 transition-colors group relative">
-                {/* Botón eliminar en card — solo Admin */}
                 {isAdmin && (
-                  <button
-                    onClick={e => { e.stopPropagation(); setConfirmDeleteId(analysis.id); }}
-                    disabled={deletingId === analysis.id}
-                    className="absolute top-3 right-3 p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-900/30 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-40"
-                    title="Eliminar análisis"
-                  >
-                    {deletingId === analysis.id ? <Spinner /> : (
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
-                        <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
-                      </svg>
-                    )}
+                  <button onClick={e => { e.stopPropagation(); setConfirmDeleteId(analysis.id); }} disabled={deletingId === analysis.id}
+                    className="absolute top-3 right-3 p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-900/30 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-40" title="Eliminar análisis">
+                    {deletingId === analysis.id ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>}
                   </button>
                 )}
-
                 <div className="cursor-pointer" onClick={() => { setSelectedAnalysis(analysis); setView('review'); }}>
                   <div className="flex items-start justify-between mb-2 pr-6">
                     <div className="flex-1 min-w-0">
@@ -976,8 +983,7 @@ const AnalisisTacticoPage: React.FC = () => {
                       <span className="text-xs text-cyan-400 bg-cyan-900/30 px-2 py-0.5 rounded">{formatTime(analysis.timestamp_video)}</span>
                       {analysis.clip_storage_path && (
                         <span className="text-xs text-green-400 bg-green-900/30 px-2 py-0.5 rounded flex items-center gap-1">
-                          <svg viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3"><path d="M8 5v14l11-7z" /></svg>
-                          Video
+                          <svg viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3"><path d="M8 5v14l11-7z" /></svg>Video
                         </span>
                       )}
                     </div>
@@ -986,17 +992,14 @@ const AnalisisTacticoPage: React.FC = () => {
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-1 flex-wrap">
                       {[...new Set(analysis.annotations.map(a => a.type))].slice(0, 4).map(type => (
-                        <span key={type} className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded">
-                          {TOOLS.find(t => t.type === type)?.label.split(' ')[0] ?? type}
-                        </span>
+                        <span key={type} className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded">{TOOLS.find(t => t.type === type)?.label.split(' ')[0] ?? type}</span>
                       ))}
                       {analysis.annotations.length > 0 && <span className="text-xs text-gray-500 ml-1">{analysis.annotations.length} ann.</span>}
                     </div>
                     <span className="text-xs text-gray-600">{date}</span>
                   </div>
                   <div className="mt-3 flex items-center gap-1 text-cyan-500 group-hover:text-cyan-400 text-xs transition-colors">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
-                    Ver análisis
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>Ver análisis
                   </div>
                 </div>
               </div>
@@ -1009,5 +1012,4 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
-
 
