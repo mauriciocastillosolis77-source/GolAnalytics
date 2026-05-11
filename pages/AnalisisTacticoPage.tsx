@@ -561,8 +561,9 @@ const AnalisisTacticoPage: React.FC = () => {
         else clipStoragePath = ud.path;
       }
       setUploadingClip(false); setUploadProgress('Guardando análisis...');
-      const match = matches.find(m => m.id === selectedMatchId);
-      const teamId = match?.team_id ?? profile?.team_id ?? '';
+      // Siempre usar el team_id del perfil del usuario autenticado.
+      // El team_id del partido puede ser diferente si hay múltiples equipos.
+      const teamId = profile?.team_id ?? '';
       const payload: TacticalAnalysisInsert = {
         match_id: selectedMatchId, team_id: teamId, video_id: selectedVideoId,
         timestamp_video: frameTimestamp, annotations,
@@ -967,4 +968,5 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
