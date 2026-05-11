@@ -69,6 +69,7 @@ const TOOLS: ToolDef[] = [
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const formatTime = (s: number): string => {
+  if (!s || isNaN(s)) return '0:00';
   const h = Math.floor(s / 3600);
   const m = Math.floor((s % 3600) / 60);
   const sec = Math.floor(s % 60);
@@ -76,19 +77,24 @@ const formatTime = (s: number): string => {
   return `${m}:${String(sec).padStart(2, '0')}`;
 };
 
+// PUNTO 3 FIX: start_offset_seconds viene de Supabase como número (ej. 1440),
+// no como string MM:SS. Detectamos el tipo antes de parsear.
 const parseOffset = (val: any): number => {
-  if (typeof val === 'number') return val;
-  const str = String(val ?? '0');
-  const parts = str.split(':').map(Number);
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (val === null || val === undefined) return 0;
+  // Si ya es número, usarlo directamente
+  if (typeof val === 'number') return isNaN(val) ? 0 : val;
+  // Si es string con formato MM:SS o HH:MM:SS
+  const str = String(val).trim();
+  if (str.includes(':')) {
+    const parts = str.split(':').map(Number);
+    if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    if (parts.length === 2) return parts[0] * 60 + parts[1];
+  }
+  // Número como string
   return parseFloat(str) || 0;
 };
 
-// ─── Extracción de clip con MediaRecorder ─────────────────────────────────────
-// Graba los N segundos anteriores al timestamp del frame directamente desde
-// el elemento <video> usando captureStream() + MediaRecorder.
-// Devuelve un Blob mp4/webm listo para subir a Storage.
+// ─── Extracción de clip ───────────────────────────────────────────────────────
 
 async function extractClip(
   videoElement: HTMLVideoElement,
@@ -99,55 +105,35 @@ async function extractClip(
     const startAt = Math.max(0, frameTimestamp - secondsBefore);
     const duration = frameTimestamp - startAt;
 
-    // Detectar formato soportado
     const mimeType = MediaRecorder.isTypeSupported('video/mp4')
       ? 'video/mp4'
       : MediaRecorder.isTypeSupported('video/webm;codecs=vp9')
         ? 'video/webm;codecs=vp9'
         : 'video/webm';
 
-    const stream = (videoElement as any).captureStream
-      ? (videoElement as any).captureStream()
-      : (videoElement as any).mozCaptureStream();
-
-    if (!stream) {
-      reject(new Error('captureStream no soportado en este navegador'));
-      return;
-    }
+    const stream = (videoElement as any).captureStream?.() ?? (videoElement as any).mozCaptureStream?.();
+    if (!stream) { reject(new Error('captureStream no soportado')); return; }
 
     const recorder = new MediaRecorder(stream, { mimeType });
     const chunks: BlobPart[] = [];
-
     recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
     recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
     recorder.onerror = e => reject(e);
 
-    // Posicionar el video al inicio del clip y reproducir
     videoElement.currentTime = startAt;
     videoElement.onseeked = () => {
       videoElement.onseeked = null;
       recorder.start();
       videoElement.play();
-
-      // Detener la grabación cuando lleguemos al frame
       const check = () => {
         if (videoElement.currentTime >= frameTimestamp) {
           videoElement.pause();
           recorder.stop();
           stream.getTracks().forEach((t: MediaStreamTrack) => t.stop());
-        } else {
-          requestAnimationFrame(check);
-        }
+        } else { requestAnimationFrame(check); }
       };
       requestAnimationFrame(check);
-
-      // Seguro de timeout: parar si tarda más de (duration + 5s)
-      setTimeout(() => {
-        if (recorder.state === 'recording') {
-          videoElement.pause();
-          recorder.stop();
-        }
-      }, (duration + 5) * 1000);
+      setTimeout(() => { if (recorder.state === 'recording') { videoElement.pause(); recorder.stop(); } }, (duration + 5) * 1000);
     };
   });
 }
@@ -170,11 +156,8 @@ function drawAnnotation(ctx: CanvasRenderingContext2D, ann: TacticalAnnotation, 
   const sw = ann.strokeWidth ?? 3;
   const opacity = ann.opacity ?? 0.28;
   ctx.save();
-  ctx.strokeStyle = ann.color;
-  ctx.fillStyle = ann.color;
-  ctx.lineWidth = sw;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
+  ctx.strokeStyle = ann.color; ctx.fillStyle = ann.color;
+  ctx.lineWidth = sw; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   switch (ann.type) {
     case 'arrow':
       ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
@@ -252,8 +235,12 @@ const AnalisisTacticoPage: React.FC = () => {
   const [loadingData, setLoadingData] = useState(true);
   const [saving, setSaving] = useState(false);
   const [uploadingClip, setUploadingClip] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<string>('');
+  const [uploadProgress, setUploadProgress] = useState('');
   const [error, setError] = useState<string | null>(null);
+
+  // ── Eliminar ──
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const [filterMatchId, setFilterMatchId] = useState('all');
   const [filterTorneo, setFilterTorneo] = useState('all');
@@ -295,8 +282,7 @@ const AnalisisTacticoPage: React.FC = () => {
 
   useEffect(() => {
     const fetchData = async () => {
-      setLoadingData(true);
-      setError(null);
+      setLoadingData(true); setError(null);
       try {
         let matchQuery = supabase.from('matches').select('*').order('fecha', { ascending: false });
         if (!isAdmin && profile?.team_id) matchQuery = matchQuery.eq('team_id', profile.team_id);
@@ -311,14 +297,12 @@ const AnalisisTacticoPage: React.FC = () => {
         setAnalyses(analysisData || []);
       } catch (err: any) {
         setError('No se pudieron cargar los datos.');
-      } finally {
-        setLoadingData(false);
-      }
+      } finally { setLoadingData(false); }
     };
     fetchData();
   }, [isAdmin, profile?.team_id]);
 
-  // ─── Cargar videos del partido ─────────────────────────────────────────────
+  // ─── Videos del partido ────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!selectedMatchId) { setMatchVideos([]); setSelectedVideoId(''); setSelectedVideo(null); return; }
@@ -341,27 +325,20 @@ const AnalisisTacticoPage: React.FC = () => {
     setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]);
   }, [selectedVideoId, matchVideos]);
 
-  // ─── Cuando se abre un análisis en revisión, obtener URL firmada del clip ──
+  // ─── URL firmada del clip en revisión ─────────────────────────────────────
 
   useEffect(() => {
-    if (view !== 'review' || !selectedAnalysis?.clip_storage_path) {
-      setClipUrl(null);
-      return;
-    }
+    if (view !== 'review' || !selectedAnalysis?.clip_storage_path) { setClipUrl(null); return; }
     const getClipUrl = async () => {
       setLoadingClip(true);
       try {
         const { data, error } = await supabase.storage
           .from(CLIP_BUCKET)
-          .createSignedUrl(selectedAnalysis.clip_storage_path!, 3600); // válida 1 hora
+          .createSignedUrl(selectedAnalysis.clip_storage_path!, 3600);
         if (error) throw error;
         setClipUrl(data.signedUrl);
-      } catch (err) {
-        console.error('Error obteniendo URL del clip:', err);
-        setClipUrl(null);
-      } finally {
-        setLoadingClip(false);
-      }
+      } catch { setClipUrl(null); }
+      finally { setLoadingClip(false); }
     };
     getClipUrl();
   }, [view, selectedAnalysis]);
@@ -373,14 +350,8 @@ const AnalisisTacticoPage: React.FC = () => {
 
   const filteredAnalyses = analyses.filter(a => {
     if (filterMatchId !== 'all' && a.match_id !== filterMatchId) return false;
-    if (filterTorneo !== 'all') {
-      const m = matches.find(x => x.id === a.match_id);
-      if (!m || m.torneo !== filterTorneo) return false;
-    }
-    if (filterCategoria !== 'all') {
-      const m = matches.find(x => x.id === a.match_id);
-      if (!m || m.categoria !== filterCategoria) return false;
-    }
+    if (filterTorneo !== 'all') { const m = matches.find(x => x.id === a.match_id); if (!m || m.torneo !== filterTorneo) return false; }
+    if (filterCategoria !== 'all') { const m = matches.find(x => x.id === a.match_id); if (!m || m.categoria !== filterCategoria) return false; }
     return true;
   });
 
@@ -390,14 +361,13 @@ const AnalisisTacticoPage: React.FC = () => {
     return m ? `${m.nombre_equipo} vs ${m.rival} — J${m.jornada} (${m.torneo})` : matchId;
   };
 
-  // ─── Video físico ──────────────────────────────────────────────────────────
+  // ─── Cargar video físico ───────────────────────────────────────────────────
 
   const handleVideoLoad = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (videoUrl) URL.revokeObjectURL(videoUrl);
-    setVideoUrl(URL.createObjectURL(file));
-    setVideoFileName(file.name);
+    setVideoUrl(URL.createObjectURL(file)); setVideoFileName(file.name);
     setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]);
   };
 
@@ -473,81 +443,82 @@ const AnalisisTacticoPage: React.FC = () => {
     setPreviewAnn(null); drawStart.current = null;
   };
 
-  // ─── Guardar análisis + extraer y subir clip ───────────────────────────────
+  // ─── Guardar análisis ─────────────────────────────────────────────────────
 
   const saveAnalysis = async () => {
     if (!selectedMatchId || !selectedVideoId || frameTimestamp === null || annotations.length === 0) return;
     const video = videoRef.current;
     if (!video) return;
-
-    setSaving(true);
-    setError(null);
+    setSaving(true); setError(null);
     let clipStoragePath: string | null = null;
-
     try {
-      // 1. Extraer clip de video
-      setUploadingClip(true);
-      setUploadProgress('Extrayendo clip de video...');
-
+      setUploadingClip(true); setUploadProgress('Extrayendo clip de video...');
       let clipBlob: Blob | null = null;
-      try {
-        clipBlob = await extractClip(video, frameTimestamp, secondsBefore);
-      } catch (clipErr) {
-        console.warn('No se pudo extraer el clip, se guarda sin video:', clipErr);
-      }
+      try { clipBlob = await extractClip(video, frameTimestamp, secondsBefore); }
+      catch (clipErr) { console.warn('No se pudo extraer el clip:', clipErr); }
 
-      // 2. Subir clip a Supabase Storage
       if (clipBlob) {
         setUploadProgress('Subiendo clip a Storage...');
         const ext = clipBlob.type.includes('mp4') ? 'mp4' : 'webm';
         const fileName = `${user!.id}/${selectedMatchId}/${Date.now()}.${ext}`;
         const { data: uploadData, error: uploadErr } = await supabase.storage
-          .from(CLIP_BUCKET)
-          .upload(fileName, clipBlob, { contentType: clipBlob.type, upsert: false });
-        if (uploadErr) {
-          console.warn('Error subiendo clip:', uploadErr);
-        } else {
-          clipStoragePath = uploadData.path;
-        }
+          .from(CLIP_BUCKET).upload(fileName, clipBlob, { contentType: clipBlob.type, upsert: false });
+        if (uploadErr) console.warn('Error subiendo clip:', uploadErr);
+        else clipStoragePath = uploadData.path;
       }
 
-      setUploadingClip(false);
-      setUploadProgress('Guardando análisis...');
-
-      // 3. Guardar en base de datos
+      setUploadingClip(false); setUploadProgress('Guardando análisis...');
       const match = matches.find(m => m.id === selectedMatchId);
       const teamId = match?.team_id ?? profile?.team_id ?? '';
       const payload: TacticalAnalysisInsert = {
-        match_id: selectedMatchId,
-        team_id: teamId,
-        video_id: selectedVideoId,
-        timestamp_video: frameTimestamp,
-        annotations,
+        match_id: selectedMatchId, team_id: teamId, video_id: selectedVideoId,
+        timestamp_video: frameTimestamp, annotations,
         description: description.trim() || undefined,
-        created_by: user!.id,
-        clip_storage_path: clipStoragePath,
+        created_by: user!.id, clip_storage_path: clipStoragePath,
       };
-
-      const { data, error: insertErr } = await supabase
-        .from('tactical_analysis')
-        .insert(payload)
-        .select()
-        .single();
+      const { data, error: insertErr } = await supabase.from('tactical_analysis').insert(payload).select().single();
       if (insertErr) throw insertErr;
-
       setAnalyses(prev => [data, ...prev]);
-      // Reset
       setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]);
       setDescription(''); setSelectedMatchId(''); setSelectedVideoId('');
       setSelectedVideo(null); setMatchVideos([]);
-      setUploadProgress('');
-      setView('list');
+      setUploadProgress(''); setView('list');
     } catch (err: any) {
-      setError('Error al guardar el análisis.');
+      setError('Error al guardar el análisis.'); console.error(err);
+    } finally { setSaving(false); setUploadingClip(false); setUploadProgress(''); }
+  };
+
+  // ─── Eliminar análisis (PUNTO 2) ──────────────────────────────────────────
+
+  const deleteAnalysis = async (analysis: TacticalAnalysis) => {
+    setDeletingId(analysis.id);
+    setConfirmDeleteId(null);
+    try {
+      // 1. Borrar clip de Storage si existe
+      if (analysis.clip_storage_path) {
+        const { error: storageErr } = await supabase.storage
+          .from(CLIP_BUCKET)
+          .remove([analysis.clip_storage_path]);
+        if (storageErr) console.warn('No se pudo borrar el clip de Storage:', storageErr);
+      }
+      // 2. Borrar registro de la tabla
+      const { error: deleteErr } = await supabase
+        .from('tactical_analysis')
+        .delete()
+        .eq('id', analysis.id);
+      if (deleteErr) throw deleteErr;
+
+      // 3. Actualizar estado local
+      setAnalyses(prev => prev.filter(a => a.id !== analysis.id));
+
+      // Si estábamos en la vista de revisión, volver a la lista
+      if (view === 'review' && selectedAnalysis?.id === analysis.id) {
+        setSelectedAnalysis(null); setClipUrl(null); setView('list');
+      }
+    } catch (err: any) {
+      setError('Error al eliminar el análisis.');
       console.error(err);
-    } finally {
-      setSaving(false); setUploadingClip(false); setUploadProgress('');
-    }
+    } finally { setDeletingId(null); }
   };
 
   // ─── Reconstruir frame en revisión ────────────────────────────────────────
@@ -555,30 +526,55 @@ const AnalisisTacticoPage: React.FC = () => {
   const renderReviewFrame = useCallback(() => {
     const canvas = reviewCanvasRef.current;
     if (!canvas || !selectedAnalysis || !clipUrl) return;
-    // Crear video temporal para capturar el frame
     const tempVideo = document.createElement('video');
-    tempVideo.src = clipUrl;
-    tempVideo.crossOrigin = 'anonymous';
-    tempVideo.onloadeddata = () => {
-      // El clip termina en el frame exacto — ir al final
-      tempVideo.currentTime = tempVideo.duration - 0.05;
-    };
+    tempVideo.src = clipUrl; tempVideo.crossOrigin = 'anonymous';
+    tempVideo.onloadeddata = () => { tempVideo.currentTime = tempVideo.duration - 0.05; };
     tempVideo.onseeked = () => {
-      canvas.width = tempVideo.videoWidth;
-      canvas.height = tempVideo.videoHeight;
+      canvas.width = tempVideo.videoWidth; canvas.height = tempVideo.videoHeight;
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
       ctx.drawImage(tempVideo, 0, 0);
-      selectedAnalysis.annotations.forEach(a =>
-        drawAnnotation(ctx, a, canvas.width, canvas.height)
-      );
+      selectedAnalysis.annotations.forEach(a => drawAnnotation(ctx, a, canvas.width, canvas.height));
     };
     tempVideo.load();
   }, [clipUrl, selectedAnalysis]);
 
-  useEffect(() => {
-    if (view === 'review' && clipUrl) renderReviewFrame();
-  }, [view, clipUrl, renderReviewFrame]);
+  useEffect(() => { if (view === 'review' && clipUrl) renderReviewFrame(); }, [view, clipUrl, renderReviewFrame]);
+
+  // ─── Modal de confirmación de eliminación ─────────────────────────────────
+
+  const ConfirmDeleteModal: React.FC<{ analysis: TacticalAnalysis; onConfirm: () => void; onCancel: () => void }> = ({ analysis, onConfirm, onCancel }) => {
+    const match = matches.find(m => m.id === analysis.match_id);
+    return (
+      <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
+        <div className="bg-gray-800 rounded-xl p-6 max-w-sm w-full border border-red-800 space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-red-900/50 flex items-center justify-center flex-shrink-0">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5 text-red-400">
+                <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
+              </svg>
+            </div>
+            <div>
+              <h3 className="text-white font-semibold">Eliminar análisis</h3>
+              <p className="text-gray-400 text-xs mt-0.5">Esta acción no se puede deshacer</p>
+            </div>
+          </div>
+          <p className="text-gray-300 text-sm">
+            ¿Eliminar el análisis de <span className="text-white font-medium">{match ? `${match.nombre_equipo} vs ${match.rival}` : 'este partido'}</span> en el minuto <span className="text-cyan-400 font-medium">{formatTime(analysis.timestamp_video)}</span>?
+            {analysis.clip_storage_path && <span className="block mt-1 text-xs text-gray-500">El clip de video también será eliminado.</span>}
+          </p>
+          <div className="flex gap-3 justify-end">
+            <button onClick={onCancel} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-sm transition-colors">
+              Cancelar
+            </button>
+            <button onClick={onConfirm} className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-sm font-medium transition-colors">
+              Sí, eliminar
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -593,18 +589,40 @@ const AnalisisTacticoPage: React.FC = () => {
 
     return (
       <div className="space-y-4">
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => { setView('list'); setSelectedAnalysis(null); setClipUrl(null); }}
-            className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm"
-          >
+        {/* Confirm delete modal */}
+        {confirmDeleteId === selectedAnalysis.id && (
+          <ConfirmDeleteModal
+            analysis={selectedAnalysis}
+            onConfirm={() => deleteAnalysis(selectedAnalysis)}
+            onCancel={() => setConfirmDeleteId(null)}
+          />
+        )}
+
+        <div className="flex items-center justify-between">
+          <button onClick={() => { setView('list'); setSelectedAnalysis(null); setClipUrl(null); }}
+            className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>
             Volver
           </button>
-          <h2 className="text-lg font-bold text-white">Revisión de Análisis</h2>
+          {/* Botón eliminar en revisión — solo Admin */}
+          {isAdmin && (
+            <button
+              onClick={() => setConfirmDeleteId(selectedAnalysis.id)}
+              disabled={deletingId === selectedAnalysis.id}
+              className="flex items-center gap-2 px-3 py-1.5 bg-red-900/40 hover:bg-red-900/70 border border-red-800 text-red-400 hover:text-red-300 rounded-lg text-xs transition-colors disabled:opacity-40"
+            >
+              {deletingId === selectedAnalysis.id ? <Spinner /> : (
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5">
+                  <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
+                </svg>
+              )}
+              Eliminar análisis
+            </button>
+          )}
         </div>
 
-        {/* Info */}
+        {error && <div className="bg-red-900/40 border border-red-500 rounded-lg p-3 text-red-300 text-sm">{error}</div>}
+
         <div className="bg-gray-800 rounded-xl p-4 space-y-2">
           <p className="text-cyan-400 text-sm font-medium">{getMatchLabel(selectedAnalysis.match_id)}</p>
           <div className="flex flex-wrap gap-4 text-xs text-gray-400">
@@ -617,37 +635,21 @@ const AnalisisTacticoPage: React.FC = () => {
           )}
         </div>
 
-        {/* Frame reconstruido */}
         {loadingClip ? (
           <div className="flex items-center gap-3 bg-gray-800 rounded-xl p-6 text-gray-400">
             <Spinner /> <span className="text-sm">Cargando análisis...</span>
           </div>
         ) : clipUrl ? (
           <>
-            {/* Canvas con frame + anotaciones */}
             <div className="bg-gray-900 rounded-xl overflow-hidden border border-gray-700">
               <canvas ref={reviewCanvasRef} className="w-full h-auto" />
             </div>
-
-            {/* Reproductor del clip */}
             <div className="bg-gray-800 rounded-xl p-4 space-y-3">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <p className="text-sm font-medium text-gray-300">Contexto del partido</p>
-                <span className="text-xs text-gray-500">
-                  {secondsBefore}s antes del frame · se detiene en el momento exacto
-                </span>
-              </div>
-              <video
-                src={clipUrl}
-                className="w-full rounded-lg"
-                controls
-                autoPlay
-                playsInline
-              />
+              <p className="text-sm font-medium text-gray-300">Contexto del partido</p>
+              <video src={clipUrl} className="w-full rounded-lg" controls autoPlay playsInline />
             </div>
           </>
         ) : (
-          // Sin clip guardado — estado de análisis creados antes de esta feature
           <div className="bg-gray-800 rounded-xl p-6 text-center space-y-2">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-10 h-10 mx-auto text-gray-600">
               <rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" />
@@ -673,25 +675,20 @@ const AnalisisTacticoPage: React.FC = () => {
 
         {error && <div className="bg-red-900/40 border border-red-500 rounded-lg p-3 text-red-300 text-sm">{error}</div>}
 
-        {/* Paso 1: Partido */}
+        {/* Paso 1 */}
         <div className="bg-gray-800 rounded-xl p-4 space-y-3">
           <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
             <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">1</span>
             Selecciona el partido
           </h3>
-          <select
-            value={selectedMatchId}
-            onChange={e => { setSelectedMatchId(e.target.value); setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]); }}
-            className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none"
-          >
+          <select value={selectedMatchId} onChange={e => { setSelectedMatchId(e.target.value); setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]); }}
+            className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none">
             <option value="">Selecciona un partido</option>
-            {matches.map(m => (
-              <option key={m.id} value={m.id}>{m.nombre_equipo} vs {m.rival} — J{m.jornada} · {m.torneo} · {m.categoria}</option>
-            ))}
+            {matches.map(m => <option key={m.id} value={m.id}>{m.nombre_equipo} vs {m.rival} — J{m.jornada} · {m.torneo} · {m.categoria}</option>)}
           </select>
         </div>
 
-        {/* Paso 2: Video registrado */}
+        {/* Paso 2 */}
         {selectedMatchId && (
           <div className="bg-gray-800 rounded-xl p-4 space-y-3">
             <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
@@ -706,24 +703,29 @@ const AnalisisTacticoPage: React.FC = () => {
               </div>
             ) : (
               <div className="space-y-2">
-                {matchVideos.map(v => (
-                  <label key={v.id} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selectedVideoId === v.id ? 'border-cyan-500 bg-cyan-900/20' : 'border-gray-700 hover:border-gray-500'}`}>
-                    <input type="radio" name="video" value={v.id} checked={selectedVideoId === v.id} onChange={() => setSelectedVideoId(v.id)} className="accent-cyan-500" />
-                    <div className="flex-1 min-w-0">
-                      <p className="text-white text-sm font-medium truncate">{v.video_file}</p>
-                      <p className="text-gray-500 text-xs">Inicia en el minuto <span className="text-gray-300">{formatTime(parseOffset(v.start_offset_seconds))}</span> del partido</p>
-                    </div>
-                    {selectedVideoId === v.id && (
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="w-4 h-4 text-cyan-400 flex-shrink-0"><path d="M5 13l4 4L19 7" /></svg>
-                    )}
-                  </label>
-                ))}
+                {matchVideos.map(v => {
+                  const offset = parseOffset(v.start_offset_seconds);
+                  return (
+                    <label key={v.id} className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${selectedVideoId === v.id ? 'border-cyan-500 bg-cyan-900/20' : 'border-gray-700 hover:border-gray-500'}`}>
+                      <input type="radio" name="video" value={v.id} checked={selectedVideoId === v.id} onChange={() => setSelectedVideoId(v.id)} className="accent-cyan-500" />
+                      <div className="flex-1 min-w-0">
+                        <p className="text-white text-sm font-medium truncate">{v.video_file}</p>
+                        <p className="text-gray-500 text-xs">
+                          Inicia en el minuto <span className="text-gray-300 font-medium">{formatTime(offset)}</span> del partido
+                        </p>
+                      </div>
+                      {selectedVideoId === v.id && (
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="w-4 h-4 text-cyan-400 flex-shrink-0"><path d="M5 13l4 4L19 7" /></svg>
+                      )}
+                    </label>
+                  );
+                })}
               </div>
             )}
           </div>
         )}
 
-        {/* Paso 3: Archivo físico */}
+        {/* Paso 3 */}
         {selectedVideoId && selectedVideo && (
           <div className="bg-gray-800 rounded-xl p-4 space-y-3">
             <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
@@ -749,25 +751,19 @@ const AnalisisTacticoPage: React.FC = () => {
           </div>
         )}
 
-        {/* Paso 4: Capturar frame */}
+        {/* Paso 4 */}
         {videoUrl && selectedVideo && (
           <div className="bg-gray-800 rounded-xl p-4 space-y-3">
             <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
               <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">4</span>
               Captura el frame a analizar
             </h3>
-
-            {/* Configurar segundos antes */}
             <div className="flex items-center gap-3 bg-gray-700/50 rounded-lg px-3 py-2">
-              <span className="text-xs text-gray-400">Segundos de contexto a guardar:</span>
-              <input
-                type="number" min={3} max={30} value={secondsBefore}
-                onChange={e => setSecondsBefore(Number(e.target.value))}
-                className="w-14 bg-gray-700 text-white text-center rounded px-2 py-1 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none"
-              />
+              <span className="text-xs text-gray-400">Segundos de contexto:</span>
+              <input type="number" min={3} max={30} value={secondsBefore} onChange={e => setSecondsBefore(Number(e.target.value))}
+                className="w-14 bg-gray-700 text-white text-center rounded px-2 py-1 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none" />
               <span className="text-xs text-gray-500">seg antes del frame</span>
             </div>
-
             {frameTimestamp !== null && (
               <div className="flex items-center gap-4 text-xs bg-gray-700/50 rounded-lg px-3 py-2">
                 <span className="text-gray-400">En el video: <span className="text-white font-medium">{formatTime(frameTimestamp)}</span></span>
@@ -783,7 +779,7 @@ const AnalisisTacticoPage: React.FC = () => {
           </div>
         )}
 
-        {/* Paso 5: Dibujar */}
+        {/* Paso 5 */}
         {frameDataUrl && (
           <div className="space-y-3">
             <div className="bg-gray-800 rounded-xl p-3 space-y-3">
@@ -858,20 +854,15 @@ const AnalisisTacticoPage: React.FC = () => {
               <textarea value={description} onChange={e => setDescription(e.target.value)}
                 placeholder="Descripción táctica (opcional)..." rows={2}
                 className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none resize-none" />
-
-              {/* Progreso de guardado */}
               {(saving || uploadingClip) && uploadProgress && (
                 <div className="flex items-center gap-2 text-cyan-400 text-sm bg-cyan-900/20 rounded-lg px-3 py-2">
                   <Spinner /> <span>{uploadProgress}</span>
                 </div>
               )}
-
               <button onClick={saveAnalysis}
                 disabled={saving || !selectedMatchId || !selectedVideoId || frameTimestamp === null || annotations.length === 0}
                 className="flex items-center gap-2 px-5 py-2.5 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors">
-                {saving ? <Spinner /> : (
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v14a2 2 0 01-2 2z" /><path d="M17 21v-8H7v8M7 3v5h8" /></svg>
-                )}
+                {saving ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v14a2 2 0 01-2 2z" /><path d="M17 21v-8H7v8M7 3v5h8" /></svg>}
                 Guardar análisis
               </button>
             </div>
@@ -884,6 +875,19 @@ const AnalisisTacticoPage: React.FC = () => {
   // ── Vista: Lista ──
   return (
     <div className="space-y-5">
+      {/* Confirm delete modal en lista */}
+      {confirmDeleteId && (() => {
+        const analysis = analyses.find(a => a.id === confirmDeleteId);
+        if (!analysis) return null;
+        return (
+          <ConfirmDeleteModal
+            analysis={analysis}
+            onConfirm={() => deleteAnalysis(analysis)}
+            onCancel={() => setConfirmDeleteId(null)}
+          />
+        );
+      })()}
+
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-white">Análisis Táctico</h1>
@@ -902,7 +906,6 @@ const AnalisisTacticoPage: React.FC = () => {
 
       {error && <div className="bg-red-900/40 border border-red-500 rounded-lg p-3 text-red-300 text-sm">{error}</div>}
 
-      {/* Filtros */}
       <div className="bg-gray-800 rounded-xl p-4">
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           <div>
@@ -932,7 +935,6 @@ const AnalisisTacticoPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Lista */}
       {filteredAnalyses.length === 0 ? (
         <div className="text-center py-16 text-gray-500">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-12 h-12 mx-auto mb-3 opacity-40">
@@ -947,38 +949,55 @@ const AnalisisTacticoPage: React.FC = () => {
             const match = matches.find(m => m.id === analysis.match_id);
             const date = new Date(analysis.created_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
             return (
-              <div key={analysis.id} onClick={() => { setSelectedAnalysis(analysis); setView('review'); }}
-                className="bg-gray-800 rounded-xl p-4 border border-gray-700 hover:border-cyan-700 transition-colors cursor-pointer group">
-                <div className="flex items-start justify-between mb-2">
-                  <div className="flex-1 min-w-0">
-                    <p className="text-white font-medium text-sm truncate">{match ? `${match.nombre_equipo} vs ${match.rival}` : 'Partido desconocido'}</p>
-                    <p className="text-gray-500 text-xs mt-0.5">{match ? `${match.torneo} · J${match.jornada}` : ''}</p>
-                  </div>
-                  <div className="flex flex-col items-end gap-1 ml-2 flex-shrink-0">
-                    <span className="text-xs text-cyan-400 bg-cyan-900/30 px-2 py-0.5 rounded">{formatTime(analysis.timestamp_video)}</span>
-                    {analysis.clip_storage_path && (
-                      <span className="text-xs text-green-400 bg-green-900/30 px-2 py-0.5 rounded flex items-center gap-1">
-                        <svg viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3"><path d="M8 5v14l11-7z" /></svg>
-                        Video
-                      </span>
+              <div key={analysis.id} className="bg-gray-800 rounded-xl p-4 border border-gray-700 hover:border-cyan-700 transition-colors group relative">
+                {/* Botón eliminar en card — solo Admin */}
+                {isAdmin && (
+                  <button
+                    onClick={e => { e.stopPropagation(); setConfirmDeleteId(analysis.id); }}
+                    disabled={deletingId === analysis.id}
+                    className="absolute top-3 right-3 p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-900/30 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-40"
+                    title="Eliminar análisis"
+                  >
+                    {deletingId === analysis.id ? <Spinner /> : (
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+                        <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
+                      </svg>
                     )}
+                  </button>
+                )}
+
+                <div className="cursor-pointer" onClick={() => { setSelectedAnalysis(analysis); setView('review'); }}>
+                  <div className="flex items-start justify-between mb-2 pr-6">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white font-medium text-sm truncate">{match ? `${match.nombre_equipo} vs ${match.rival}` : 'Partido desconocido'}</p>
+                      <p className="text-gray-500 text-xs mt-0.5">{match ? `${match.torneo} · J${match.jornada}` : ''}</p>
+                    </div>
+                    <div className="flex flex-col items-end gap-1 ml-2 flex-shrink-0">
+                      <span className="text-xs text-cyan-400 bg-cyan-900/30 px-2 py-0.5 rounded">{formatTime(analysis.timestamp_video)}</span>
+                      {analysis.clip_storage_path && (
+                        <span className="text-xs text-green-400 bg-green-900/30 px-2 py-0.5 rounded flex items-center gap-1">
+                          <svg viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3"><path d="M8 5v14l11-7z" /></svg>
+                          Video
+                        </span>
+                      )}
+                    </div>
                   </div>
-                </div>
-                {analysis.description && <p className="text-gray-400 text-xs mb-3 line-clamp-2">{analysis.description}</p>}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1 flex-wrap">
-                    {[...new Set(analysis.annotations.map(a => a.type))].slice(0, 4).map(type => (
-                      <span key={type} className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded">
-                        {TOOLS.find(t => t.type === type)?.label.split(' ')[0] ?? type}
-                      </span>
-                    ))}
-                    {analysis.annotations.length > 0 && <span className="text-xs text-gray-500 ml-1">{analysis.annotations.length} ann.</span>}
+                  {analysis.description && <p className="text-gray-400 text-xs mb-3 line-clamp-2">{analysis.description}</p>}
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1 flex-wrap">
+                      {[...new Set(analysis.annotations.map(a => a.type))].slice(0, 4).map(type => (
+                        <span key={type} className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded">
+                          {TOOLS.find(t => t.type === type)?.label.split(' ')[0] ?? type}
+                        </span>
+                      ))}
+                      {analysis.annotations.length > 0 && <span className="text-xs text-gray-500 ml-1">{analysis.annotations.length} ann.</span>}
+                    </div>
+                    <span className="text-xs text-gray-600">{date}</span>
                   </div>
-                  <span className="text-xs text-gray-600">{date}</span>
-                </div>
-                <div className="mt-3 flex items-center gap-1 text-cyan-500 group-hover:text-cyan-400 text-xs transition-colors">
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
-                  Ver análisis
+                  <div className="mt-3 flex items-center gap-1 text-cyan-500 group-hover:text-cyan-400 text-xs transition-colors">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
+                    Ver análisis
+                  </div>
                 </div>
               </div>
             );
@@ -990,4 +1009,5 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
