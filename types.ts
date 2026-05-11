@@ -175,19 +175,22 @@ export interface TacticalAnalysis {
   id: string;
   match_id: string;
   team_id: string;
-  timestamp_video: number;    // Segundos desde el inicio del video
+  video_id: string;             // FK a tabla videos — identifica el archivo exacto
+  timestamp_video: number;      // Segundos dentro del archivo de video (no absoluto)
   annotations: TacticalAnnotation[];
-  description?: string;       // Texto libre opcional del entrenador
-  created_by: string;         // UUID del usuario que creó el análisis
+  description?: string;
+  created_by: string;
   created_at: string;
 }
 
 export interface TacticalAnalysisInsert {
   match_id: string;
   team_id: string;
+  video_id: string;             // Requerido — sin esto no sabemos a qué video pertenece
   timestamp_video: number;
   annotations: TacticalAnnotation[];
   description?: string;
   created_by: string;
 }
+
 
