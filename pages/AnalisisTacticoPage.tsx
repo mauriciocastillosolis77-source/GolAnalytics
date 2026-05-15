@@ -16,9 +16,6 @@ const STROKE_WIDTHS = [2, 4, 6, 8];
 const DEFAULT_SECONDS_BEFORE = 8;
 const CLIP_BUCKET = 'tactical-clips';
 
-// Radio de hit-test para handles de selección (coordenadas normalizadas 0-1)
-const HANDLE_R = 0.018;
-
 interface ToolDef {
   type: AnnotationType;
   label: string;
@@ -208,67 +205,15 @@ function drawAnnotation(mainCtx: CanvasRenderingContext2D, ann: TacticalAnnotati
   mainCtx.drawImage(off, 0, 0);
 }
 
-// Renderiza el frame completo: imagen base + todas las anotaciones + handles opcionales
-function renderFrame(
-  canvas: HTMLCanvasElement,
-  frameDataUrl: string,
-  annotations: TacticalAnnotation[],
-  selectedId?: string | null,
-  handleR?: number
-) {
+function renderFrame(canvas: HTMLCanvasElement, frameDataUrl: string, annotations: TacticalAnnotation[]) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const img = new Image();
   img.onload = () => {
-    canvas.width = img.width;
-    canvas.height = img.height;
+    canvas.width = img.width; canvas.height = img.height;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0);
     annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height));
-
-    // Dibujar handles de selección en el mismo onload — misma pasada de renderizado
-    if (selectedId) {
-      const sel = annotations.find(a => a.id === selectedId);
-      if (sel) {
-        const W = canvas.width, H = canvas.height;
-        const hr = (handleR ?? 0.018) * W;
-
-        // Bounding box punteado
-        const bx1 = Math.min(sel.x1, sel.x2 ?? sel.x1) * W - hr;
-        const by1 = Math.min(sel.y1, sel.y2 ?? sel.y1) * H - hr;
-        const bw = Math.abs((sel.x2 ?? sel.x1) - sel.x1) * W + hr * 2;
-        const bh = Math.abs((sel.y2 ?? sel.y1) - sel.y1) * H + hr * 2;
-        ctx.save();
-        ctx.strokeStyle = '#06B6D4';
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([5, 4]);
-        ctx.strokeRect(bx1, by1, bw, bh);
-        ctx.setLineDash([]);
-        ctx.restore();
-
-        // Handle p1
-        ctx.save();
-        ctx.fillStyle = '#06B6D4';
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.arc(sel.x1 * W, sel.y1 * H, hr, 0, Math.PI * 2);
-        ctx.fill(); ctx.stroke();
-        ctx.restore();
-
-        // Handle p2
-        if (sel.x2 !== undefined && sel.y2 !== undefined) {
-          ctx.save();
-          ctx.fillStyle = '#06B6D4';
-          ctx.strokeStyle = '#ffffff';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.arc(sel.x2 * W, sel.y2 * H, hr, 0, Math.PI * 2);
-          ctx.fill(); ctx.stroke();
-          ctx.restore();
-        }
-      }
-    }
   };
   img.src = frameDataUrl;
 }
@@ -441,102 +386,35 @@ const AnalisisTacticoPage: React.FC = () => {
     const canvas = canvasRef.current;
     if (!canvas || !frameDataUrl) return;
     const allAnns = previewAnn ? [...annotations, previewAnn] : annotations;
-    renderFrame(canvas, frameDataUrl, allAnns, selectedAnnId, HANDLE_R);
-  }, [frameDataUrl, annotations, previewAnn, selectedAnnId]);
+    renderFrame(canvas, frameDataUrl, allAnns);
+  }, [frameDataUrl, annotations, previewAnn]);
 
   useEffect(() => { redrawCanvas(); }, [redrawCanvas]);
 
-  // ─── Sistema de selección y redimensionado ────────────────────────────────
-  //
-  // ARQUITECTURA:
-  // Modo DIBUJO: el usuario arrastra para crear una figura nueva.
-  // Modo SELECCIÓN: el usuario hace clic sobre una figura existente para
-  //   seleccionarla, luego arrastra los handles de las esquinas para
-  //   redimensionarla. Se activa automáticamente al detectar un hit.
-  //
-  // Los handles son 2 puntos: p1 (x1,y1) y p2 (x2,y2) de la anotación.
-  // El tamaño del handle en coordenadas normalizadas es HANDLE_R (definido globalmente).
+  // ─── FIX: Listeners de dibujo a nivel de document ─────────────────────────
+  // Registrados con addEventListener nativo para garantizar que mouseup
+  // siempre se capture, incluso cuando el cursor sale del canvas durante el drag.
+  // Usamos refs para leer el estado más reciente sin cerrar sobre valores viejos.
 
-  // Estado de selección — todo en refs para acceso desde listeners nativos
-  const selectedAnnIdRef = useRef<string | null>(null);
-  const draggingHandleRef = useRef<'p1' | 'p2' | null>(null);
-  const [selectedAnnId, setSelectedAnnId] = useState<string | null>(null);
-
-  // Refs sincronizados para acceso desde listeners nativos
-  const selectedAnnIdStateRef = useRef<string | null>(null);
-  useEffect(() => { selectedAnnIdStateRef.current = selectedAnnId; }, [selectedAnnId]);
-
-  // Obtener coordenadas normalizadas desde un MouseEvent nativo
   const getCanvasCoordsFromEvent = useCallback((e: MouseEvent) => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
+    // Verificar que el evento ocurrió dentro o fue iniciado desde el canvas
     return {
       x: Math.max(0, Math.min(1, (e.clientX - rect.left) * (canvas.width / rect.width) / canvas.width)),
       y: Math.max(0, Math.min(1, (e.clientY - rect.top) * (canvas.height / rect.height) / canvas.height)),
     };
   }, []);
 
-  // Hit-test: ¿el punto (px,py) está sobre el handle p1 o p2 de una anotación?
-  const hitHandle = useCallback((ann: TacticalAnnotation, px: number, py: number): 'p1' | 'p2' | null => {
-    const d1 = Math.sqrt((px - ann.x1) ** 2 + (py - ann.y1) ** 2);
-    if (d1 < HANDLE_R) return 'p1';
-    if (ann.x2 !== undefined && ann.y2 !== undefined) {
-      const d2 = Math.sqrt((px - ann.x2) ** 2 + (py - ann.y2) ** 2);
-      if (d2 < HANDLE_R) return 'p2';
-    }
-    return null;
-  }, []);
-
-  // Hit-test: ¿el punto (px,py) está sobre el bounding box de una anotación?
-  const hitAnnotation = useCallback((ann: TacticalAnnotation, px: number, py: number): boolean => {
-    const x1 = ann.x1, y1 = ann.y1;
-    const x2 = ann.x2 ?? ann.x1, y2 = ann.y2 ?? ann.y1;
-    const pad = HANDLE_R;
-    const minX = Math.min(x1, x2) - pad, maxX = Math.max(x1, x2) + pad;
-    const minY = Math.min(y1, y2) - pad, maxY = Math.max(y1, y2) + pad;
-    return px >= minX && px <= maxX && py >= minY && py <= maxY;
-  }, []);
-
-  // Redibujar canvas con handles — delega todo a renderFrame que maneja el onload
-  const redrawWithHandles = useCallback((anns: TacticalAnnotation[], selId: string | null, fdu: string | null) => {
-    const canvas = canvasRef.current;
-    if (!canvas || !fdu) return;
-    renderFrame(canvas, fdu, anns, selId, HANDLE_R);
-  }, []);
-
-  // Listeners nativos a nivel de document
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
+      if (!isDrawing.current || !drawStart.current) return;
+      if (activeToolRef.current === 'text') return;
       const canvas = canvasRef.current;
       if (!canvas || !frameDataUrlRef.current) return;
       const coords = getCanvasCoordsFromEvent(e);
       if (!coords) return;
-
-      // Modo redimensionado: estamos arrastrando un handle
-      if (draggingHandleRef.current && selectedAnnIdRef.current) {
-        const handle = draggingHandleRef.current;
-        setAnnotations(prev => {
-          const updated = prev.map(a => {
-            if (a.id !== selectedAnnIdRef.current) return a;
-            if (handle === 'p1') return { ...a, x1: coords.x, y1: coords.y };
-            if (handle === 'p2') return { ...a, x2: coords.x, y2: coords.y };
-            return a;
-          });
-          annotationsRef.current = updated;
-          // Redibujar usando renderFrame unificado con handles
-          const canvas = canvasRef.current;
-          if (canvas && frameDataUrlRef.current) {
-            renderFrame(canvas, frameDataUrlRef.current, updated, selectedAnnIdRef.current, HANDLE_R);
-          }
-          return updated;
-        });
-        return;
-      }
-
-      // Modo dibujo normal: preview de la figura en progreso
-      if (!isDrawing.current || !drawStart.current) return;
-      if (activeToolRef.current === 'text') return;
       setPreviewAnn({
         id: '__preview__',
         type: activeToolRef.current,
@@ -550,27 +428,25 @@ const AnalisisTacticoPage: React.FC = () => {
     };
 
     const handleMouseUp = (e: MouseEvent) => {
-      // Terminar redimensionado
-      if (draggingHandleRef.current) {
-        draggingHandleRef.current = null;
-        return;
-      }
-
-      // Terminar dibujo normal
+      // Solo procesar si estábamos dibujando y tenemos un punto de inicio
       if (!isDrawing.current || !drawStart.current) return;
       isDrawing.current = false;
 
       const canvas = canvasRef.current;
       if (!canvas || !frameDataUrlRef.current) {
-        drawStart.current = null; setPreviewAnn(null); return;
+        drawStart.current = null;
+        setPreviewAnn(null);
+        return;
       }
 
       const coords = getCanvasCoordsFromEvent(e);
       const start = drawStart.current;
       drawStart.current = null;
       setPreviewAnn(null);
+
       if (!coords) return;
 
+      // Ignorar clicks sin arrastre (excepto texto)
       const tool = activeToolRef.current;
       const dx = Math.abs(coords.x - start.x);
       const dy = Math.abs(coords.y - start.y);
@@ -594,47 +470,21 @@ const AnalisisTacticoPage: React.FC = () => {
 
     document.addEventListener('mousemove', handleMouseMove);
     document.addEventListener('mouseup', handleMouseUp);
+
     return () => {
       document.removeEventListener('mousemove', handleMouseMove);
       document.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [getCanvasCoordsFromEvent, hitHandle, redrawWithHandles]);
+  }, [getCanvasCoordsFromEvent]);
 
-  // onMouseDown en el canvas: detectar si es selección/resize o dibujo nuevo
+  // onMouseDown sigue en el canvas porque necesitamos saber que el drag
+  // comenzó dentro del canvas, no en cualquier parte de la página.
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas || !frameDataUrlRef.current) return;
     const rect = canvas.getBoundingClientRect();
     const x = Math.max(0, Math.min(1, (e.clientX - rect.left) * (canvas.width / rect.width) / canvas.width));
     const y = Math.max(0, Math.min(1, (e.clientY - rect.top) * (canvas.height / rect.height) / canvas.height));
-
-    const anns = annotationsRef.current;
-
-    // 1. Si hay una anotación seleccionada, verificar si el click es en un handle
-    if (selectedAnnIdRef.current) {
-      const sel = anns.find(a => a.id === selectedAnnIdRef.current);
-      if (sel) {
-        const handle = hitHandle(sel, x, y);
-        if (handle) {
-          draggingHandleRef.current = handle;
-          return; // Modo redimensionado
-        }
-      }
-    }
-
-    // 2. Verificar si el click es sobre cualquier anotación (de atrás hacia adelante)
-    for (let i = anns.length - 1; i >= 0; i--) {
-      if (hitAnnotation(anns[i], x, y)) {
-        selectedAnnIdRef.current = anns[i].id;
-        setSelectedAnnId(anns[i].id);
-        redrawWithHandles(anns, anns[i].id, frameDataUrlRef.current);
-        return; // Modo selección
-      }
-    }
-
-    // 3. Click en área vacía: deseleccionar y empezar a dibujar
-    selectedAnnIdRef.current = null;
-    setSelectedAnnId(null);
     isDrawing.current = true;
     drawStart.current = { x, y };
   };
@@ -994,11 +844,11 @@ const AnalisisTacticoPage: React.FC = () => {
                 </div>
               )}
               <div className="flex items-center gap-2 pt-1 border-t border-gray-700">
-                <button onClick={() => { setAnnotations(prev => prev.slice(0, -1)); setSelectedAnnId(null); selectedAnnIdRef.current = null; }} disabled={annotations.length === 0}
+                <button onClick={() => setAnnotations(prev => prev.slice(0, -1))} disabled={annotations.length === 0}
                   className="flex items-center gap-1 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-gray-300 rounded-lg text-xs transition-colors">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M3 10h10a5 5 0 010 10H3" /><path d="M3 10l4-4M3 10l4 4" /></svg>Deshacer
                 </button>
-                <button onClick={() => { setAnnotations([]); setSelectedAnnId(null); selectedAnnIdRef.current = null; }} disabled={annotations.length === 0}
+                <button onClick={() => setAnnotations([])} disabled={annotations.length === 0}
                   className="flex items-center gap-1 px-3 py-1.5 bg-gray-700 hover:bg-red-900/60 disabled:opacity-40 text-gray-300 hover:text-red-400 rounded-lg text-xs transition-colors">
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>Limpiar
                 </button>
@@ -1014,11 +864,6 @@ const AnalisisTacticoPage: React.FC = () => {
                 onMouseDown={handleCanvasMouseDown}
               />
             </div>
-            {selectedAnnId && (
-              <p className="text-xs text-cyan-400 text-center">
-                Figura seleccionada — arrastra los puntos azules para redimensionar · Haz clic en otro lugar para deseleccionar
-              </p>
-            )}
 
             <div className="bg-gray-800 rounded-xl p-4 space-y-3">
               <textarea value={description} onChange={e => setDescription(e.target.value)}
