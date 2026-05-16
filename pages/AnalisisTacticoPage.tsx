@@ -767,7 +767,7 @@ const AnalisisTacticoPage: React.FC = () => {
 
             {/* Canvas principal */}
             <div className="relative bg-black rounded-xl overflow-hidden border border-gray-700">
-              <video ref={trackingVideoRef} src={videoUrl ?? undefined} className="hidden" playsInline />
+              <video ref={trackingVideoRef} src={videoUrl ?? undefined} className="hidden" playsInline onLoadedData={drawTrackingCanvas} />
               <canvas ref={trackingCanvasRef} className="w-full h-auto block" style={{ cursor: isVideoPaused ? 'crosshair' : 'default' }} onClick={handleTrackingCanvasClick} />
               {/* Controles superpuestos */}
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-4 py-3 flex items-center gap-3">
@@ -1172,6 +1172,8 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
+
 
 
 
