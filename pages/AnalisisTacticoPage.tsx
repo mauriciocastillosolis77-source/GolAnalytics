@@ -489,31 +489,64 @@ const AnalisisTacticoPage: React.FC = () => {
     }
   }, []);
 
-  useEffect(() => {
-    if (view !== 'tracking') return;
-    const video = trackingVideoRef.current;
+  // ─── Registrar listeners del video vía ref callback ──────────────────────
+  // Usar useEffect con ref no funciona aquí porque el <video> se monta
+  // condicionalmente (solo cuando view === 'tracking') y trackingVideoRef.current
+  // puede ser null cuando el effect dispara. Un ref callback garantiza que
+  // el código corra exactamente cuando React monta el elemento en el DOM.
+  const trackingVideoListenersRef = useRef<{
+    onPlay: () => void;
+    onPause: () => void;
+    onSeeked: () => void;
+    onTimeUpdate: () => void;
+    onLoadedData: () => void;
+    video: HTMLVideoElement;
+  } | null>(null);
+
+  const trackingVideoRefCallback = useCallback((video: HTMLVideoElement | null) => {
+    // Limpiar listeners del video anterior (si existía)
+    if (trackingVideoListenersRef.current) {
+      const prev = trackingVideoListenersRef.current;
+      prev.video.removeEventListener('play', prev.onPlay);
+      prev.video.removeEventListener('pause', prev.onPause);
+      prev.video.removeEventListener('seeked', prev.onSeeked);
+      prev.video.removeEventListener('timeupdate', prev.onTimeUpdate);
+      prev.video.removeEventListener('loadeddata', prev.onLoadedData);
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      trackingVideoListenersRef.current = null;
+    }
+
+    // Actualizar el ref tradicional (otras partes del código lo usan)
+    trackingVideoRef.current = video;
+
     if (!video) return;
-    const onPlay = () => { setIsVideoPaused(false); animFrameRef.current = requestAnimationFrame(drawTrackingCanvas); };
-    const onPause = () => { setIsVideoPaused(true); if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current); drawTrackingCanvas(); };
+
+    const onPlay = () => {
+      setIsVideoPaused(false);
+      animFrameRef.current = requestAnimationFrame(drawTrackingCanvas);
+    };
+    const onPause = () => {
+      setIsVideoPaused(true);
+      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      drawTrackingCanvas();
+    };
     const onSeeked = () => { drawTrackingCanvas(); };
     const onTimeUpdate = () => { setCurrentVideoTime(video.currentTime); };
     const onLoadedData = () => { drawTrackingCanvas(); };
+
     video.addEventListener('play', onPlay);
     video.addEventListener('pause', onPause);
     video.addEventListener('seeked', onSeeked);
     video.addEventListener('timeupdate', onTimeUpdate);
     video.addEventListener('loadeddata', onLoadedData);
-    // Si el video ya está cargado (readyState >= 2), dibujar de inmediato
-    if (video.readyState >= 2) drawTrackingCanvas();
-    return () => {
-      video.removeEventListener('play', onPlay);
-      video.removeEventListener('pause', onPause);
-      video.removeEventListener('seeked', onSeeked);
-      video.removeEventListener('timeupdate', onTimeUpdate);
-      video.removeEventListener('loadeddata', onLoadedData);
-      if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-    };
-  }, [view, drawTrackingCanvas]);
+
+    trackingVideoListenersRef.current = { onPlay, onPause, onSeeked, onTimeUpdate, onLoadedData, video };
+
+    // Si el video ya está cargado al montarse, dibujar de inmediato
+    if (video.readyState >= 2) {
+      drawTrackingCanvas();
+    }
+  }, [drawTrackingCanvas]);
 
   useEffect(() => {
     const video = trackingVideoRef.current;
@@ -773,7 +806,7 @@ const AnalisisTacticoPage: React.FC = () => {
 
             {/* Canvas principal */}
             <div className="relative bg-black rounded-xl overflow-hidden border border-gray-700">
-              <video ref={trackingVideoRef} src={videoUrl ?? undefined} className="hidden" playsInline />
+              <video ref={trackingVideoRefCallback} src={videoUrl ?? undefined} className="hidden" playsInline />
               <canvas ref={trackingCanvasRef} className="w-full h-auto block" style={{ cursor: isVideoPaused ? 'crosshair' : 'default' }} onClick={handleTrackingCanvasClick} />
               {/* Controles superpuestos */}
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-4 py-3 flex items-center gap-3">
@@ -1178,6 +1211,7 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
 
 
