@@ -5,6 +5,13 @@ import { ROLES } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
 import type { Match, TacticalAnalysis, TacticalAnnotation, TacticalAnalysisInsert, AnnotationType } from '../types';
 import { fetchVideosForMatch, type Video as VideoMeta } from '../services/videosService';
+import {
+  compressVideo,
+  createTrackingJob,
+  uploadToRailway,
+  pollJobStatus,
+  findCompletedJob,
+} from '../services/trackingService';
 
 // ─── Constantes ──────────────────────────────────────────────────────────────
 
@@ -277,6 +284,7 @@ const AnalisisTacticoPage: React.FC = () => {
   const [selectedVideo, setSelectedVideo] = useState<VideoMeta | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  const videoFileRef = useRef<File | null>(null); // ref al File original para Modo Tracking
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoFileName, setVideoFileName] = useState('');
   const [frameTimestamp, setFrameTimestamp] = useState<number | null>(null);
@@ -292,11 +300,14 @@ const AnalisisTacticoPage: React.FC = () => {
   const [playerLabel, setPlayerLabel] = useState('');
   const [textInput, setTextInput] = useState('');
 
-  // ── FIX: refs para el estado del dibujo — accesibles desde listeners nativos ──
-  // El bug era: React synthetic events (onMouseUp) se ejecutan después de que
-  // el bundle minificado de Vercel limpia los refs. La solución es registrar
-  // los listeners a nivel de document con addEventListener nativo, que siempre
-  // captura el evento independientemente del estado de React.
+  // ── Modo Tracking — estados nuevos ───────────────────────────────────────────
+  const [trackingPhase, setTrackingPhase] = useState<string>('');
+  const [trackingPercent, setTrackingPercent] = useState(0);
+  const [isTracking, setIsTracking] = useState(false);
+  const [trackingJobId, setTrackingJobId] = useState<string | null>(null);
+  const [trackingError, setTrackingError] = useState<string | null>(null);
+
+  // ── FIX: refs para el estado del dibujo ──────────────────────────────────────
   const isDrawing = useRef(false);
   const drawStart = useRef<{ x: number; y: number } | null>(null);
   const activeToolRef = useRef<AnnotationType>('arrow');
@@ -315,7 +326,7 @@ const AnalisisTacticoPage: React.FC = () => {
   const [clipUrl, setClipUrl] = useState<string | null>(null);
   const [loadingClip, setLoadingClip] = useState(false);
 
-  const [view, setView] = useState<'list' | 'create' | 'review'>('list');
+  const [view, setView] = useState<'list' | 'create' | 'review' | 'tracking'>('list');
 
   // Mantener refs sincronizados con el estado
   useEffect(() => { activeToolRef.current = activeTool; }, [activeTool]);
@@ -391,16 +402,12 @@ const AnalisisTacticoPage: React.FC = () => {
 
   useEffect(() => { redrawCanvas(); }, [redrawCanvas]);
 
-  // ─── FIX: Listeners de dibujo a nivel de document ─────────────────────────
-  // Registrados con addEventListener nativo para garantizar que mouseup
-  // siempre se capture, incluso cuando el cursor sale del canvas durante el drag.
-  // Usamos refs para leer el estado más reciente sin cerrar sobre valores viejos.
+  // ─── FIX: Listeners de dibujo a nivel de document ────────────────────────
 
   const getCanvasCoordsFromEvent = useCallback((e: MouseEvent) => {
     const canvas = canvasRef.current;
     if (!canvas) return null;
     const rect = canvas.getBoundingClientRect();
-    // Verificar que el evento ocurrió dentro o fue iniciado desde el canvas
     return {
       x: Math.max(0, Math.min(1, (e.clientX - rect.left) * (canvas.width / rect.width) / canvas.width)),
       y: Math.max(0, Math.min(1, (e.clientY - rect.top) * (canvas.height / rect.height) / canvas.height)),
@@ -428,7 +435,6 @@ const AnalisisTacticoPage: React.FC = () => {
     };
 
     const handleMouseUp = (e: MouseEvent) => {
-      // Solo procesar si estábamos dibujando y tenemos un punto de inicio
       if (!isDrawing.current || !drawStart.current) return;
       isDrawing.current = false;
 
@@ -446,7 +452,6 @@ const AnalisisTacticoPage: React.FC = () => {
 
       if (!coords) return;
 
-      // Ignorar clicks sin arrastre (excepto texto)
       const tool = activeToolRef.current;
       const dx = Math.abs(coords.x - start.x);
       const dy = Math.abs(coords.y - start.y);
@@ -477,8 +482,6 @@ const AnalisisTacticoPage: React.FC = () => {
     };
   }, [getCanvasCoordsFromEvent]);
 
-  // onMouseDown sigue en el canvas porque necesitamos saber que el drag
-  // comenzó dentro del canvas, no en cualquier parte de la página.
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas || !frameDataUrlRef.current) return;
@@ -512,8 +515,10 @@ const AnalisisTacticoPage: React.FC = () => {
   const handleVideoLoad = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]; if (!file) return;
     if (videoUrl) URL.revokeObjectURL(videoUrl);
+    videoFileRef.current = file; // guardar File original para Modo Tracking
     setVideoUrl(URL.createObjectURL(file)); setVideoFileName(file.name);
     setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]);
+    setTrackingJobId(null); setTrackingError(null);
   };
 
   const captureFrame = useCallback(() => {
@@ -524,6 +529,72 @@ const AnalisisTacticoPage: React.FC = () => {
     setFrameTimestamp(v.currentTime);
     setAnnotations([]); setPreviewAnn(null);
   }, []);
+
+  // ─── Modo Tracking — orquestación ─────────────────────────────────────────
+
+  const handleStartTracking = async () => {
+    if (!videoFileRef.current || !selectedVideoId || !selectedMatchId || !profile?.team_id || !user?.id) return;
+
+    setIsTracking(true);
+    setTrackingError(null);
+    setTrackingJobId(null);
+
+    try {
+      // 1. Verificar si ya existe un job completado para este video
+      const existingJobId = await findCompletedJob(selectedVideoId);
+      if (existingJobId) {
+        setTrackingJobId(existingJobId);
+        setTrackingPhase('¡Tracking ya disponible para este video!');
+        setTrackingPercent(100);
+        setIsTracking(false);
+        setView('tracking');
+        return;
+      }
+
+      // 2. Comprimir video
+      const compressed = await compressVideo(
+        videoFileRef.current,
+        (phase, percent) => { setTrackingPhase(phase); setTrackingPercent(percent); }
+      );
+
+      // 3. Crear job en Supabase
+      setTrackingPhase('Preparando análisis...');
+      setTrackingPercent(0);
+      const jobId = await createTrackingJob({
+        videoId: selectedVideoId,
+        matchId: selectedMatchId,
+        teamId: profile.team_id,
+        createdBy: user.id,
+      });
+      setTrackingJobId(jobId);
+
+      // 4. Subir a Railway
+      await uploadToRailway({
+        videoBlob: compressed,
+        jobId,
+        videoId: selectedVideoId,
+        matchId: selectedMatchId,
+        teamId: profile.team_id,
+        onProgress: (phase, percent) => { setTrackingPhase(phase); setTrackingPercent(percent); },
+      });
+
+      // 5. Polling hasta completar
+      await pollJobStatus(jobId, (phase, percent) => {
+        setTrackingPhase(phase);
+        setTrackingPercent(percent);
+      });
+
+      // 6. Navegar a vista tracking
+      setIsTracking(false);
+      setView('tracking');
+
+    } catch (err: any) {
+      setTrackingError(err?.message || 'Error desconocido en Modo Tracking');
+      setIsTracking(false);
+    }
+  };
+
+  // ─── Guardar análisis ──────────────────────────────────────────────────────
 
   const saveAnalysis = async () => {
     if (!selectedMatchId || !selectedVideoId || frameTimestamp === null || annotations.length === 0) return;
@@ -544,8 +615,6 @@ const AnalisisTacticoPage: React.FC = () => {
         else clipStoragePath = ud.path;
       }
       setUploadingClip(false); setUploadProgress('Guardando análisis...');
-      // Siempre usar el team_id del perfil del usuario autenticado.
-      // El team_id del partido puede ser diferente si hay múltiples equipos.
       const teamId = profile?.team_id ?? '';
       const payload: TacticalAnalysisInsert = {
         match_id: selectedMatchId, team_id: teamId, video_id: selectedVideoId,
@@ -611,6 +680,28 @@ const AnalisisTacticoPage: React.FC = () => {
 
   if (loadingData) return <div className="flex items-center justify-center h-64"><Spinner /></div>;
 
+  // ── Tracking (placeholder — se completa en Entrega 3) ──
+  if (view === 'tracking') {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-3">
+          <button onClick={() => setView('create')} className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>Volver
+          </button>
+          <h2 className="text-lg font-bold text-white">Modo Tracking</h2>
+          <span className="text-xs bg-cyan-900/40 text-cyan-400 border border-cyan-800 px-2 py-0.5 rounded">
+            Job: {trackingJobId?.slice(0, 8)}...
+          </span>
+        </div>
+        <div className="bg-gray-800 rounded-xl p-8 text-center text-gray-400">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-12 h-12 mx-auto mb-3 text-cyan-600"><circle cx="12" cy="12" r="10" /><path d="M12 8v4l3 3" /></svg>
+          <p className="text-sm">Canvas de telestración — Entrega 3</p>
+          <p className="text-xs text-gray-600 mt-1">Job ID: {trackingJobId}</p>
+        </div>
+      </div>
+    );
+  }
+
   // ── Revisión ──
   if (view === 'review' && selectedAnalysis) {
     const date = new Date(selectedAnalysis.created_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -646,7 +737,6 @@ const AnalisisTacticoPage: React.FC = () => {
           <div className="bg-gray-800 rounded-xl p-4 space-y-3">
             <p className="text-sm font-medium text-gray-300">Contexto del partido</p>
             <p className="text-xs text-gray-500">El video se detiene en el frame con las anotaciones</p>
-            {/* Contenedor con posición relativa para superponer canvas sobre video */}
             <div className="relative rounded-lg overflow-hidden bg-black">
               <video
                 ref={reviewVideoRef}
@@ -655,7 +745,6 @@ const AnalisisTacticoPage: React.FC = () => {
                 controls
                 playsInline
                 onEnded={() => {
-                  // Al terminar el video: capturar el último frame y dibujar anotaciones encima
                   const video = reviewVideoRef.current;
                   const canvas = reviewCanvasRef.current;
                   if (!video || !canvas || !selectedAnalysis) return;
@@ -663,22 +752,17 @@ const AnalisisTacticoPage: React.FC = () => {
                   canvas.height = video.videoHeight;
                   const ctx = canvas.getContext('2d');
                   if (!ctx) return;
-                  // Dibujar el frame final del video
                   ctx.drawImage(video, 0, 0);
-                  // Dibujar anotaciones usando el sistema offscreen
                   selectedAnalysis.annotations.forEach(ann =>
                     drawAnnotation(ctx, ann, canvas.width, canvas.height)
                   );
-                  // Mostrar el canvas superpuesto
                   canvas.style.display = 'block';
                 }}
                 onPlay={() => {
-                  // Al dar play: ocultar el canvas para ver el video limpio
                   const canvas = reviewCanvasRef.current;
                   if (canvas) canvas.style.display = 'none';
                 }}
               />
-              {/* Canvas superpuesto — oculto durante reproducción, visible al terminar */}
               <canvas
                 ref={reviewCanvasRef}
                 className="absolute inset-0 w-full h-full"
@@ -789,9 +873,73 @@ const AnalisisTacticoPage: React.FC = () => {
               </div>
             )}
             <video ref={videoRef} src={videoUrl} className="w-full rounded-lg" controls />
-            <button onClick={captureFrame} className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="12" cy="12" r="3" /></svg>Capturar frame actual
-            </button>
+
+            {/* Botones de acción del Paso 4 */}
+            <div className="flex flex-wrap gap-2">
+              <button onClick={captureFrame} className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="12" cy="12" r="3" /></svg>Capturar frame actual
+              </button>
+
+              {/* ── Botón Modo Tracking ── */}
+              <button
+                onClick={handleStartTracking}
+                disabled={isTracking}
+                className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors"
+              >
+                {isTracking ? (
+                  <><Spinner /><span>Procesando...</span></>
+                ) : (
+                  <>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4">
+                      <circle cx="12" cy="12" r="3" />
+                      <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+                      <path d="M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12" />
+                    </svg>
+                    Modo Tracking
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* ── Barra de progreso Modo Tracking ── */}
+            {isTracking && (
+              <div className="space-y-2 bg-gray-700/50 rounded-lg px-4 py-3">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-violet-300 font-medium">{trackingPhase}</span>
+                  <span className="text-gray-400">{trackingPercent}%</span>
+                </div>
+                <div className="w-full bg-gray-600 rounded-full h-2">
+                  <div
+                    className="bg-violet-500 h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${trackingPercent}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            {/* ── Error Modo Tracking ── */}
+            {trackingError && (
+              <div className="bg-red-900/40 border border-red-700 rounded-lg px-4 py-3 text-red-300 text-sm flex items-start gap-2">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 flex-shrink-0 mt-0.5"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>
+                {trackingError}
+              </div>
+            )}
+
+            {/* ── Job completado previo ── */}
+            {!isTracking && trackingJobId && trackingPercent === 100 && !trackingError && (
+              <div className="bg-violet-900/30 border border-violet-700 rounded-lg px-4 py-3 flex items-center justify-between">
+                <div className="flex items-center gap-2 text-violet-300 text-sm">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M5 13l4 4L19 7" /></svg>
+                  Tracking completado
+                </div>
+                <button
+                  onClick={() => setView('tracking')}
+                  className="text-xs px-3 py-1.5 bg-violet-600 hover:bg-violet-700 text-white rounded-lg transition-colors"
+                >
+                  Ver telestración
+                </button>
+              </div>
+            )}
           </div>
         )}
 
@@ -987,6 +1135,7 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
 
 
