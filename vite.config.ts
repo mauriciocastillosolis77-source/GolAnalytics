@@ -12,8 +12,12 @@ export default defineConfig(({ mode }) => {
         hmr: {
           clientPort: 443,
         },
+        // Requerido para FFmpeg.wasm (SharedArrayBuffer)
+        headers: {
+          'Cross-Origin-Opener-Policy': 'same-origin',
+          'Cross-Origin-Embedder-Policy': 'require-corp',
+        },
       },
-      // Expose both VITE_* and GEMINI_* prefixed variables to client
       envPrefix: ['VITE_', 'GEMINI_'],
       plugins: [react()],
       resolve: {
