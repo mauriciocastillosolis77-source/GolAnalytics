@@ -461,31 +461,6 @@ const AnalisisTacticoPage: React.FC = () => {
       .finally(() => setLoadingFrames(false));
   }, [view, trackingJobId]);
 
-  // ─── Forzar primer dibujo del canvas al entrar a tracking ────────────────
-  // Si el video ya estaba cargado (readyState >= 2), onLoadedData no se dispara.
-  // Este effect dibuja el primer frame directamente en el canvas usando
-  // drawImage, lo que hace visible el video y permite que play/pause funcione.
-  useEffect(() => {
-    if (view !== 'tracking') return;
-    const timer = setTimeout(() => {
-      const video = trackingVideoRef.current;
-      const canvas = trackingCanvasRef.current;
-      if (!video || !canvas || video.readyState < 2) return;
-
-      // Inicializar dimensiones del canvas para que coincidan con el video
-      if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-      }
-
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-      }
-    }, 150);
-    return () => clearTimeout(timer);
-  }, [view]);
-
   // ─── Loop de animación del canvas de telestración ────────────────────────
   const markedPlayersRef = useRef<MarkedPlayer[]>([]);
   const trackingFramesRef = useRef<TrackingFrame[]>([]);
@@ -515,24 +490,30 @@ const AnalisisTacticoPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (view !== 'tracking') return;
     const video = trackingVideoRef.current;
     if (!video) return;
     const onPlay = () => { setIsVideoPaused(false); animFrameRef.current = requestAnimationFrame(drawTrackingCanvas); };
     const onPause = () => { setIsVideoPaused(true); if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current); drawTrackingCanvas(); };
     const onSeeked = () => { drawTrackingCanvas(); };
     const onTimeUpdate = () => { setCurrentVideoTime(video.currentTime); };
+    const onLoadedData = () => { drawTrackingCanvas(); };
     video.addEventListener('play', onPlay);
     video.addEventListener('pause', onPause);
     video.addEventListener('seeked', onSeeked);
     video.addEventListener('timeupdate', onTimeUpdate);
+    video.addEventListener('loadeddata', onLoadedData);
+    // Si el video ya está cargado (readyState >= 2), dibujar de inmediato
+    if (video.readyState >= 2) drawTrackingCanvas();
     return () => {
       video.removeEventListener('play', onPlay);
       video.removeEventListener('pause', onPause);
       video.removeEventListener('seeked', onSeeked);
       video.removeEventListener('timeupdate', onTimeUpdate);
+      video.removeEventListener('loadeddata', onLoadedData);
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     };
-  }, [drawTrackingCanvas]);
+  }, [view, drawTrackingCanvas]);
 
   useEffect(() => {
     const video = trackingVideoRef.current;
@@ -1197,6 +1178,7 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
 
 
