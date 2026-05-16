@@ -461,6 +461,21 @@ const AnalisisTacticoPage: React.FC = () => {
       .finally(() => setLoadingFrames(false));
   }, [view, trackingJobId]);
 
+  // ─── Forzar primer dibujo del canvas al entrar a tracking ────────────────
+  // Si el video ya estaba cargado (readyState >= 2), onLoadedData no se dispara.
+  // Este effect fuerza el dibujo inicial con un pequeño delay para asegurar
+  // que el canvas ref ya está montado en el DOM.
+  useEffect(() => {
+    if (view !== 'tracking') return;
+    const timer = setTimeout(() => {
+      const video = trackingVideoRef.current;
+      if (video && video.readyState >= 2) {
+        drawTrackingCanvas();
+      }
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [view, drawTrackingCanvas]);
+
   // ─── Loop de animación del canvas de telestración ────────────────────────
   const markedPlayersRef = useRef<MarkedPlayer[]>([]);
   const trackingFramesRef = useRef<TrackingFrame[]>([]);
@@ -767,7 +782,7 @@ const AnalisisTacticoPage: React.FC = () => {
 
             {/* Canvas principal */}
             <div className="relative bg-black rounded-xl overflow-hidden border border-gray-700">
-              <video ref={trackingVideoRef} src={videoUrl ?? undefined} className="hidden" playsInline onLoadedData={drawTrackingCanvas} />
+              <video ref={trackingVideoRef} src={videoUrl ?? undefined} className="hidden" playsInline />
               <canvas ref={trackingCanvasRef} className="w-full h-auto block" style={{ cursor: isVideoPaused ? 'crosshair' : 'default' }} onClick={handleTrackingCanvasClick} />
               {/* Controles superpuestos */}
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-4 py-3 flex items-center gap-3">
@@ -1172,6 +1187,7 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
 
 
