@@ -354,6 +354,19 @@ const AnalisisTacticoPage: React.FC = () => {
   const reviewVideoRef = useRef<HTMLVideoElement>(null);
   const [clipUrl, setClipUrl] = useState<string | null>(null);
   const [loadingClip, setLoadingClip] = useState(false);
+
+  // ── Clips de telestración en review ──────────────────────────────────────
+  interface TelestrationClip {
+    id: string;
+    clip_storage_path: string;
+    description: string | null;
+    duration_seconds: number | null;
+    created_at: string;
+    video_id: string;
+  }
+  const [telestrationClips, setTelestrationClips] = useState<TelestrationClip[]>([]);
+  const [loadingTelestrationClips, setLoadingTelestrationClips] = useState(false);
+  const [telestrationUrls, setTelestrationUrls] = useState<Record<string, string>>({});
   const [view, setView] = useState<'list' | 'create' | 'review' | 'tracking'>('list');
 
   useEffect(() => { activeToolRef.current = activeTool; }, [activeTool]);
@@ -411,6 +424,31 @@ const AnalisisTacticoPage: React.FC = () => {
     setLoadingClip(true);
     supabase.storage.from(CLIP_BUCKET).createSignedUrl(selectedAnalysis.clip_storage_path!, 3600)
       .then(({ data, error }) => { setLoadingClip(false); if (!error && data) setClipUrl(data.signedUrl); });
+  }, [view, selectedAnalysis]);
+
+  // Cargar clips de telestración del mismo partido al entrar a review
+  useEffect(() => {
+    if (view !== 'review' || !selectedAnalysis?.match_id) {
+      setTelestrationClips([]); setTelestrationUrls({}); return;
+    }
+    setLoadingTelestrationClips(true);
+    supabase.from('telestration_clips')
+      .select('id, clip_storage_path, description, duration_seconds, created_at, video_id')
+      .eq('match_id', selectedAnalysis.match_id)
+      .order('created_at', { ascending: false })
+      .then(async ({ data, error }) => {
+        if (error || !data) { setLoadingTelestrationClips(false); return; }
+        setTelestrationClips(data as any);
+        const urls: Record<string, string> = {};
+        await Promise.all((data as any[]).map(async (clip: any) => {
+          const { data: urlData, error: urlErr } = await supabase.storage
+            .from(TELESTRATION_BUCKET)
+            .createSignedUrl(clip.clip_storage_path, 3600);
+          if (!urlErr && urlData) urls[clip.id] = urlData.signedUrl;
+        }));
+        setTelestrationUrls(urls);
+        setLoadingTelestrationClips(false);
+      });
   }, [view, selectedAnalysis]);
 
   // ─── Cargar frames al entrar a tracking ───────────────────────────────────
@@ -804,7 +842,7 @@ const AnalisisTacticoPage: React.FC = () => {
       <div className="space-y-4">
         {confirmDeleteId === selectedAnalysis.id && <ConfirmDeleteModal analysis={selectedAnalysis} onConfirm={() => deleteAnalysis(selectedAnalysis)} onCancel={() => setConfirmDeleteId(null)} />}
         <div className="flex items-center justify-between">
-          <button onClick={() => { setView('list'); setSelectedAnalysis(null); setClipUrl(null); }} className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm">
+          <button onClick={() => { setView('list'); setSelectedAnalysis(null); setClipUrl(null); setTelestrationClips([]); setTelestrationUrls({}); }} className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>Volver
           </button>
           {isAdmin && (
@@ -842,6 +880,49 @@ const AnalisisTacticoPage: React.FC = () => {
             <p className="text-gray-400 text-sm">Este análisis no tiene clip de video guardado.</p>
           </div>
         )}
+
+        {/* ── Clips de telestración del partido ── */}
+        {loadingTelestrationClips ? (
+          <div className="flex items-center gap-3 bg-gray-800 rounded-xl p-4 text-gray-400">
+            <Spinner /><span className="text-sm">Cargando telestraciones...</span>
+          </div>
+        ) : telestrationClips.length > 0 ? (
+          <div className="bg-gray-800 rounded-xl p-4 space-y-3 border border-violet-900/50">
+            <div className="flex items-center gap-2">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-violet-400 flex-shrink-0"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /><path d="M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12" /></svg>
+              <p className="text-sm font-medium text-violet-300">Telestraciones del partido</p>
+              <span className="ml-auto text-xs text-violet-400 bg-violet-900/40 border border-violet-800 px-2 py-0.5 rounded">{telestrationClips.length} clip{telestrationClips.length !== 1 ? 's' : ''}</span>
+            </div>
+            <div className="space-y-3">
+              {telestrationClips.map(clip => {
+                const url = telestrationUrls[clip.id];
+                const clipDate = new Date(clip.created_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
+                const videoName = matchVideos.find(v => v.id === clip.video_id)?.video_file ?? clip.video_id;
+                return (
+                  <div key={clip.id} className="bg-gray-700/50 rounded-lg overflow-hidden border border-gray-600">
+                    <div className="px-3 py-2 flex items-center gap-2 border-b border-gray-600">
+                      <span className="text-xs text-violet-300 font-medium truncate">{videoName}</span>
+                      {clip.duration_seconds && (
+                        <span className="text-xs text-gray-500 flex-shrink-0">{formatTime(clip.duration_seconds)}</span>
+                      )}
+                      <span className="ml-auto text-xs text-gray-600 flex-shrink-0">{clipDate}</span>
+                    </div>
+                    {clip.description && (
+                      <p className="text-xs text-gray-400 px-3 pt-2">{clip.description}</p>
+                    )}
+                    {url ? (
+                      <video src={url} className="w-full block" controls playsInline />
+                    ) : (
+                      <div className="flex items-center justify-center h-16 text-gray-600 text-xs">
+                        <Spinner />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : null}
       </div>
     );
   }
@@ -1091,6 +1172,7 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
 
 
