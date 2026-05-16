@@ -463,18 +463,28 @@ const AnalisisTacticoPage: React.FC = () => {
 
   // ─── Forzar primer dibujo del canvas al entrar a tracking ────────────────
   // Si el video ya estaba cargado (readyState >= 2), onLoadedData no se dispara.
-  // Este effect fuerza el dibujo inicial con un pequeño delay para asegurar
-  // que el canvas ref ya está montado en el DOM.
+  // Este effect dibuja el primer frame directamente en el canvas usando
+  // drawImage, lo que hace visible el video y permite que play/pause funcione.
   useEffect(() => {
     if (view !== 'tracking') return;
     const timer = setTimeout(() => {
       const video = trackingVideoRef.current;
-      if (video && video.readyState >= 2) {
-        drawTrackingCanvas();
+      const canvas = trackingCanvasRef.current;
+      if (!video || !canvas || video.readyState < 2) return;
+
+      // Inicializar dimensiones del canvas para que coincidan con el video
+      if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
       }
-    }, 100);
+
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      }
+    }, 150);
     return () => clearTimeout(timer);
-  }, [view, drawTrackingCanvas]);
+  }, [view]);
 
   // ─── Loop de animación del canvas de telestración ────────────────────────
   const markedPlayersRef = useRef<MarkedPlayer[]>([]);
@@ -1187,6 +1197,7 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
 
 
