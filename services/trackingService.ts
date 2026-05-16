@@ -1,5 +1,3 @@
-import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { supabase } from './supabaseClient';
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
@@ -35,67 +33,325 @@ export interface TrackingJob {
 
 export type ProgressCallback = (phase: string, percent: number) => void;
 
-// ─── FFmpeg singleton ─────────────────────────────────────────────────────────
-
-let ffmpegInstance: FFmpeg | null = null;
-let ffmpegLoaded = false;
-
-async function getFFmpeg(): Promise<FFmpeg> {
-  if (ffmpegInstance && ffmpegLoaded) return ffmpegInstance;
-
-  ffmpegInstance = new FFmpeg();
-
-  // Cargar FFmpeg desde CDN (evita problemas de bundling con Vite)
-  const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
-  await ffmpegInstance.load({
-    coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-    wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-  });
-
-  ffmpegLoaded = true;
-  return ffmpegInstance;
-}
-
-// ─── Compresión de video ──────────────────────────────────────────────────────
+// ─── Compresión de video con WebCodecs ───────────────────────────────────────
+//
+// Estrategia:
+//   1. Cargar el archivo en un <video> temporal
+//   2. Usar VideoDecoder + VideoEncoder (WebCodecs) para recodificar
+//      a 640px de ancho, VP9, ~500kbps, sin audio
+//   3. Empaquetar los chunks en un WebM usando una implementación mínima
+//
+// WebCodecs está disponible en Edge 94+ y Chrome 94+ (sin headers especiales).
+// No requiere SharedArrayBuffer ni COEP/COOP.
 
 export async function compressVideo(
   videoFile: File,
   onProgress: ProgressCallback
 ): Promise<Blob> {
-  onProgress('Iniciando compresor...', 0);
+  onProgress('Preparando video...', 0);
 
-  const ffmpeg = await getFFmpeg();
+  // Crear URL temporal para el archivo
+  const videoURL = URL.createObjectURL(videoFile);
 
-  ffmpeg.on('progress', ({ progress }) => {
-    const percent = Math.round(progress * 100);
-    onProgress(`Comprimiendo video... ${percent}%`, percent);
+  try {
+    const result = await encodeWithWebCodecs(videoURL, videoFile, onProgress);
+    return result;
+  } finally {
+    URL.revokeObjectURL(videoURL);
+  }
+}
+
+async function encodeWithWebCodecs(
+  videoURL: string,
+  videoFile: File,
+  onProgress: ProgressCallback
+): Promise<Blob> {
+  // ── Paso 1: Leer metadata del video con un elemento <video> ──────────────
+  const { videoWidth, videoHeight, duration } = await getVideoMetadata(videoURL);
+
+  // Calcular dimensiones de salida (máx 640px de ancho)
+  const targetWidth = Math.min(640, videoWidth);
+  const scale = targetWidth / videoWidth;
+  // WebCodecs requiere dimensiones pares
+  const outWidth = targetWidth % 2 === 0 ? targetWidth : targetWidth - 1;
+  const outHeight = Math.round(videoHeight * scale);
+  const outHeightEven = outHeight % 2 === 0 ? outHeight : outHeight - 1;
+
+  onProgress('Iniciando codificador...', 2);
+
+  // ── Paso 2: Capturar frames con Canvas a 2fps (igual que YOLO en Railway) ─
+  // Esto evita necesitar VideoDecoder (que requiere demuxer separado).
+  // Para videos de fútbol amateur, 2fps es suficiente para tracking.
+  // El video comprimido resultante tendrá 2fps → mucho menor tamaño.
+  const FPS = 2;
+  const totalFrames = Math.floor(duration * FPS);
+
+  const chunks: EncodedVideoChunk[] = [];
+  const encoderConfig: VideoEncoderConfig = {
+    codec: 'vp09.00.10.08',   // VP9 Profile 0
+    width: outWidth,
+    height: outHeightEven,
+    bitrate: 500_000,          // 500 kbps — suficiente para YOLO
+    framerate: FPS,
+  };
+
+  // Verificar soporte
+  const support = await VideoEncoder.isConfigSupported(encoderConfig);
+  if (!support.supported) {
+    throw new Error('WebCodecs VP9 no soportado en este navegador. Usa Edge o Chrome 94+.');
+  }
+
+  const encoder = new VideoEncoder({
+    output: (chunk) => chunks.push(chunk),
+    error: (err) => { throw err; },
+  });
+  encoder.configure(encoderConfig);
+
+  // Canvas para extraer frames
+  const canvas = new OffscreenCanvas(outWidth, outHeightEven);
+  const ctx = canvas.getContext('2d') as OffscreenCanvasRenderingContext2D;
+
+  const videoEl = document.createElement('video');
+  videoEl.src = videoURL;
+  videoEl.muted = true;
+  videoEl.preload = 'auto';
+  await new Promise<void>((resolve, reject) => {
+    videoEl.oncanplaythrough = () => resolve();
+    videoEl.onerror = () => reject(new Error('Error cargando video para compresión'));
+    videoEl.load();
   });
 
-  // Escribir archivo de entrada en el sistema de archivos virtual de FFmpeg
-  await ffmpeg.writeFile('input.mp4', await fetchFile(videoFile));
+  onProgress('Comprimiendo frames...', 5);
 
-  // Comprimir: 640px ancho, H.264, 500kbps video, sin audio
-  await ffmpeg.exec([
-    '-i', 'input.mp4',
-    '-vf', 'scale=640:-2',          // 640px ancho, alto proporcional
-    '-c:v', 'libx264',              // codec H.264
-    '-b:v', '500k',                 // 500 kbps video
-    '-preset', 'fast',              // balance velocidad/calidad
-    '-an',                          // sin audio (no necesario para YOLO)
-    '-movflags', '+faststart',      // optimizado para streaming
-    'output.mp4'
-  ]);
+  for (let i = 0; i < totalFrames; i++) {
+    const timeSeconds = i / FPS;
+    videoEl.currentTime = timeSeconds;
 
-  // Leer resultado
-  const data = await ffmpeg.readFile('output.mp4');
-  const blob = new Blob([data], { type: 'video/mp4' });
+    // Esperar a que el video salte al frame correcto
+    await new Promise<void>((resolve) => {
+      videoEl.onseeked = () => resolve();
+    });
 
-  // Limpiar archivos temporales
-  await ffmpeg.deleteFile('input.mp4');
-  await ffmpeg.deleteFile('output.mp4');
+    ctx.drawImage(videoEl, 0, 0, outWidth, outHeightEven);
+
+    const frameTimestampUs = Math.round(timeSeconds * 1_000_000); // microsegundos
+    const videoFrame = new VideoFrame(canvas, { timestamp: frameTimestampUs });
+
+    const isKeyFrame = i % (FPS * 2) === 0; // keyframe cada 2 segundos
+    encoder.encode(videoFrame, { keyFrame: isKeyFrame });
+    videoFrame.close();
+
+    const percent = 5 + Math.round((i / totalFrames) * 80);
+    onProgress(`Comprimiendo video... ${i + 1}/${totalFrames} frames`, percent);
+  }
+
+  // Vaciar el encoder
+  await encoder.flush();
+  encoder.close();
+
+  onProgress('Empaquetando archivo...', 87);
+
+  // ── Paso 3: Empaquetar en WebM ────────────────────────────────────────────
+  const webmBlob = buildSimpleWebM(chunks, outWidth, outHeightEven, FPS, duration);
 
   onProgress('Compresión completada', 100);
-  return blob;
+  return webmBlob;
+}
+
+// ── Metadata helper ───────────────────────────────────────────────────────────
+
+function getVideoMetadata(url: string): Promise<{ videoWidth: number; videoHeight: number; duration: number }> {
+  return new Promise((resolve, reject) => {
+    const v = document.createElement('video');
+    v.src = url;
+    v.muted = true;
+    v.preload = 'metadata';
+    v.onloadedmetadata = () => {
+      resolve({ videoWidth: v.videoWidth, videoHeight: v.videoHeight, duration: v.duration });
+    };
+    v.onerror = () => reject(new Error('No se pudo leer metadata del video'));
+  });
+}
+
+// ── WebM muxer mínimo ─────────────────────────────────────────────────────────
+// Construye un WebM válido con los chunks VP9 encodados.
+// Implementación liviana sin dependencias externas.
+
+function buildSimpleWebM(
+  chunks: EncodedVideoChunk[],
+  width: number,
+  height: number,
+  fps: number,
+  durationSec: number
+): Blob {
+  // Escribir EBML (Extensible Binary Meta Language) — formato base de WebM/MKV
+  const writer = new EBMLWriter();
+
+  // EBML Header
+  writer.writeElement(0x1A45DFA3, (w) => {
+    w.writeUint(0x4286, 1);           // EBMLVersion
+    w.writeUint(0x42F7, 1);           // EBMLReadVersion
+    w.writeUint(0x42F2, 4);           // EBMLMaxIDLength
+    w.writeUint(0x42F3, 8);           // EBMLMaxSizeLength
+    w.writeString(0x4282, 'webm');    // DocType
+    w.writeUint(0x4287, 4);           // DocTypeVersion
+    w.writeUint(0x4285, 2);           // DocTypeReadVersion
+  });
+
+  // Segment
+  writer.writeElement(0x18538067, (w) => {
+    // SeekHead (simplificado — sin seekhead para compatibilidad)
+    // Info
+    w.writeElement(0x1549A966, (info) => {
+      info.writeFloat(0x2AD7B1, 1_000_000); // TimecodeScale (1ms = 1,000,000 ns)
+      info.writeFloat(0x4489, durationSec * 1000); // Duration en ms
+      info.writeString(0x4D80, 'GolAnalytics WebCodecs');
+      info.writeString(0x5741, 'GolAnalytics WebCodecs');
+    });
+
+    // Tracks
+    w.writeElement(0x1654AE6B, (tracks) => {
+      tracks.writeElement(0xAE, (track) => {
+        track.writeUint(0xD7, 1);           // TrackNumber
+        track.writeUint(0x73C5, 1);         // TrackUID
+        track.writeUint(0x83, 1);           // TrackType: video
+        track.writeUint(0xB9, 1);           // FlagEnabled
+        track.writeUint(0x88, 1);           // FlagDefault
+        track.writeString(0x86, 'V_VP9');   // CodecID
+        track.writeElement(0xE0, (video) => {
+          video.writeUint(0xB0, width);
+          video.writeUint(0xBA, height);
+          video.writeFloat(0x2383E3, fps);  // FrameRate
+        });
+      });
+    });
+
+    // Cluster(s) — un cluster por chunk para simplicidad
+    // Agrupar en clusters de ~1 segundo
+    const clusterDuration = 1000; // ms
+    let clusterStart = 0;
+    let clusterChunks: EncodedVideoChunk[] = [];
+
+    const flushCluster = (clusterTimecode: number, cks: EncodedVideoChunk[]) => {
+      if (cks.length === 0) return;
+      w.writeElement(0x1F43B675, (cluster) => {
+        cluster.writeUint(0xE7, clusterTimecode); // Timecode en ms
+        for (const chunk of cks) {
+          const chunkTimeMs = Math.round(chunk.timestamp / 1000);
+          const relativeTime = chunkTimeMs - clusterTimecode;
+          const data = new Uint8Array(chunk.byteLength);
+          chunk.copyTo(data);
+
+          // SimpleBlock header
+          const isKeyframe = chunk.type === 'key';
+          const trackNum = encodeVarInt(1); // track 1
+          const timecode = new Uint8Array([(relativeTime >> 8) & 0xFF, relativeTime & 0xFF]);
+          const flags = new Uint8Array([isKeyframe ? 0x80 : 0x00]);
+          const blockData = new Uint8Array(trackNum.length + 2 + 1 + data.length);
+          blockData.set(trackNum, 0);
+          blockData.set(timecode, trackNum.length);
+          blockData.set(flags, trackNum.length + 2);
+          blockData.set(data, trackNum.length + 3);
+          cluster.writeRaw(0xA3, blockData); // SimpleBlock
+        }
+      });
+    };
+
+    for (const chunk of chunks) {
+      const chunkTimeMs = Math.round(chunk.timestamp / 1000);
+      if (chunkTimeMs >= clusterStart + clusterDuration) {
+        flushCluster(clusterStart, clusterChunks);
+        clusterStart = Math.floor(chunkTimeMs / clusterDuration) * clusterDuration;
+        clusterChunks = [];
+      }
+      clusterChunks.push(chunk);
+    }
+    flushCluster(clusterStart, clusterChunks);
+  });
+
+  return new Blob([writer.getBuffer()], { type: 'video/webm' });
+}
+
+// ── EBML Writer ───────────────────────────────────────────────────────────────
+
+class EBMLWriter {
+  private parts: Uint8Array[] = [];
+
+  writeElement(id: number, fn: (w: EBMLWriter) => void): void {
+    const child = new EBMLWriter();
+    fn(child);
+    const body = child.getBuffer();
+    this.parts.push(encodeEBMLId(id));
+    this.parts.push(encodeVarInt(body.byteLength));
+    this.parts.push(body);
+  }
+
+  writeUint(id: number, value: number): void {
+    const bytes = encodeUint(value);
+    this.parts.push(encodeEBMLId(id));
+    this.parts.push(encodeVarInt(bytes.length));
+    this.parts.push(bytes);
+  }
+
+  writeFloat(id: number, value: number): void {
+    const buf = new ArrayBuffer(8);
+    new DataView(buf).setFloat64(0, value);
+    const bytes = new Uint8Array(buf);
+    this.parts.push(encodeEBMLId(id));
+    this.parts.push(encodeVarInt(8));
+    this.parts.push(bytes);
+  }
+
+  writeString(id: number, value: string): void {
+    const bytes = new TextEncoder().encode(value);
+    this.parts.push(encodeEBMLId(id));
+    this.parts.push(encodeVarInt(bytes.length));
+    this.parts.push(bytes);
+  }
+
+  writeRaw(id: number, data: Uint8Array): void {
+    this.parts.push(encodeEBMLId(id));
+    this.parts.push(encodeVarInt(data.length));
+    this.parts.push(data);
+  }
+
+  getBuffer(): Uint8Array {
+    const totalLength = this.parts.reduce((sum, p) => sum + p.length, 0);
+    const result = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const part of this.parts) {
+      result.set(part, offset);
+      offset += part.length;
+    }
+    return result;
+  }
+}
+
+function encodeEBMLId(id: number): Uint8Array {
+  if (id <= 0xFF) return new Uint8Array([id]);
+  if (id <= 0xFFFF) return new Uint8Array([(id >> 8) & 0xFF, id & 0xFF]);
+  if (id <= 0xFFFFFF) return new Uint8Array([(id >> 16) & 0xFF, (id >> 8) & 0xFF, id & 0xFF]);
+  return new Uint8Array([(id >> 24) & 0xFF, (id >> 16) & 0xFF, (id >> 8) & 0xFF, id & 0xFF]);
+}
+
+function encodeVarInt(value: number): Uint8Array {
+  if (value < 0x7F) return new Uint8Array([0x80 | value]);
+  if (value < 0x3FFF) return new Uint8Array([0x40 | (value >> 8), value & 0xFF]);
+  if (value < 0x1FFFFF) return new Uint8Array([0x20 | (value >> 16), (value >> 8) & 0xFF, value & 0xFF]);
+  if (value < 0x0FFFFFFF) return new Uint8Array([0x10 | (value >> 24), (value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF]);
+  // Para tamaños grandes usar 8 bytes
+  return new Uint8Array([0x01, 0x00, 0x00, 0x00, (value >> 24) & 0xFF, (value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF]);
+}
+
+function encodeUint(value: number): Uint8Array {
+  if (value === 0) return new Uint8Array([0]);
+  const bytes: number[] = [];
+  let v = value;
+  while (v > 0) {
+    bytes.unshift(v & 0xFF);
+    v >>= 8;
+  }
+  return new Uint8Array(bytes);
 }
 
 // ─── Crear job en Supabase ────────────────────────────────────────────────────
@@ -137,7 +393,7 @@ export async function uploadToRailway(params: {
   onProgress('Subiendo video a Railway...', 0);
 
   const formData = new FormData();
-  formData.append('file', videoBlob, 'video.mp4');
+  formData.append('file', videoBlob, 'video.webm');
   formData.append('job_id', jobId);
   formData.append('video_id', videoId);
   formData.append('match_id', matchId);
