@@ -734,7 +734,8 @@ const AnalisisTacticoPage: React.FC = () => {
         if (ue) console.warn('Error subiendo clip:', ue); else clipStoragePath = ud.path;
       }
       setUploadingClip(false); setUploadProgress('Guardando análisis...');
-      const payload: TacticalAnalysisInsert = { match_id: selectedMatchId, team_id: profile?.team_id ?? '', video_id: selectedVideoId, timestamp_video: frameTimestamp, annotations, description: description.trim() || undefined, created_by: user!.id, clip_storage_path: clipStoragePath };
+      const matchTeamId = matches.find(m => m.id === selectedMatchId)?.team_id ?? profile?.team_id ?? '';
+      const payload: TacticalAnalysisInsert = { match_id: selectedMatchId, team_id: matchTeamId, video_id: selectedVideoId, timestamp_video: frameTimestamp, annotations, description: description.trim() || undefined, created_by: user!.id, clip_storage_path: clipStoragePath };
       const { data, error: ie } = await supabase.from('tactical_analysis').insert(payload).select().single();
       if (ie) throw ie;
       setAnalyses(prev => [data, ...prev]);
@@ -1211,6 +1212,7 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
 
 
