@@ -90,6 +90,8 @@ const VideoTaggerPage: React.FC = () => {
     const recognitionRef = useRef<any>(null);
     const isVoiceActiveRef = useRef(false);
     const processVoiceCommandRef = useRef<(t: string) => void>(() => {});
+    // Referencia a la ventana secundaria del video — se guarda al abrirla
+    const secondaryWindowRef = useRef<Window | null>(null);
 
     // Derived state: any AI analysis is running
     const isAnyAnalysisRunning = isGeminiAnalyzing || isCustomAnalyzing || isBatchAnalyzing || isSegmentAnalyzing;
@@ -1127,23 +1129,38 @@ const VideoTaggerPage: React.FC = () => {
         };
 
         // ── Video controls ────────────────────────────────────────────────
+        // Si hay ventana secundaria abierta, los comandos de video se envían
+        // a esa ventana via postMessage. Si no, controlan el video principal.
+        const sendToSecondary = (action: string) => {
+            const sw = secondaryWindowRef.current;
+            if (sw && !sw.closed) {
+                sw.postMessage({ type: 'gol_videocontrol', action }, '*');
+                return true;
+            }
+            return false;
+        };
+
         if (/pausar|pausa|para\b|detener/.test(text)) {
-            videoRef.current?.pause();
+            if (!sendToSecondary('pause')) videoRef.current?.pause();
             show('⏸ Video pausado');
             return;
         }
         if (/reproducir|play|continuar|reanudar/.test(text)) {
-            videoRef.current?.play();
+            if (!sendToSecondary('play')) videoRef.current?.play();
             show('▶ Video reproduciendo');
             return;
         }
         if (/atrás|atras|regresar|retroceder/.test(text)) {
-            if (videoRef.current) videoRef.current.currentTime -= 5;
+            if (!sendToSecondary('back')) {
+                if (videoRef.current) videoRef.current.currentTime -= 5;
+            }
             show('⏪ -5 segundos');
             return;
         }
         if (/adelante|avanzar|adelantar/.test(text)) {
-            if (videoRef.current) videoRef.current.currentTime += 5;
+            if (!sendToSecondary('forward')) {
+                if (videoRef.current) videoRef.current.currentTime += 5;
+            }
             show('⏩ +5 segundos');
             return;
         }
@@ -1482,11 +1499,20 @@ const VideoTaggerPage: React.FC = () => {
   vid.addEventListener('seeked', function() {
     if (window.opener) window.opener.postMessage({type:'gol_timeupdate', time: vid.currentTime}, '*');
   });
+  // Recibe comandos de control desde la ventana principal (voz)
+  window.addEventListener('message', function(e) {
+    if (!e.data || e.data.type !== 'gol_videocontrol') return;
+    if (e.data.action === 'pause') vid.pause();
+    else if (e.data.action === 'play') vid.play();
+    else if (e.data.action === 'back') vid.currentTime = Math.max(0, vid.currentTime - 5);
+    else if (e.data.action === 'forward') vid.currentTime += 5;
+  });
 </script>
 </body></html>`;
                                             const blob = new Blob([html], { type: 'text/html' });
                                             const url = URL.createObjectURL(blob);
-                                            window.open(url, '_blank', 'width=1280,height=720');
+                                            const sw = window.open(url, '_blank', 'width=1280,height=720');
+                                            secondaryWindowRef.current = sw;
                                         }}
                                         className="bg-cyan-700/80 hover:bg-cyan-600 text-white px-2 py-1 rounded text-xs font-bold border border-cyan-400/40 shadow"
                                         title="Abrir video en nueva ventana (segunda pantalla)"
