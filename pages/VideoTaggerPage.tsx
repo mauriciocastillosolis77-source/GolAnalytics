@@ -1104,7 +1104,7 @@ const VideoTaggerPage: React.FC = () => {
     };
 
     // ── VOICE COMMANDS ────────────────────────────────────────────────────────
-    // Map Spanish number words to digits (covers jersey numbers 1-25)
+    // Map Spanish number words to digits (covers jersey numbers 0-99)
     const SPANISH_NUMBERS: Record<string, number> = {
         'cero': 0,
         'uno': 1, 'dos': 2, 'tres': 3, 'cuatro': 4, 'cinco': 5,
@@ -1113,7 +1113,29 @@ const VideoTaggerPage: React.FC = () => {
         'dieciséis': 16, 'dieciseis': 16, 'diecisiete': 17, 'dieciocho': 18,
         'diecinueve': 19, 'veinte': 20, 'veintiuno': 21, 'veintidós': 22,
         'veintidos': 22, 'veintitrés': 23, 'veintitres': 23,
-        'veinticuatro': 24, 'veinticinco': 25,
+        'veinticuatro': 24, 'veinticinco': 25, 'veintiséis': 26, 'veintiseis': 26,
+        'veintisiete': 27, 'veintiocho': 28, 'veintinueve': 29,
+        'treinta': 30, 'treinta y uno': 31, 'treinta y dos': 32, 'treinta y tres': 33,
+        'treinta y cuatro': 34, 'treinta y cinco': 35, 'treinta y seis': 36,
+        'treinta y siete': 37, 'treinta y ocho': 38, 'treinta y nueve': 39,
+        'cuarenta': 40, 'cuarenta y uno': 41, 'cuarenta y dos': 42, 'cuarenta y tres': 43,
+        'cuarenta y cuatro': 44, 'cuarenta y cinco': 45, 'cuarenta y seis': 46,
+        'cuarenta y siete': 47, 'cuarenta y ocho': 48, 'cuarenta y nueve': 49,
+        'cincuenta': 50, 'cincuenta y uno': 51, 'cincuenta y dos': 52, 'cincuenta y tres': 53,
+        'cincuenta y cuatro': 54, 'cincuenta y cinco': 55, 'cincuenta y seis': 56,
+        'cincuenta y siete': 57, 'cincuenta y ocho': 58, 'cincuenta y nueve': 59,
+        'sesenta': 60, 'sesenta y uno': 61, 'sesenta y dos': 62, 'sesenta y tres': 63,
+        'sesenta y cuatro': 64, 'sesenta y cinco': 65, 'sesenta y seis': 66,
+        'sesenta y siete': 67, 'sesenta y ocho': 68, 'sesenta y nueve': 69,
+        'setenta': 70, 'setenta y uno': 71, 'setenta y dos': 72, 'setenta y tres': 73,
+        'setenta y cuatro': 74, 'setenta y cinco': 75, 'setenta y seis': 76,
+        'setenta y siete': 77, 'setenta y ocho': 78, 'setenta y nueve': 79,
+        'ochenta': 80, 'ochenta y uno': 81, 'ochenta y dos': 82, 'ochenta y tres': 83,
+        'ochenta y cuatro': 84, 'ochenta y cinco': 85, 'ochenta y seis': 86,
+        'ochenta y siete': 87, 'ochenta y ocho': 88, 'ochenta y nueve': 89,
+        'noventa': 90, 'noventa y uno': 91, 'noventa y dos': 92, 'noventa y tres': 93,
+        'noventa y cuatro': 94, 'noventa y cinco': 95, 'noventa y seis': 96,
+        'noventa y siete': 97, 'noventa y ocho': 98, 'noventa y nueve': 99,
     };
 
     // Keep the processVoiceCommand ref updated on every render so it
@@ -1166,16 +1188,29 @@ const VideoTaggerPage: React.FC = () => {
         }
 
         // ── Player selection ──────────────────────────────────────────────
-        // SOLO "jugador X" — nunca "número X" para evitar ambigüedad con atajos
-        // Acepta: "jugador 11", "jugador once", "jugador número 11", "jugador número once"
-        const playerPattern = /jugador\s+(?:número\s+|numero\s+)?(\w+)/;
+        // Acepta: "jugador 11", "jugador once", "jugador noventa y cinco"
+        // También acepta: "jugador Jesus", "jugador Diego"
+        const playerPattern = /jugador\s+(?:número\s+|numero\s+)?(.+)/;
         const playerMatch = text.match(playerPattern);
         if (playerMatch) {
-            const raw = playerMatch[1];
-            // Usar ?? en lugar de || para que el número 0 (cero) no sea descartado
-            // como falso. parseInt("cero") = NaN (falso), SPANISH_NUMBERS["cero"] = 0.
+            const raw = playerMatch[1].trim();
+
+            // Intentar por número primero
             const parsed = parseInt(raw);
-            const numero = !isNaN(parsed) ? parsed : (SPANISH_NUMBERS[raw] ?? null);
+            let numero: number | null = !isNaN(parsed) ? parsed : null;
+
+            // Si no es número directo, buscar en el mapa (incluyendo compuestos)
+            if (numero === null) {
+                // Buscar frases compuestas primero (ej: "treinta y uno")
+                const sortedKeys = Object.keys(SPANISH_NUMBERS).sort((a, b) => b.length - a.length);
+                for (const key of sortedKeys) {
+                    if (raw === key || raw.startsWith(key + ' ')) {
+                        numero = SPANISH_NUMBERS[key];
+                        break;
+                    }
+                }
+            }
+
             if (numero !== null) {
                 const found = filteredPlayers.find(p => p.numero === numero);
                 if (found) {
@@ -1185,8 +1220,21 @@ const VideoTaggerPage: React.FC = () => {
                 } else {
                     show(`⚠ No encontré jugador #${numero}`);
                 }
+                return;
+            }
+
+            // Si no es número, buscar por nombre (primer nombre o apellido)
+            const nameQuery = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            const foundByName = filteredPlayers.find(p => {
+                const nombre = p.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                return nombre.split(/\s+/).some(part => part.startsWith(nameQuery));
+            });
+            if (foundByName) {
+                setSelectedPlayerId(foundByName.id);
+                const parts = foundByName.nombre.trim().split(/\s+/);
+                show(`✅ Jugador #${foundByName.numero} ${parts[0]}`);
             } else {
-                show(`⚠ No entendí el número: "${raw}"`);
+                show(`⚠ No encontré jugador: "${raw}"`);
             }
             return;
         }
