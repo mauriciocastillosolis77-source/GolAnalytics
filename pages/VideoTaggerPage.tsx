@@ -1261,10 +1261,23 @@ const VideoTaggerPage: React.FC = () => {
         show(`❓ No entendí: "${transcript}"`);
     };
 
-    const startVoice = () => {
-        const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-        if (!SpeechRecognition) {
-            alert('Tu navegador no soporta comandos de voz. Usa Chrome o Edge.');
+    const startVoice = async () => {
+        // ── Deepgram WebSocket — conexión única y estable, sin sesiones que expiran ──
+        // A diferencia de Web Speech API, Deepgram mantiene la conexión abierta
+        // indefinidamente sin importar los períodos de silencio.
+
+        const DEEPGRAM_API_KEY = import.meta.env.VITE_DEEPGRAM_API_KEY as string;
+        if (!DEEPGRAM_API_KEY) {
+            alert('Falta la API key de Deepgram. Verifica la variable VITE_DEEPGRAM_API_KEY en Vercel.');
+            return;
+        }
+
+        // Solicitar acceso al micrófono
+        let stream: MediaStream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (err) {
+            alert('Sin acceso al micrófono. Revisa los permisos en Edge.');
             return;
         }
 
@@ -1272,88 +1285,91 @@ const VideoTaggerPage: React.FC = () => {
         setIsVoiceActive(true);
         setVoiceTranscript('');
 
-        // hadResult: true si la sesión terminó habiendo reconocido algo.
-        // Determina el delay de reinicio:
-        //   - Con reconocimiento previo → 100ms (el usuario acaba de hablar, reiniciar rápido)
-        //   - Sin reconocimiento (silencio / no-speech) → 800ms
-        let hadResult = false;
+        // Conectar al WebSocket de Deepgram
+        // - model=nova-2: mejor precisión en español
+        // - language=es: español
+        // - punctuate=false: evita puntuación que interfiere con los comandos
+        // - interim_results=false: solo resultados finales
+        const url = `wss://api.deepgram.com/v1/listen?model=nova-2&language=es&punctuate=false&interim_results=false`;
+        const socket = new WebSocket(url, ['token', DEEPGRAM_API_KEY]);
 
-        // isRestarting: previene que onerror + onend (que Edge dispara juntos en silencio)
-        // programen dos timers simultáneos de createAndStart, lo que genera instancias
-        // duplicadas que se saturan y dejan el botón activo pero sin escuchar.
-        let isRestarting = false;
-
-        const scheduleRestart = (delay: number) => {
-            if (!isVoiceActiveRef.current) return;
-            if (isRestarting) return; // ya hay un reinicio programado, ignorar duplicado
-            isRestarting = true;
-            setTimeout(() => {
-                isRestarting = false;
-                createAndStart();
-            }, delay);
-        };
-
-        const createAndStart = () => {
-            if (!isVoiceActiveRef.current) return;
-
-            if (recognitionRef.current) {
-                try { recognitionRef.current.stop(); } catch (_) {}
-                recognitionRef.current = null;
+        socket.onopen = () => {
+            if (!isVoiceActiveRef.current) {
+                socket.close();
+                return;
             }
 
-            const recognition = new SpeechRecognition();
-            recognition.lang = 'es-ES';
-            recognition.continuous = true;
-            recognition.interimResults = false;
+            // MediaRecorder captura audio del micrófono y lo envía al WebSocket
+            // en chunks de 250ms — Deepgram transcribe en tiempo real
+            const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
 
-            recognition.onresult = (event: any) => {
-                hadResult = true;
-                const last = event.results[event.results.length - 1];
-                const transcript = last[0].transcript;
-                setVoiceTranscript(transcript);
-                processVoiceCommandRef.current(transcript);
-            };
-
-            recognition.onerror = (event: any) => {
-                const fatalErrors = ['not-allowed', 'service-not-allowed', 'audio-capture'];
-                if (fatalErrors.includes(event.error)) {
-                    // Error fatal: apagar la voz completamente
-                    setIsVoiceActive(false);
-                    isVoiceActiveRef.current = false;
-                    recognitionRef.current = null;
-                    setVoiceStatus('⚠ Sin acceso al micrófono. Revisa los permisos.');
-                    setTimeout(() => setVoiceStatus(''), 5000);
-                    return;
+            mediaRecorder.ondataavailable = (e) => {
+                if (socket.readyState === WebSocket.OPEN && e.data.size > 0) {
+                    socket.send(e.data);
                 }
-                // 'aborted', 'no-speech' y cualquier otro error son recuperables.
-                // Edge/Windows los lanza tras silencio prolongado seguido de onend.
-                // scheduleRestart se encarga de que solo haya un reinicio pendiente.
-                scheduleRestart(800);
             };
 
-            recognition.onend = () => {
-                recognitionRef.current = null;
-                if (!isVoiceActiveRef.current) return;
-                const delay = hadResult ? 100 : 800;
-                hadResult = false;
-                scheduleRestart(delay);
-            };
+            mediaRecorder.start(250); // chunk cada 250ms
+            // Guardamos mediaRecorder en recognitionRef para poder detenerlo en stopVoice
+            recognitionRef.current = mediaRecorder;
+        };
 
+        socket.onmessage = (event) => {
             try {
-                recognition.start();
-                recognitionRef.current = recognition;
-            } catch (err) {
-                scheduleRestart(1000);
+                const data = JSON.parse(event.data);
+                // Solo procesar resultados finales con contenido
+                const transcript = data?.channel?.alternatives?.[0]?.transcript;
+                if (transcript && transcript.trim().length > 0 && data?.is_final) {
+                    setVoiceTranscript(transcript);
+                    processVoiceCommandRef.current(transcript);
+                }
+            } catch (_) {
+                // ignorar mensajes malformados
             }
         };
 
-        createAndStart();
+        socket.onerror = () => {
+            if (!isVoiceActiveRef.current) return;
+            setVoiceStatus('⚠ Error de conexión con Deepgram. Verifica tu conexión a internet.');
+            setTimeout(() => setVoiceStatus(''), 5000);
+        };
+
+        socket.onclose = () => {
+            // Limpiar el stream del micrófono al cerrar
+            stream.getTracks().forEach(track => track.stop());
+            if (recognitionRef.current) {
+                try { (recognitionRef.current as MediaRecorder).stop(); } catch (_) {}
+                recognitionRef.current = null;
+            }
+            // Si la voz sigue activa (cierre inesperado), actualizar UI
+            if (isVoiceActiveRef.current) {
+                isVoiceActiveRef.current = false;
+                setIsVoiceActive(false);
+                setVoiceStatus('⚠ Conexión cerrada. Vuelve a activar la voz.');
+                setTimeout(() => setVoiceStatus(''), 4000);
+            }
+        };
+
+        // Guardar socket en un ref separado para cerrarlo en stopVoice
+        (recognitionRef as any).socket = socket;
     };
 
     const stopVoice = () => {
         isVoiceActiveRef.current = false;
-        recognitionRef.current?.stop();
-        recognitionRef.current = null;
+
+        // Detener MediaRecorder
+        if (recognitionRef.current) {
+            try { (recognitionRef.current as MediaRecorder).stop(); } catch (_) {}
+            recognitionRef.current = null;
+        }
+
+        // Cerrar WebSocket
+        const socket = (recognitionRef as any).socket as WebSocket | undefined;
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.close();
+        }
+        (recognitionRef as any).socket = null;
+
         setIsVoiceActive(false);
         setVoiceTranscript('');
         setVoiceStatus('');
@@ -2092,6 +2108,7 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
 
 
 
