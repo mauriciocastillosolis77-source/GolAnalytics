@@ -96,10 +96,12 @@ const VideoTaggerPage: React.FC = () => {
 
     // Filtrar jugadores por equipo del partido seleccionado
     const filteredPlayers = useMemo(() => {
-        if (!selectedMatchId) return players;
+        if (!selectedMatchId) return [...players].sort((a, b) => a.numero - b.numero);
         const selectedMatch = matches.find(m => m.id === selectedMatchId);
-        if (!selectedMatch?.team_id) return players;
-        return players.filter(p => p.team_id === selectedMatch.team_id);
+        if (!selectedMatch?.team_id) return [...players].sort((a, b) => a.numero - b.numero);
+        return players
+            .filter(p => p.team_id === selectedMatch.team_id)
+            .sort((a, b) => a.numero - b.numero);
     }, [players, selectedMatchId, matches]);
 
     // Keyboard shortcuts mapping: key -> action from METRICS
@@ -2108,6 +2110,8 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
+
 
 
 
