@@ -90,16 +90,20 @@ const VideoTaggerPage: React.FC = () => {
     const recognitionRef = useRef<any>(null);
     const isVoiceActiveRef = useRef(false);
     const processVoiceCommandRef = useRef<(t: string) => void>(() => {});
+    // Referencia a la ventana secundaria del video — se guarda al abrirla
+    const secondaryWindowRef = useRef<Window | null>(null);
 
     // Derived state: any AI analysis is running
     const isAnyAnalysisRunning = isGeminiAnalyzing || isCustomAnalyzing || isBatchAnalyzing || isSegmentAnalyzing;
 
     // Filtrar jugadores por equipo del partido seleccionado
     const filteredPlayers = useMemo(() => {
-        if (!selectedMatchId) return players;
+        if (!selectedMatchId) return [...players].sort((a, b) => a.numero - b.numero);
         const selectedMatch = matches.find(m => m.id === selectedMatchId);
-        if (!selectedMatch?.team_id) return players;
-        return players.filter(p => p.team_id === selectedMatch.team_id);
+        if (!selectedMatch?.team_id) return [...players].sort((a, b) => a.numero - b.numero);
+        return players
+            .filter(p => p.team_id === selectedMatch.team_id)
+            .sort((a, b) => a.numero - b.numero);
     }, [players, selectedMatchId, matches]);
 
     // Keyboard shortcuts mapping: key -> action from METRICS
@@ -1100,7 +1104,7 @@ const VideoTaggerPage: React.FC = () => {
     };
 
     // ── VOICE COMMANDS ────────────────────────────────────────────────────────
-    // Map Spanish number words to digits (covers jersey numbers 1-25)
+    // Map Spanish number words to digits (covers jersey numbers 0-99)
     const SPANISH_NUMBERS: Record<string, number> = {
         'cero': 0,
         'uno': 1, 'dos': 2, 'tres': 3, 'cuatro': 4, 'cinco': 5,
@@ -1109,7 +1113,29 @@ const VideoTaggerPage: React.FC = () => {
         'dieciséis': 16, 'dieciseis': 16, 'diecisiete': 17, 'dieciocho': 18,
         'diecinueve': 19, 'veinte': 20, 'veintiuno': 21, 'veintidós': 22,
         'veintidos': 22, 'veintitrés': 23, 'veintitres': 23,
-        'veinticuatro': 24, 'veinticinco': 25,
+        'veinticuatro': 24, 'veinticinco': 25, 'veintiséis': 26, 'veintiseis': 26,
+        'veintisiete': 27, 'veintiocho': 28, 'veintinueve': 29,
+        'treinta': 30, 'treinta y uno': 31, 'treinta y dos': 32, 'treinta y tres': 33,
+        'treinta y cuatro': 34, 'treinta y cinco': 35, 'treinta y seis': 36,
+        'treinta y siete': 37, 'treinta y ocho': 38, 'treinta y nueve': 39,
+        'cuarenta': 40, 'cuarenta y uno': 41, 'cuarenta y dos': 42, 'cuarenta y tres': 43,
+        'cuarenta y cuatro': 44, 'cuarenta y cinco': 45, 'cuarenta y seis': 46,
+        'cuarenta y siete': 47, 'cuarenta y ocho': 48, 'cuarenta y nueve': 49,
+        'cincuenta': 50, 'cincuenta y uno': 51, 'cincuenta y dos': 52, 'cincuenta y tres': 53,
+        'cincuenta y cuatro': 54, 'cincuenta y cinco': 55, 'cincuenta y seis': 56,
+        'cincuenta y siete': 57, 'cincuenta y ocho': 58, 'cincuenta y nueve': 59,
+        'sesenta': 60, 'sesenta y uno': 61, 'sesenta y dos': 62, 'sesenta y tres': 63,
+        'sesenta y cuatro': 64, 'sesenta y cinco': 65, 'sesenta y seis': 66,
+        'sesenta y siete': 67, 'sesenta y ocho': 68, 'sesenta y nueve': 69,
+        'setenta': 70, 'setenta y uno': 71, 'setenta y dos': 72, 'setenta y tres': 73,
+        'setenta y cuatro': 74, 'setenta y cinco': 75, 'setenta y seis': 76,
+        'setenta y siete': 77, 'setenta y ocho': 78, 'setenta y nueve': 79,
+        'ochenta': 80, 'ochenta y uno': 81, 'ochenta y dos': 82, 'ochenta y tres': 83,
+        'ochenta y cuatro': 84, 'ochenta y cinco': 85, 'ochenta y seis': 86,
+        'ochenta y siete': 87, 'ochenta y ocho': 88, 'ochenta y nueve': 89,
+        'noventa': 90, 'noventa y uno': 91, 'noventa y dos': 92, 'noventa y tres': 93,
+        'noventa y cuatro': 94, 'noventa y cinco': 95, 'noventa y seis': 96,
+        'noventa y siete': 97, 'noventa y ocho': 98, 'noventa y nueve': 99,
     };
 
     // Keep the processVoiceCommand ref updated on every render so it
@@ -1125,38 +1151,66 @@ const VideoTaggerPage: React.FC = () => {
         };
 
         // ── Video controls ────────────────────────────────────────────────
+        // Si hay ventana secundaria abierta, los comandos de video se envían
+        // a esa ventana via postMessage. Si no, controlan el video principal.
+        const sendToSecondary = (action: string) => {
+            const sw = secondaryWindowRef.current;
+            if (sw && !sw.closed) {
+                sw.postMessage({ type: 'gol_videocontrol', action }, '*');
+                return true;
+            }
+            return false;
+        };
+
         if (/pausar|pausa|para\b|detener/.test(text)) {
-            videoRef.current?.pause();
+            if (!sendToSecondary('pause')) videoRef.current?.pause();
             show('⏸ Video pausado');
             return;
         }
         if (/reproducir|play|continuar|reanudar/.test(text)) {
-            videoRef.current?.play();
+            if (!sendToSecondary('play')) videoRef.current?.play();
             show('▶ Video reproduciendo');
             return;
         }
         if (/atrás|atras|regresar|retroceder/.test(text)) {
-            if (videoRef.current) videoRef.current.currentTime -= 5;
+            if (!sendToSecondary('back')) {
+                if (videoRef.current) videoRef.current.currentTime -= 5;
+            }
             show('⏪ -5 segundos');
             return;
         }
         if (/adelante|avanzar|adelantar/.test(text)) {
-            if (videoRef.current) videoRef.current.currentTime += 5;
+            if (!sendToSecondary('forward')) {
+                if (videoRef.current) videoRef.current.currentTime += 5;
+            }
             show('⏩ +5 segundos');
             return;
         }
 
         // ── Player selection ──────────────────────────────────────────────
-        // SOLO "jugador X" — nunca "número X" para evitar ambigüedad con atajos
-        // Acepta: "jugador 11", "jugador once", "jugador número 11", "jugador número once"
-        const playerPattern = /jugador\s+(?:número\s+|numero\s+)?(\w+)/;
+        // Acepta: "jugador 11", "jugador once", "jugador noventa y cinco"
+        // También acepta: "jugador Jesus", "jugador Diego"
+        const playerPattern = /jugador\s+(?:número\s+|numero\s+)?(.+)/;
         const playerMatch = text.match(playerPattern);
         if (playerMatch) {
-            const raw = playerMatch[1];
-            // Usar ?? en lugar de || para que el número 0 (cero) no sea descartado
-            // como falso. parseInt("cero") = NaN (falso), SPANISH_NUMBERS["cero"] = 0.
+            const raw = playerMatch[1].trim();
+
+            // Intentar por número primero
             const parsed = parseInt(raw);
-            const numero = !isNaN(parsed) ? parsed : (SPANISH_NUMBERS[raw] ?? null);
+            let numero: number | null = !isNaN(parsed) ? parsed : null;
+
+            // Si no es número directo, buscar en el mapa (incluyendo compuestos)
+            if (numero === null) {
+                // Buscar frases compuestas primero (ej: "treinta y uno")
+                const sortedKeys = Object.keys(SPANISH_NUMBERS).sort((a, b) => b.length - a.length);
+                for (const key of sortedKeys) {
+                    if (raw === key || raw.startsWith(key + ' ')) {
+                        numero = SPANISH_NUMBERS[key];
+                        break;
+                    }
+                }
+            }
+
             if (numero !== null) {
                 const found = filteredPlayers.find(p => p.numero === numero);
                 if (found) {
@@ -1166,8 +1220,21 @@ const VideoTaggerPage: React.FC = () => {
                 } else {
                     show(`⚠ No encontré jugador #${numero}`);
                 }
+                return;
+            }
+
+            // Si no es número, buscar por nombre (primer nombre o apellido)
+            const nameQuery = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            const foundByName = filteredPlayers.find(p => {
+                const nombre = p.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                return nombre.split(/\s+/).some(part => part.startsWith(nameQuery));
+            });
+            if (foundByName) {
+                setSelectedPlayerId(foundByName.id);
+                const parts = foundByName.nombre.trim().split(/\s+/);
+                show(`✅ Jugador #${foundByName.numero} ${parts[0]}`);
             } else {
-                show(`⚠ No entendí el número: "${raw}"`);
+                show(`⚠ No encontré jugador: "${raw}"`);
             }
             return;
         }
@@ -1261,10 +1328,23 @@ const VideoTaggerPage: React.FC = () => {
         show(`❓ No entendí: "${transcript}"`);
     };
 
-    const startVoice = () => {
-        const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-        if (!SpeechRecognition) {
-            alert('Tu navegador no soporta comandos de voz. Usa Chrome o Edge.');
+    const startVoice = async () => {
+        // ── Deepgram WebSocket — conexión única y estable, sin sesiones que expiran ──
+        // A diferencia de Web Speech API, Deepgram mantiene la conexión abierta
+        // indefinidamente sin importar los períodos de silencio.
+
+        const DEEPGRAM_API_KEY = import.meta.env.VITE_DEEPGRAM_API_KEY as string;
+        if (!DEEPGRAM_API_KEY) {
+            alert('Falta la API key de Deepgram. Verifica la variable VITE_DEEPGRAM_API_KEY en Vercel.');
+            return;
+        }
+
+        // Solicitar acceso al micrófono
+        let stream: MediaStream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (err) {
+            alert('Sin acceso al micrófono. Revisa los permisos en Edge.');
             return;
         }
 
@@ -1272,88 +1352,91 @@ const VideoTaggerPage: React.FC = () => {
         setIsVoiceActive(true);
         setVoiceTranscript('');
 
-        // hadResult: true si la sesión terminó habiendo reconocido algo.
-        // Determina el delay de reinicio:
-        //   - Con reconocimiento previo → 100ms (el usuario acaba de hablar, reiniciar rápido)
-        //   - Sin reconocimiento (silencio / no-speech) → 800ms
-        let hadResult = false;
+        // Conectar al WebSocket de Deepgram
+        // - model=nova-2: mejor precisión en español
+        // - language=es: español
+        // - punctuate=false: evita puntuación que interfiere con los comandos
+        // - interim_results=false: solo resultados finales
+        const url = `wss://api.deepgram.com/v1/listen?model=nova-2&language=es&punctuate=false&interim_results=false`;
+        const socket = new WebSocket(url, ['token', DEEPGRAM_API_KEY]);
 
-        // isRestarting: previene que onerror + onend (que Edge dispara juntos en silencio)
-        // programen dos timers simultáneos de createAndStart, lo que genera instancias
-        // duplicadas que se saturan y dejan el botón activo pero sin escuchar.
-        let isRestarting = false;
-
-        const scheduleRestart = (delay: number) => {
-            if (!isVoiceActiveRef.current) return;
-            if (isRestarting) return; // ya hay un reinicio programado, ignorar duplicado
-            isRestarting = true;
-            setTimeout(() => {
-                isRestarting = false;
-                createAndStart();
-            }, delay);
-        };
-
-        const createAndStart = () => {
-            if (!isVoiceActiveRef.current) return;
-
-            if (recognitionRef.current) {
-                try { recognitionRef.current.stop(); } catch (_) {}
-                recognitionRef.current = null;
+        socket.onopen = () => {
+            if (!isVoiceActiveRef.current) {
+                socket.close();
+                return;
             }
 
-            const recognition = new SpeechRecognition();
-            recognition.lang = 'es-ES';
-            recognition.continuous = true;
-            recognition.interimResults = false;
+            // MediaRecorder captura audio del micrófono y lo envía al WebSocket
+            // en chunks de 250ms — Deepgram transcribe en tiempo real
+            const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
 
-            recognition.onresult = (event: any) => {
-                hadResult = true;
-                const last = event.results[event.results.length - 1];
-                const transcript = last[0].transcript;
-                setVoiceTranscript(transcript);
-                processVoiceCommandRef.current(transcript);
-            };
-
-            recognition.onerror = (event: any) => {
-                const fatalErrors = ['not-allowed', 'service-not-allowed', 'audio-capture'];
-                if (fatalErrors.includes(event.error)) {
-                    // Error fatal: apagar la voz completamente
-                    setIsVoiceActive(false);
-                    isVoiceActiveRef.current = false;
-                    recognitionRef.current = null;
-                    setVoiceStatus('⚠ Sin acceso al micrófono. Revisa los permisos.');
-                    setTimeout(() => setVoiceStatus(''), 5000);
-                    return;
+            mediaRecorder.ondataavailable = (e) => {
+                if (socket.readyState === WebSocket.OPEN && e.data.size > 0) {
+                    socket.send(e.data);
                 }
-                // 'aborted', 'no-speech' y cualquier otro error son recuperables.
-                // Edge/Windows los lanza tras silencio prolongado seguido de onend.
-                // scheduleRestart se encarga de que solo haya un reinicio pendiente.
-                scheduleRestart(800);
             };
 
-            recognition.onend = () => {
-                recognitionRef.current = null;
-                if (!isVoiceActiveRef.current) return;
-                const delay = hadResult ? 100 : 800;
-                hadResult = false;
-                scheduleRestart(delay);
-            };
+            mediaRecorder.start(250); // chunk cada 250ms
+            // Guardamos mediaRecorder en recognitionRef para poder detenerlo en stopVoice
+            recognitionRef.current = mediaRecorder;
+        };
 
+        socket.onmessage = (event) => {
             try {
-                recognition.start();
-                recognitionRef.current = recognition;
-            } catch (err) {
-                scheduleRestart(1000);
+                const data = JSON.parse(event.data);
+                // Solo procesar resultados finales con contenido
+                const transcript = data?.channel?.alternatives?.[0]?.transcript;
+                if (transcript && transcript.trim().length > 0 && data?.is_final) {
+                    setVoiceTranscript(transcript);
+                    processVoiceCommandRef.current(transcript);
+                }
+            } catch (_) {
+                // ignorar mensajes malformados
             }
         };
 
-        createAndStart();
+        socket.onerror = () => {
+            if (!isVoiceActiveRef.current) return;
+            setVoiceStatus('⚠ Error de conexión con Deepgram. Verifica tu conexión a internet.');
+            setTimeout(() => setVoiceStatus(''), 5000);
+        };
+
+        socket.onclose = () => {
+            // Limpiar el stream del micrófono al cerrar
+            stream.getTracks().forEach(track => track.stop());
+            if (recognitionRef.current) {
+                try { (recognitionRef.current as MediaRecorder).stop(); } catch (_) {}
+                recognitionRef.current = null;
+            }
+            // Si la voz sigue activa (cierre inesperado), actualizar UI
+            if (isVoiceActiveRef.current) {
+                isVoiceActiveRef.current = false;
+                setIsVoiceActive(false);
+                setVoiceStatus('⚠ Conexión cerrada. Vuelve a activar la voz.');
+                setTimeout(() => setVoiceStatus(''), 4000);
+            }
+        };
+
+        // Guardar socket en un ref separado para cerrarlo en stopVoice
+        (recognitionRef as any).socket = socket;
     };
 
     const stopVoice = () => {
         isVoiceActiveRef.current = false;
-        recognitionRef.current?.stop();
-        recognitionRef.current = null;
+
+        // Detener MediaRecorder
+        if (recognitionRef.current) {
+            try { (recognitionRef.current as MediaRecorder).stop(); } catch (_) {}
+            recognitionRef.current = null;
+        }
+
+        // Cerrar WebSocket
+        const socket = (recognitionRef as any).socket as WebSocket | undefined;
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.close();
+        }
+        (recognitionRef as any).socket = null;
+
         setIsVoiceActive(false);
         setVoiceTranscript('');
         setVoiceStatus('');
@@ -1464,11 +1547,20 @@ const VideoTaggerPage: React.FC = () => {
   vid.addEventListener('seeked', function() {
     if (window.opener) window.opener.postMessage({type:'gol_timeupdate', time: vid.currentTime}, '*');
   });
+  // Recibe comandos de control desde la ventana principal (voz)
+  window.addEventListener('message', function(e) {
+    if (!e.data || e.data.type !== 'gol_videocontrol') return;
+    if (e.data.action === 'pause') vid.pause();
+    else if (e.data.action === 'play') vid.play();
+    else if (e.data.action === 'back') vid.currentTime = Math.max(0, vid.currentTime - 5);
+    else if (e.data.action === 'forward') vid.currentTime += 5;
+  });
 </script>
 </body></html>`;
                                             const blob = new Blob([html], { type: 'text/html' });
                                             const url = URL.createObjectURL(blob);
-                                            window.open(url, '_blank', 'width=1280,height=720');
+                                            const sw = window.open(url, '_blank', 'width=1280,height=720');
+                                            secondaryWindowRef.current = sw;
                                         }}
                                         className="bg-cyan-700/80 hover:bg-cyan-600 text-white px-2 py-1 rounded text-xs font-bold border border-cyan-400/40 shadow"
                                         title="Abrir video en nueva ventana (segunda pantalla)"
@@ -2092,6 +2184,9 @@ const VideoTaggerPage: React.FC = () => {
 };
 
 export default VideoTaggerPage;
+
+
+
 
 
 
