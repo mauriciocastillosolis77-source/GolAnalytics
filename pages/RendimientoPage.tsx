@@ -175,15 +175,20 @@ const RendimientoPage: React.FC = () => {
     // Para las métricas GLOBALES (KPIs, Efectividad por Jornada, Volumen por Jornada, Tabla por Jornada,
     // stats por acción para IA), estas acciones se consideran siempre positivas o siempre negativas:
     // - Atajadas, Goles a favor, Recuperación de balón: siempre cuentan como logradas
+    // - Tiros a portería: siempre cuenta como logrado (acción ofensiva positiva). NOTA: esto es
+    //   distinto al criterio de DashboardPage.tsx, donde "Tiros a portería" se EXCLUYE de la
+    //   Efectividad Global porque ahí ya tiene su propia tasa de conversión dedicada. Aquí en
+    //   RendimientoPage se decidió contarlo como logrado en vez de excluirlo (decisión específica
+    //   de esta vista, confirmada explícitamente).
     // - Goles recibidos: siempre cuenta como fallada
     // - "Transición ofensiva lograda" / "Transición ofensiva no lograda": son dos valores de `accion`
     //   distintos (no usan el campo `resultado`), así que se mapean directamente por nombre.
     // - Pérdida de balón: siempre cuenta como fallada
-    // (mismo criterio que ya se usa en DashboardPage.tsx, para mantener consistencia entre vistas)
     const SIEMPRE_LOGRADA = new Set<string>([
         ...ACTION_GROUPS.ATAJADAS,
         ...ACTION_GROUPS.GOLES,
         ...ACTION_GROUPS.RECUPERACIONES,
+        ...ACTION_GROUPS.TIROS_GOL,
         'Transición ofensiva lograda'
     ]);
     const SIEMPRE_FALLADA = new Set<string>([
