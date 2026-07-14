@@ -176,13 +176,20 @@ const RendimientoPage: React.FC = () => {
     // stats por acción para IA), estas acciones se consideran siempre positivas o siempre negativas:
     // - Atajadas, Goles a favor, Recuperación de balón: siempre cuentan como logradas
     // - Goles recibidos: siempre cuenta como fallada
+    // - "Transición ofensiva lograda" / "Transición ofensiva no lograda": son dos valores de `accion`
+    //   distintos (no usan el campo `resultado`), así que se mapean directamente por nombre.
+    // - Pérdida de balón: siempre cuenta como fallada
+    // (mismo criterio que ya se usa en DashboardPage.tsx, para mantener consistencia entre vistas)
     const SIEMPRE_LOGRADA = new Set<string>([
         ...ACTION_GROUPS.ATAJADAS,
         ...ACTION_GROUPS.GOLES,
-        ...ACTION_GROUPS.RECUPERACIONES
+        ...ACTION_GROUPS.RECUPERACIONES,
+        'Transición ofensiva lograda'
     ]);
     const SIEMPRE_FALLADA = new Set<string>([
-        ...ACTION_GROUPS.GOLES_RECIBIDOS
+        ...ACTION_GROUPS.GOLES_RECIBIDOS,
+        'Transición ofensiva no lograda',
+        'Pérdida de balón'
     ]);
 
     // Determina si un tag cuenta como "logrado" para las métricas globales de efectividad.
@@ -427,6 +434,45 @@ const RendimientoPage: React.FC = () => {
     // DEFENSA - Recuperaciones de Balón (solo cuenta total, no hay logrado/fallado)
     const recuperacionesData = useMemo(() => 
         getActionCountByJornada(ACTION_GROUPS.RECUPERACIONES)
+    , [playerTags, matchLookup]);
+
+    // FINALIZACIÓN - Transiciones Ofensivas (lograda/no lograda son 2 valores distintos de `accion`,
+    // no usan el campo `resultado`, así que se clasifican por nombre en vez de por resultado)
+    const transicionesOfensivasData = useMemo(() => {
+        const filteredTags = playerTags.filter(tag =>
+            tag.accion === 'Transición ofensiva lograda' || tag.accion === 'Transición ofensiva no lograda'
+        );
+
+        if (filteredTags.length === 0) return [];
+
+        const byJornada = filteredTags.reduce((acc, tag) => {
+            const match = matchLookup.get(tag.match_id);
+            if (!match) return acc;
+
+            const jornada = match.jornada;
+            if (!acc[jornada]) {
+                acc[jornada] = { jornada, logrados: 0, fallados: 0 };
+            }
+            if (tag.accion === 'Transición ofensiva lograda') {
+                acc[jornada].logrados++;
+            } else {
+                acc[jornada].fallados++;
+            }
+            return acc;
+        }, {} as Record<number, { jornada: number; logrados: number; fallados: number }>);
+
+        return (Object.values(byJornada) as { jornada: number; logrados: number; fallados: number }[])
+            .map(stats => ({
+                jornada: `J${stats.jornada}`,
+                logrados: stats.logrados,
+                fallados: stats.fallados
+            }))
+            .sort((a, b) => parseInt(a.jornada.slice(1)) - parseInt(b.jornada.slice(1)));
+    }, [playerTags, matchLookup]);
+
+    // FINALIZACIÓN - Pérdida de Balón (solo cuenta total, no hay logrado/fallado)
+    const perdidasBalonData = useMemo(() =>
+        getActionCountByJornada(['Pérdida de balón'])
     , [playerTags, matchLookup]);
 
     // Table data
@@ -1002,6 +1048,51 @@ const RendimientoPage: React.FC = () => {
                                     </ResponsiveContainer>
                                 )}
                             </div>
+
+                            {/* Transiciones Ofensivas */}
+                            <div className="bg-gray-800 rounded-lg p-6">
+                                <h3 className="text-lg font-semibold mb-4 text-white">Transiciones Ofensivas</h3>
+                                {transicionesOfensivasData.length === 0 ? (
+                                    <p className="text-gray-400 text-center py-8">Sin datos de transiciones ofensivas</p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height={300}>
+                                        <BarChart data={transicionesOfensivasData}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
+                                            <YAxis stroke="#9CA3AF" />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
+                                                labelStyle={{ color: '#F3F4F6' }}
+                                            />
+                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
+                                            <Bar dataKey="logrados" stackId="a" fill="#10B981" name="Logradas" />
+                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="No Logradas" />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </div>
+
+                            {/* Pérdida de Balón */}
+                            <div className="bg-gray-800 rounded-lg p-6">
+                                <h3 className="text-lg font-semibold mb-4 text-white">Pérdida de Balón</h3>
+                                {perdidasBalonData.length === 0 ? (
+                                    <p className="text-gray-400 text-center py-8">Sin datos de pérdidas de balón</p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height={300}>
+                                        <BarChart data={perdidasBalonData}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
+                                            <YAxis stroke="#9CA3AF" />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
+                                                labelStyle={{ color: '#F3F4F6' }}
+                                            />
+                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
+                                            <Bar dataKey="total" fill="#EF4444" name="Pérdidas" />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </div>
                         </div>
                     </div>
 
@@ -1363,5 +1454,6 @@ const RendimientoPage: React.FC = () => {
 };
 
 export default RendimientoPage;
+
 
 
