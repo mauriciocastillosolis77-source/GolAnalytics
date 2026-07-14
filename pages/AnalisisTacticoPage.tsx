@@ -235,7 +235,12 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
   return new Promise((resolve, reject) => {
     const startAt = Math.max(0, frameTimestamp - secondsBefore);
     const duration = frameTimestamp - startAt;
-    const mimeType = MediaRecorder.isTypeSupported('video/mp4') ? 'video/mp4'
+    // Se exige explícitamente el códec H.264 (avc1) en vez de un 'video/mp4' genérico.
+    // 'video/mp4' genérico no garantiza qué códec usa el navegador por dentro (algunos
+    // navegadores/hardware pueden usar AV1 u otro códec no soportado por Safari, aunque
+    // el contenedor sea .mp4). H.264 es el único códec universalmente compatible con
+    // todos los navegadores, incluyendo Safari en iPhone/iPad.
+    const mimeType = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1') ? 'video/mp4;codecs=avc1'
       : MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
     const stream = (videoElement as any).captureStream?.() ?? (videoElement as any).mozCaptureStream?.();
     if (!stream) { reject(new Error('captureStream no soportado')); return; }
@@ -1212,6 +1217,7 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
 
 
