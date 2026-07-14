@@ -145,6 +145,39 @@ const formatHistoryDate = (dateStr: string): string => {
     });
 };
 
+// Acciones que NO tienen un resultado binario 'logrado'/'fallado' real en el tag, y por tanto
+// no se deben mezclar tal cual con las acciones binarias (pases, duelos, etc.) al calcular
+// Efectividad General / Efectividad por Jornada / totales para el análisis de IA de equipo.
+//
+// - "Atajadas", "Goles a favor", "Recuperación de balón": siempre se consideran logradas.
+// - "Goles recibidos": siempre se considera fallada.
+// - "Transición ofensiva lograda" / "Transición ofensiva no lograda": son dos valores de
+//   `accion` distintos (no usan el campo `resultado`), así que se mapean directamente.
+// - "Pérdida de balón": siempre se considera fallada.
+// - "Tiros a portería": se EXCLUYE de esta métrica global porque ya tiene su propia
+//   tasa de conversión dedicada (rendimientoOfensivoPorteria) y no debe duplicarse aquí.
+const ACCIONES_EXCLUIDAS_EFECTIVIDAD_GLOBAL = new Set<string>(['Tiros a portería']);
+const ACCIONES_SIEMPRE_LOGRADA = new Set<string>([
+    'Atajadas',
+    'Goles a favor',
+    'Recuperación de balón',
+    'Transición ofensiva lograda'
+]);
+const ACCIONES_SIEMPRE_FALLADA = new Set<string>([
+    'Goles recibidos',
+    'Transición ofensiva no lograda',
+    'Pérdida de balón'
+]);
+
+const isAccionElegibleParaEfectividadGlobal = (tag: any): boolean =>
+    !ACCIONES_EXCLUIDAS_EFECTIVIDAD_GLOBAL.has(tag.accion);
+
+const isAccionLograda = (tag: any): boolean => {
+    if (ACCIONES_SIEMPRE_LOGRADA.has(tag.accion)) return true;
+    if (ACCIONES_SIEMPRE_FALLADA.has(tag.accion)) return false;
+    return tag.resultado === 'logrado';
+};
+
 const DashboardPage: React.FC = () => {
     const { profile } = useAuth();
     const [matches, setMatches] = useState<Match[]>([]);
@@ -255,9 +288,12 @@ const DashboardPage: React.FC = () => {
     }, [matches, tags, players]);
 
     const summaryData = useMemo(() => {
+        // "Acciones Totales" cuenta TODAS las acciones tageadas, incluyendo Tiros a portería.
         const total = filteredTags.length;
-        const logrados = filteredTags.filter(t => t.resultado === 'logrado').length;
-        const efectividad = total > 0 ? (logrados / total) * 100 : 0;
+        // "Efectividad General" excluye Tiros a portería (tiene su propia tasa de conversión aparte).
+        const eligibleTags = filteredTags.filter(isAccionElegibleParaEfectividadGlobal);
+        const logrados = eligibleTags.filter(isAccionLograda).length;
+        const efectividad = eligibleTags.length > 0 ? (logrados / eligibleTags.length) * 100 : 0;
         return { total, efectividad };
     }, [filteredTags]);
 
@@ -291,9 +327,12 @@ const DashboardPage: React.FC = () => {
         setAnalysisError(null);
 
         try {
+            // "Total de acciones" reportado a la IA = todas las acciones tageadas (consistente con la tarjeta "Acciones Totales").
             const totalAcciones = filteredTags.length;
-            const totalLogradas = filteredTags.filter(t => t.resultado === 'logrado').length;
-            const efectividadGlobal = totalAcciones > 0 ? Math.round((totalLogradas / totalAcciones) * 100) : 0;
+            // "Efectividad global" excluye Tiros a portería, igual que en la tarjeta "Efectividad General".
+            const eligibleTags = filteredTags.filter(isAccionElegibleParaEfectividadGlobal);
+            const totalLogradas = eligibleTags.filter(isAccionLograda).length;
+            const efectividadGlobal = eligibleTags.length > 0 ? Math.round((totalLogradas / eligibleTags.length) * 100) : 0;
 
             const currentFilters = {
                 torneo: filters.torneo !== 'all' ? filters.torneo : undefined,
@@ -356,19 +395,21 @@ const DashboardPage: React.FC = () => {
     const effectivenessByJornada = useMemo(() => {
         const dataByJornada: { [key: string]: { logradas: number, total: number } } = {};
         
-        filteredTags.forEach(tag => {
-            const match = matches.find(m => m.id === tag.match_id);
-            if (!match || !match.jornada) return;
+        filteredTags
+            .filter(isAccionElegibleParaEfectividadGlobal)
+            .forEach(tag => {
+                const match = matches.find(m => m.id === tag.match_id);
+                if (!match || !match.jornada) return;
 
-            const jornada = `Jornada ${match.jornada}`;
-            if (!dataByJornada[jornada]) {
-                dataByJornada[jornada] = { logradas: 0, total: 0 };
-            }
-            dataByJornada[jornada].total++;
-            if (tag.resultado === 'logrado') {
-                dataByJornada[jornada].logradas++;
-            }
-        });
+                const jornada = `Jornada ${match.jornada}`;
+                if (!dataByJornada[jornada]) {
+                    dataByJornada[jornada] = { logradas: 0, total: 0 };
+                }
+                dataByJornada[jornada].total++;
+                if (isAccionLograda(tag)) {
+                    dataByJornada[jornada].logradas++;
+                }
+            });
 
         return Object.entries(dataByJornada)
             .map(([jornada, data]) => ({
@@ -1389,3 +1430,4 @@ const DashboardPage: React.FC = () => {
 };
 
 export default DashboardPage;
+
