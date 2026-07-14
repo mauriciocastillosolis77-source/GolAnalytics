@@ -170,6 +170,29 @@ const RendimientoPage: React.FC = () => {
         setFilters({});
     };
 
+    // Acciones que no tienen un resultado binario 'logrado'/'fallado' en el tag (ver ACTION_GROUPS
+    // y el comentario original en getActionCountByJornada: "solo cuenta total, no hay logrado/fallado").
+    // Para las métricas GLOBALES (KPIs, Efectividad por Jornada, Volumen por Jornada, Tabla por Jornada,
+    // stats por acción para IA), estas acciones se consideran siempre positivas o siempre negativas:
+    // - Atajadas, Goles a favor, Recuperación de balón: siempre cuentan como logradas
+    // - Goles recibidos: siempre cuenta como fallada
+    const SIEMPRE_LOGRADA = new Set<string>([
+        ...ACTION_GROUPS.ATAJADAS,
+        ...ACTION_GROUPS.GOLES,
+        ...ACTION_GROUPS.RECUPERACIONES
+    ]);
+    const SIEMPRE_FALLADA = new Set<string>([
+        ...ACTION_GROUPS.GOLES_RECIBIDOS
+    ]);
+
+    // Determina si un tag cuenta como "logrado" para las métricas globales de efectividad.
+    // No modifica el dato guardado en la base de datos, solo cómo se interpreta al agregar.
+    const isAccionLograda = useCallback((tag: Tag): boolean => {
+        if (SIEMPRE_LOGRADA.has(tag.accion)) return true;
+        if (SIEMPRE_FALLADA.has(tag.accion)) return false;
+        return tag.resultado === 'logrado';
+    }, []);
+
     // Calculate KPIs
     const kpis = useMemo(() => {
         if (playerTags.length === 0) {
@@ -182,7 +205,7 @@ const RendimientoPage: React.FC = () => {
         }
 
         const totalAcciones = playerTags.length;
-        const accionesLogradas = playerTags.filter(tag => tag.resultado === 'logrado').length;
+        const accionesLogradas = playerTags.filter(isAccionLograda).length;
         const efectividadGlobal = Math.round((accionesLogradas / totalAcciones) * 100);
 
         // Group by jornada
@@ -195,7 +218,7 @@ const RendimientoPage: React.FC = () => {
                 acc[jornada] = { logradas: 0, total: 0 };
             }
             acc[jornada].total++;
-            if (tag.resultado === 'logrado') {
+            if (isAccionLograda(tag)) {
                 acc[jornada].logradas++;
             }
             return acc;
@@ -237,7 +260,7 @@ const RendimientoPage: React.FC = () => {
                 acc[jornada] = { jornada, logradas: 0, falladas: 0, total: 0 };
             }
             acc[jornada].total++;
-            if (tag.resultado === 'logrado') {
+            if (isAccionLograda(tag)) {
                 acc[jornada].logradas++;
             } else {
                 acc[jornada].falladas++;
@@ -267,7 +290,7 @@ const RendimientoPage: React.FC = () => {
             if (!acc[jornada]) {
                 acc[jornada] = { jornada, logradas: 0, falladas: 0 };
             }
-            if (tag.resultado === 'logrado') {
+            if (isAccionLograda(tag)) {
                 acc[jornada].logradas++;
             } else {
                 acc[jornada].falladas++;
@@ -425,7 +448,7 @@ const RendimientoPage: React.FC = () => {
                 };
             }
             acc[jornada].total++;
-            if (tag.resultado === 'logrado') {
+            if (isAccionLograda(tag)) {
                 acc[jornada].logradas++;
             } else {
                 acc[jornada].falladas++;
@@ -466,7 +489,7 @@ const RendimientoPage: React.FC = () => {
         playerTags.forEach(tag => {
             const current = stats.get(tag.accion) || { total: 0, logradas: 0 };
             current.total++;
-            if (tag.resultado === 'logrado') current.logradas++;
+            if (isAccionLograda(tag)) current.logradas++;
             stats.set(tag.accion, current);
         });
         return Array.from(stats.entries()).map(([accion, data]) => ({
@@ -1340,4 +1363,5 @@ const RendimientoPage: React.FC = () => {
 };
 
 export default RendimientoPage;
+
 
