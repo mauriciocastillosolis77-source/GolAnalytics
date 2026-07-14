@@ -288,10 +288,12 @@ const DashboardPage: React.FC = () => {
     }, [matches, tags, players]);
 
     const summaryData = useMemo(() => {
+        // "Acciones Totales" cuenta TODAS las acciones tageadas, incluyendo Tiros a portería.
+        const total = filteredTags.length;
+        // "Efectividad General" excluye Tiros a portería (tiene su propia tasa de conversión aparte).
         const eligibleTags = filteredTags.filter(isAccionElegibleParaEfectividadGlobal);
-        const total = eligibleTags.length;
         const logrados = eligibleTags.filter(isAccionLograda).length;
-        const efectividad = total > 0 ? (logrados / total) * 100 : 0;
+        const efectividad = eligibleTags.length > 0 ? (logrados / eligibleTags.length) * 100 : 0;
         return { total, efectividad };
     }, [filteredTags]);
 
@@ -325,10 +327,12 @@ const DashboardPage: React.FC = () => {
         setAnalysisError(null);
 
         try {
+            // "Total de acciones" reportado a la IA = todas las acciones tageadas (consistente con la tarjeta "Acciones Totales").
+            const totalAcciones = filteredTags.length;
+            // "Efectividad global" excluye Tiros a portería, igual que en la tarjeta "Efectividad General".
             const eligibleTags = filteredTags.filter(isAccionElegibleParaEfectividadGlobal);
-            const totalAcciones = eligibleTags.length;
             const totalLogradas = eligibleTags.filter(isAccionLograda).length;
-            const efectividadGlobal = totalAcciones > 0 ? Math.round((totalLogradas / totalAcciones) * 100) : 0;
+            const efectividadGlobal = eligibleTags.length > 0 ? Math.round((totalLogradas / eligibleTags.length) * 100) : 0;
 
             const currentFilters = {
                 torneo: filters.torneo !== 'all' ? filters.torneo : undefined,
@@ -1426,4 +1430,5 @@ const DashboardPage: React.FC = () => {
 };
 
 export default DashboardPage;
+
 
