@@ -304,6 +304,38 @@ const AnalisisTacticoPage: React.FC = () => {
   const [bulkMoveCustom, setBulkMoveCustom] = useState('');
   const [showBulkMoveCustom, setShowBulkMoveCustom] = useState(false);
   const [movingIds, setMovingIds] = useState<Set<string>>(new Set());
+  const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set());
+
+  // Descarga un clip como archivo real (no solo abrirlo en el navegador). Se usa tanto desde
+  // la vista de revisión como desde cada tarjeta de la lista. Genera un link firmado nuevo,
+  // trae el video como blob, y dispara la descarga con un nombre legible.
+  const downloadClip = async (analysis: TacticalAnalysis) => {
+    if (!analysis.clip_storage_path) return;
+    setDownloadingIds(prev => new Set(prev).add(analysis.id));
+    try {
+      const { data: signed, error: se } = await supabase.storage.from(CLIP_BUCKET).createSignedUrl(analysis.clip_storage_path, 60);
+      if (se || !signed?.signedUrl) throw se || new Error('No se pudo generar el link de descarga');
+      const response = await fetch(signed.signedUrl);
+      if (!response.ok) throw new Error('No se pudo descargar el archivo');
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const match = matches.find(m => m.id === analysis.match_id);
+      const safeName = (match ? `${match.nombre_equipo}_vs_${match.rival}_J${match.jornada}` : 'analisis').replace(/[^a-zA-Z0-9_-]+/g, '_');
+      const ext = analysis.clip_storage_path.split('.').pop() || 'mp4';
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `${safeName}_${formatTime(analysis.timestamp_video).replace(':', '-')}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      console.error(err);
+      setError('No se pudo descargar el clip.');
+    } finally {
+      setDownloadingIds(prev => { const next = new Set(prev); next.delete(analysis.id); return next; });
+    }
+  };
   const [selectedMatchId, setSelectedMatchId] = useState('');
   const [matchVideos, setMatchVideos] = useState<VideoMeta[]>([]);
   const [loadingVideos, setLoadingVideos] = useState(false);
@@ -944,12 +976,21 @@ const AnalisisTacticoPage: React.FC = () => {
           <button onClick={() => { setView('list'); setSelectedAnalysis(null); setClipUrl(null); setTelestrationClips([]); setTelestrationUrls({}); }} className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>Volver
           </button>
-          {isAdmin && (
-            <button onClick={() => setConfirmDeleteId(selectedAnalysis.id)} disabled={deletingId === selectedAnalysis.id}
-              className="flex items-center gap-2 px-3 py-1.5 bg-red-900/40 hover:bg-red-900/70 border border-red-800 text-red-400 hover:text-red-300 rounded-lg text-xs transition-colors disabled:opacity-40">
-              {deletingId === selectedAnalysis.id ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>}Eliminar análisis
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {selectedAnalysis.clip_storage_path && (
+              <button onClick={() => downloadClip(selectedAnalysis)} disabled={downloadingIds.has(selectedAnalysis.id)}
+                className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg text-xs transition-colors disabled:opacity-40">
+                {downloadingIds.has(selectedAnalysis.id) ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>}
+                Descargar
+              </button>
+            )}
+            {isAdmin && (
+              <button onClick={() => setConfirmDeleteId(selectedAnalysis.id)} disabled={deletingId === selectedAnalysis.id}
+                className="flex items-center gap-2 px-3 py-1.5 bg-red-900/40 hover:bg-red-900/70 border border-red-800 text-red-400 hover:text-red-300 rounded-lg text-xs transition-colors disabled:opacity-40">
+                {deletingId === selectedAnalysis.id ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>}Eliminar análisis
+              </button>
+            )}
+          </div>
         </div>
         {error && <div className="bg-red-900/40 border border-red-500 rounded-lg p-3 text-red-300 text-sm">{error}</div>}
         <div className="bg-gray-800 rounded-xl p-4 space-y-2">
@@ -1317,9 +1358,24 @@ const AnalisisTacticoPage: React.FC = () => {
                               {isSelected && <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" className="w-3 h-3"><path d="M20 6L9 17l-5-5" /></svg>}
                             </button>
                           )}
-                          {isAdmin && !selectMode && (<button onClick={e => { e.stopPropagation(); setConfirmDeleteId(analysis.id); }} disabled={deletingId === analysis.id} className="absolute top-3 right-3 p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-900/30 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-40 z-10" title="Eliminar análisis">{deletingId === analysis.id ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>}</button>)}
+                          {!selectMode && (
+                            <div className="absolute top-3 right-3 flex items-center gap-1 z-10">
+                              {analysis.clip_storage_path && (
+                                <button onClick={e => { e.stopPropagation(); downloadClip(analysis); }} disabled={downloadingIds.has(analysis.id)}
+                                  className="p-1.5 rounded-lg text-gray-600 hover:text-cyan-400 hover:bg-cyan-900/30 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-40" title="Descargar clip">
+                                  {downloadingIds.has(analysis.id) ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>}
+                                </button>
+                              )}
+                              {isAdmin && (
+                                <button onClick={e => { e.stopPropagation(); setConfirmDeleteId(analysis.id); }} disabled={deletingId === analysis.id}
+                                  className="p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-900/30 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-40" title="Eliminar análisis">
+                                  {deletingId === analysis.id ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>}
+                                </button>
+                              )}
+                            </div>
+                          )}
                           <div className={`cursor-pointer ${selectMode ? 'pl-6' : ''}`} onClick={() => { if (selectMode) { toggleSelected(analysis.id); } else { setSelectedAnalysis(analysis); setView('review'); } }}>
-                            <div className="flex items-start justify-between mb-2 pr-6">
+                            <div className="flex items-start justify-between mb-2 pr-14">
                               <div className="flex-1 min-w-0"><p className="text-white font-medium text-sm truncate">{match ? `${match.nombre_equipo} vs ${match.rival}` : 'Partido desconocido'}</p><p className="text-gray-500 text-xs mt-0.5">{match ? `${match.torneo} · J${match.jornada}` : ''}</p></div>
                               <div className="flex flex-col items-end gap-1 ml-2 flex-shrink-0">
                                 <span className="text-xs text-cyan-400 bg-cyan-900/30 px-2 py-0.5 rounded">{formatTime(analysis.timestamp_video)}</span>
@@ -1367,6 +1423,8 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
+
 
 
 
