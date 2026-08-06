@@ -1362,13 +1362,13 @@ const AnalisisTacticoPage: React.FC = () => {
                             <div className="absolute top-3 right-3 flex items-center gap-1 z-10">
                               {analysis.clip_storage_path && (
                                 <button onClick={e => { e.stopPropagation(); downloadClip(analysis); }} disabled={downloadingIds.has(analysis.id)}
-                                  className="p-1.5 rounded-lg text-gray-600 hover:text-cyan-400 hover:bg-cyan-900/30 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-40" title="Descargar clip">
+                                  className="p-1.5 rounded-lg bg-gray-900/70 text-gray-300 hover:text-cyan-400 hover:bg-cyan-900/50 transition-colors disabled:opacity-40" title="Descargar clip">
                                   {downloadingIds.has(analysis.id) ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>}
                                 </button>
                               )}
                               {isAdmin && (
                                 <button onClick={e => { e.stopPropagation(); setConfirmDeleteId(analysis.id); }} disabled={deletingId === analysis.id}
-                                  className="p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-900/30 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-40" title="Eliminar análisis">
+                                  className="p-1.5 rounded-lg bg-gray-900/70 text-gray-300 hover:text-red-400 hover:bg-red-900/50 transition-colors disabled:opacity-40" title="Eliminar análisis">
                                   {deletingId === analysis.id ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>}
                                 </button>
                               )}
@@ -1423,6 +1423,7 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
 
 
