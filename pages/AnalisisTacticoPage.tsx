@@ -5,6 +5,7 @@ import { ROLES } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
 import type { Match, TacticalAnalysis, TacticalAnnotation, TacticalAnalysisInsert, AnnotationType } from '../types';
 import { fetchVideosForMatch, type Video as VideoMeta } from '../services/videosService';
+import { LOGO_BASE64 } from '../constants/logoBase64';
 import {
   compressVideo,
   createTrackingJob,
@@ -239,7 +240,35 @@ function drawTelestration(ctx: CanvasRenderingContext2D, W: number, H: number, p
 // durante FREEZE_SECONDS. Se graba desde un canvas (no directo del video) para poder incluir
 // las anotaciones dentro del archivo. El audio original se preserva por separado, ya que un
 // canvas no tiene sonido propio.
+// Carga el logo de GolAnalytics una sola vez y lo reutiliza en todos los clips (mismo logo
+// que ya usan los reportes PDF, definido en constants/logoBase64.ts).
+let cachedGolLogoImg: HTMLImageElement | null = null;
+let cachedGolLogoPromise: Promise<HTMLImageElement | null> | null = null;
+function loadGolLogo(): Promise<HTMLImageElement | null> {
+  if (cachedGolLogoImg) return Promise.resolve(cachedGolLogoImg);
+  if (cachedGolLogoPromise) return cachedGolLogoPromise;
+  cachedGolLogoPromise = new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => { cachedGolLogoImg = img; resolve(img); };
+    img.onerror = () => { console.warn('No se pudo cargar el logo de GolAnalytics para el clip'); resolve(null); };
+    img.src = LOGO_BASE64;
+  });
+  return cachedGolLogoPromise;
+}
+
+// Dibuja el logo de GolAnalytics en la esquina inferior derecha, tamaño pequeño para no tapar
+// jugadores ni jugadas. La esquina inferior izquierda queda reservada para el logo del equipo
+// (próxima entrega, aún no implementada).
+function drawWatermarkLogos(ctx: CanvasRenderingContext2D, width: number, height: number, golLogo: HTMLImageElement | null) {
+  if (!golLogo || !golLogo.naturalWidth) return;
+  const margin = width * 0.02;
+  const logoW = width * 0.08;
+  const logoH = logoW * (golLogo.naturalHeight / golLogo.naturalWidth);
+  ctx.drawImage(golLogo, width - logoW - margin, height - logoH - margin, logoW, logoH);
+}
+
 async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: number, secondsBefore: number, annotations: TacticalAnnotation[]): Promise<Blob> {
+  const golLogo = await loadGolLogo();
   return new Promise((resolve, reject) => {
     const startAt = Math.max(0, frameTimestamp - secondsBefore);
     const moveDuration = frameTimestamp - startAt;
@@ -278,6 +307,7 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
     const drawMovingFrame = () => {
       if (frozen) return;
       ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+      drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo);
       if (videoElement.currentTime >= frameTimestamp || videoElement.ended) freeze();
       else requestAnimationFrame(drawMovingFrame);
     };
@@ -288,6 +318,7 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
       videoElement.pause();
       ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
       annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height));
+      drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo);
       // A partir de aquí el canvas ya no se redibuja: captureStream sigue "fotografiando"
       // esta misma imagen fija durante FREEZE_SECONDS.
       setTimeout(() => { if (recorder.state === 'recording') recorder.stop(); }, FREEZE_SECONDS * 1000);
@@ -1467,6 +1498,8 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
+
 
 
 
