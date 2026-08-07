@@ -25,6 +25,9 @@ const TOOL_COLORS = [
 ];
 const STROKE_WIDTHS = [2, 4, 6, 8];
 const DEFAULT_SECONDS_BEFORE = 8;
+// Segundos que el clip descargable mantiene el cuadro congelado con las anotaciones al final,
+// para que quede grabado dentro del archivo (antes no se grababa, solo se veía en la app).
+const FREEZE_SECONDS = 5;
 const CLIP_BUCKET = 'tactical-clips';
 const TELESTRATION_BUCKET = 'telestration-clips';
 
@@ -231,10 +234,15 @@ function drawTelestration(ctx: CanvasRenderingContext2D, W: number, H: number, p
 
 // ─── Extracción de clip ───────────────────────────────────────────────────────
 
-async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: number, secondsBefore: number): Promise<Blob> {
+// Graba el clip descargable como una réplica de lo que se ve en la app: el video en movimiento
+// y, al llegar al momento marcado, el cuadro congelado con las anotaciones dibujadas encima
+// durante FREEZE_SECONDS. Se graba desde un canvas (no directo del video) para poder incluir
+// las anotaciones dentro del archivo. El audio original se preserva por separado, ya que un
+// canvas no tiene sonido propio.
+async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: number, secondsBefore: number, annotations: TacticalAnnotation[]): Promise<Blob> {
   return new Promise((resolve, reject) => {
     const startAt = Math.max(0, frameTimestamp - secondsBefore);
-    const duration = frameTimestamp - startAt;
+    const moveDuration = frameTimestamp - startAt;
     // Se exige explícitamente el códec H.264 (avc1) en vez de un 'video/mp4' genérico.
     // 'video/mp4' genérico no garantiza qué códec usa el navegador por dentro (algunos
     // navegadores/hardware pueden usar AV1 u otro códec no soportado por Safari, aunque
@@ -242,23 +250,59 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
     // todos los navegadores, incluyendo Safari en iPhone/iPad.
     const mimeType = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1') ? 'video/mp4;codecs=avc1'
       : MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
-    const stream = (videoElement as any).captureStream?.() ?? (videoElement as any).mozCaptureStream?.();
-    if (!stream) { reject(new Error('captureStream no soportado')); return; }
-    const recorder = new MediaRecorder(stream, { mimeType });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = videoElement.videoWidth;
+    canvas.height = videoElement.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) { reject(new Error('No se pudo crear el canvas de grabación')); return; }
+
+    const canvasStream = canvas.captureStream(25);
+
+    // El audio no vive en el canvas — se toma del video original y se combina con el video del canvas.
+    let recordStream: MediaStream = canvasStream;
+    try {
+      const sourceStream: MediaStream | undefined = (videoElement as any).captureStream?.() ?? (videoElement as any).mozCaptureStream?.();
+      const audioTracks = sourceStream?.getAudioTracks?.() ?? [];
+      if (audioTracks.length > 0) recordStream = new MediaStream([...canvasStream.getVideoTracks(), ...audioTracks]);
+    } catch (err) { console.warn('No se pudo incluir audio en el clip:', err); }
+
+    const recorder = new MediaRecorder(recordStream, { mimeType });
     const chunks: BlobPart[] = [];
     recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-    recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
+    recorder.onstop = () => { recordStream.getTracks().forEach(t => t.stop()); resolve(new Blob(chunks, { type: mimeType })); };
     recorder.onerror = e => reject(e);
+
+    let frozen = false;
+
+    const drawMovingFrame = () => {
+      if (frozen) return;
+      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+      if (videoElement.currentTime >= frameTimestamp || videoElement.ended) freeze();
+      else requestAnimationFrame(drawMovingFrame);
+    };
+
+    const freeze = () => {
+      if (frozen) return;
+      frozen = true;
+      videoElement.pause();
+      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+      annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height));
+      // A partir de aquí el canvas ya no se redibuja: captureStream sigue "fotografiando"
+      // esta misma imagen fija durante FREEZE_SECONDS.
+      setTimeout(() => { if (recorder.state === 'recording') recorder.stop(); }, FREEZE_SECONDS * 1000);
+    };
+
     videoElement.currentTime = startAt;
     videoElement.onseeked = () => {
-      videoElement.onseeked = null; recorder.start(); videoElement.play();
-      const check = () => {
-        if (videoElement.currentTime >= frameTimestamp) { videoElement.pause(); recorder.stop(); stream.getTracks().forEach((t: MediaStreamTrack) => t.stop()); }
-        else { requestAnimationFrame(check); }
-      };
-      requestAnimationFrame(check);
-      setTimeout(() => { if (recorder.state === 'recording') { videoElement.pause(); recorder.stop(); } }, (duration + 5) * 1000);
+      videoElement.onseeked = null;
+      recorder.start();
+      videoElement.play();
+      requestAnimationFrame(drawMovingFrame);
     };
+
+    // Salvaguarda por si algo se cuelga (ej. el video nunca llega al timestamp esperado).
+    setTimeout(() => { if (recorder.state === 'recording') freeze(); }, (moveDuration + FREEZE_SECONDS + 5) * 1000);
   });
 }
 
@@ -814,7 +858,7 @@ const AnalisisTacticoPage: React.FC = () => {
     try {
       setUploadingClip(true); setUploadProgress('Extrayendo clip de video...');
       let clipBlob: Blob | null = null;
-      try { clipBlob = await extractClip(video, frameTimestamp, secondsBefore); } catch (err) { console.warn('No se pudo extraer el clip:', err); }
+      try { clipBlob = await extractClip(video, frameTimestamp, secondsBefore, annotations); } catch (err) { console.warn('No se pudo extraer el clip:', err); }
       if (clipBlob) {
         setUploadProgress('Subiendo clip a Storage...');
         const ext = clipBlob.type.includes('mp4') ? 'mp4' : 'webm';
@@ -1423,6 +1467,7 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
 
 
