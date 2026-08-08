@@ -316,12 +316,22 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
       if (frozen) return;
       frozen = true;
       videoElement.pause();
-      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-      annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height));
-      drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo);
-      // A partir de aquí el canvas ya no se redibuja: captureStream sigue "fotografiando"
-      // esta misma imagen fija durante FREEZE_SECONDS.
-      setTimeout(() => { if (recorder.state === 'recording') recorder.stop(); }, FREEZE_SECONDS * 1000);
+      const freezeStartedAt = performance.now();
+      // Se sigue redibujando activamente la misma imagen fija en cada cuadro durante todo
+      // FREEZE_SECONDS, en vez de dejar de dibujar y confiar en que canvas.captureStream()
+      // siga entregando cuadros por su cuenta — no todos los navegadores lo hacen de forma
+      // confiable con un canvas estático, y eso cortaba el video antes de tiempo.
+      const drawFrozenFrame = () => {
+        ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+        annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height));
+        drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo);
+        if (performance.now() - freezeStartedAt < FREEZE_SECONDS * 1000) {
+          requestAnimationFrame(drawFrozenFrame);
+        } else if (recorder.state === 'recording') {
+          recorder.stop();
+        }
+      };
+      requestAnimationFrame(drawFrozenFrame);
     };
 
     videoElement.currentTime = startAt;
@@ -1498,6 +1508,7 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
 
 
