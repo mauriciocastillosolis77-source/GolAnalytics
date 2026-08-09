@@ -30,6 +30,7 @@ const DEFAULT_SECONDS_BEFORE = 8;
 // para que quede grabado dentro del archivo (antes no se grababa, solo se veía en la app).
 const FREEZE_SECONDS = 5;
 const CLIP_BUCKET = 'tactical-clips';
+const TEAM_LOGO_BUCKET = 'team-logos';
 const TELESTRATION_BUCKET = 'telestration-clips';
 
 const TRACKING_COLORS = [
@@ -256,18 +257,39 @@ function loadGolLogo(): Promise<HTMLImageElement | null> {
   return cachedGolLogoPromise;
 }
 
-// Dibuja el logo de GolAnalytics en la esquina inferior derecha, tamaño pequeño para no tapar
-// jugadores ni jugadas. La esquina inferior izquierda queda reservada para el logo del equipo
-// (próxima entrega, aún no implementada).
-function drawWatermarkLogos(ctx: CanvasRenderingContext2D, width: number, height: number, golLogo: HTMLImageElement | null) {
-  if (!golLogo || !golLogo.naturalWidth) return;
+// Dibuja los logos en las esquinas inferiores, tamaño pequeño para no tapar jugadores ni
+// jugadas: GolAnalytics a la derecha (fijo, siempre el mismo), equipo a la izquierda (varía
+// según el equipo del análisis, puede no existir todavía).
+function drawWatermarkLogos(ctx: CanvasRenderingContext2D, width: number, height: number, golLogo: HTMLImageElement | null, teamLogo: HTMLImageElement | null) {
   const margin = width * 0.02;
   const logoW = width * 0.08;
-  const logoH = logoW * (golLogo.naturalHeight / golLogo.naturalWidth);
-  ctx.drawImage(golLogo, width - logoW - margin, height - logoH - margin, logoW, logoH);
+  if (golLogo && golLogo.naturalWidth) {
+    const logoH = logoW * (golLogo.naturalHeight / golLogo.naturalWidth);
+    ctx.drawImage(golLogo, width - logoW - margin, height - logoH - margin, logoW, logoH);
+  }
+  if (teamLogo && teamLogo.naturalWidth) {
+    const logoH = logoW * (teamLogo.naturalHeight / teamLogo.naturalWidth);
+    ctx.drawImage(teamLogo, margin, height - logoH - margin, logoW, logoH);
+  }
 }
 
-async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: number, secondsBefore: number, annotations: TacticalAnnotation[]): Promise<Blob> {
+// Carga una imagen desde una URL (usado para el logo del equipo, que a diferencia del logo de
+// GolAnalytics no es un base64 fijo sino un archivo distinto por equipo en Supabase Storage).
+// crossOrigin es necesario para poder dibujarla en un canvas que luego se graba sin "mancharlo".
+function loadImageFromUrl(url: string): Promise<HTMLImageElement | null> {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => { console.warn('No se pudo cargar el logo del equipo para el clip'); resolve(null); };
+    img.src = url;
+  });
+}
+// Caché en memoria de logos de equipo ya cargados en esta sesión (evita re-descargar el mismo
+// logo en cada clip). Se invalida automáticamente si se sube un logo nuevo para ese equipo.
+const teamLogoImgCache = new Map<string, HTMLImageElement | null>();
+
+async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: number, secondsBefore: number, annotations: TacticalAnnotation[], teamLogo: HTMLImageElement | null): Promise<Blob> {
   const golLogo = await loadGolLogo();
   return new Promise((resolve, reject) => {
     const startAt = Math.max(0, frameTimestamp - secondsBefore);
@@ -307,7 +329,7 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
     const drawMovingFrame = () => {
       if (frozen) return;
       ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
-      drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo);
+      drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo, teamLogo);
       if (videoElement.currentTime >= frameTimestamp || videoElement.ended) freeze();
       else requestAnimationFrame(drawMovingFrame);
     };
@@ -324,7 +346,7 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
       const drawFrozenFrame = () => {
         ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
         annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height));
-        drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo);
+        drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo, teamLogo);
         if (performance.now() - freezeStartedAt < FREEZE_SECONDS * 1000) {
           requestAnimationFrame(drawFrozenFrame);
         } else if (recorder.state === 'recording') {
@@ -382,6 +404,11 @@ const AnalisisTacticoPage: React.FC = () => {
   const [tipoAnalisis, setTipoAnalisis] = useState('');           // valor elegido al crear
   const [tipoAnalisisCustom, setTipoAnalisisCustom] = useState(''); // carpeta nueva escrita a mano
   const [showCustomTipo, setShowCustomTipo] = useState(false);
+  // ── Logo del equipo ──────────────────────────────────────────────────────
+  const [teamLogoPath, setTeamLogoPath] = useState<string | null>(null);       // ya guardado en teams.logo_path
+  const [teamLogoCheckedFor, setTeamLogoCheckedFor] = useState<string | null>(null); // team_id ya consultado, evita refetch
+  const [pendingTeamLogoFile, setPendingTeamLogoFile] = useState<File | null>(null); // archivo elegido, aún no subido
+  const [teamLogoPreviewUrl, setTeamLogoPreviewUrl] = useState<string | null>(null);
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -530,6 +557,19 @@ const AnalisisTacticoPage: React.FC = () => {
     };
     fetchData();
   }, [isAdmin, profile?.team_id]);
+
+  useEffect(() => {
+    const matchTeamId = matches.find(m => m.id === selectedMatchId)?.team_id;
+    if (!matchTeamId) { setTeamLogoPath(null); setTeamLogoCheckedFor(null); return; }
+    if (teamLogoCheckedFor === matchTeamId) return; // ya consultado para este equipo, evita refetch en cada render
+    (async () => {
+      try {
+        const { data, error: te } = await supabase.from('teams').select('logo_path').eq('id', matchTeamId).single();
+        setTeamLogoPath(te ? null : (data?.logo_path ?? null));
+      } catch { setTeamLogoPath(null); }
+      setTeamLogoCheckedFor(matchTeamId);
+    })();
+  }, [selectedMatchId, matches, teamLogoCheckedFor]);
 
   useEffect(() => {
     if (!selectedMatchId) { setMatchVideos([]); setSelectedVideoId(''); setSelectedVideo(null); return; }
@@ -854,6 +894,33 @@ const AnalisisTacticoPage: React.FC = () => {
 
   const toggleSelected = (id: string) => setSelectedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
 
+  // Elegir un archivo de logo (aún no se sube — se sube al guardar el análisis).
+  const handleTeamLogoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setPendingTeamLogoFile(file);
+    if (teamLogoPreviewUrl) URL.revokeObjectURL(teamLogoPreviewUrl);
+    setTeamLogoPreviewUrl(URL.createObjectURL(file));
+  };
+
+  // Sube el logo al bucket team-logos y lo guarda en teams.logo_path (una sola vez por equipo).
+  const uploadTeamLogo = async (teamId: string, file: File): Promise<string | null> => {
+    try {
+      const ext = (file.name.split('.').pop() || 'png').toLowerCase();
+      const path = `${teamId}.${ext}`;
+      const { error: ue } = await supabase.storage.from(TEAM_LOGO_BUCKET).upload(path, file, { upsert: true, contentType: file.type });
+      if (ue) throw ue;
+      const { error: te } = await supabase.from('teams').update({ logo_path: path }).eq('id', teamId);
+      if (te) throw te;
+      teamLogoImgCache.delete(path); // invalida el caché por si había un logo viejo con el mismo nombre
+      return path;
+    } catch (err) {
+      console.error('Error subiendo logo del equipo:', err);
+      setError('No se pudo subir el logo del equipo (el análisis se guardará sin él).');
+      return null;
+    }
+  };
+
   const getAbsoluteTs = (video: VideoMeta, ts: number) => parseOffset(video.start_offset_seconds) + ts;
   const getMatchLabel = (id: string) => { const m = matches.find(x => x.id === id); return m ? `${m.nombre_equipo} vs ${m.rival} — J${m.jornada} (${m.torneo})` : id; };
 
@@ -897,9 +964,28 @@ const AnalisisTacticoPage: React.FC = () => {
     const video = videoRef.current; if (!video) return;
     setSaving(true); setError(null); let clipStoragePath: string | null = null;
     try {
+      const matchTeamId = matches.find(m => m.id === selectedMatchId)?.team_id ?? profile?.team_id ?? '';
+
+      // Si el usuario eligió un logo nuevo para este equipo, se sube y se guarda en teams.logo_path
+      // (solo la primera vez — de ahí en adelante ya no se vuelve a pedir para ese equipo).
+      let finalTeamLogoPath = teamLogoPath;
+      if (pendingTeamLogoFile && matchTeamId) {
+        const uploaded = await uploadTeamLogo(matchTeamId, pendingTeamLogoFile);
+        if (uploaded) finalTeamLogoPath = uploaded;
+      }
+      let teamLogoImg: HTMLImageElement | null = null;
+      if (finalTeamLogoPath) {
+        if (teamLogoImgCache.has(finalTeamLogoPath)) {
+          teamLogoImg = teamLogoImgCache.get(finalTeamLogoPath) ?? null;
+        } else {
+          const { data: signed } = await supabase.storage.from(TEAM_LOGO_BUCKET).createSignedUrl(finalTeamLogoPath, 3600);
+          if (signed?.signedUrl) { teamLogoImg = await loadImageFromUrl(signed.signedUrl); teamLogoImgCache.set(finalTeamLogoPath, teamLogoImg); }
+        }
+      }
+
       setUploadingClip(true); setUploadProgress('Extrayendo clip de video...');
       let clipBlob: Blob | null = null;
-      try { clipBlob = await extractClip(video, frameTimestamp, secondsBefore, annotations); } catch (err) { console.warn('No se pudo extraer el clip:', err); }
+      try { clipBlob = await extractClip(video, frameTimestamp, secondsBefore, annotations, teamLogoImg); } catch (err) { console.warn('No se pudo extraer el clip:', err); }
       if (clipBlob) {
         setUploadProgress('Subiendo clip a Storage...');
         const ext = clipBlob.type.includes('mp4') ? 'mp4' : 'webm';
@@ -908,7 +994,6 @@ const AnalisisTacticoPage: React.FC = () => {
         if (ue) console.warn('Error subiendo clip:', ue); else clipStoragePath = ud.path;
       }
       setUploadingClip(false); setUploadProgress('Guardando análisis...');
-      const matchTeamId = matches.find(m => m.id === selectedMatchId)?.team_id ?? profile?.team_id ?? '';
       const tipoFinal = (showCustomTipo ? tipoAnalisisCustom.trim() : tipoAnalisis.trim()) || null;
       const payload: TacticalAnalysisInsert = { match_id: selectedMatchId, team_id: matchTeamId, video_id: selectedVideoId, timestamp_video: frameTimestamp, annotations, description: description.trim() || undefined, created_by: user!.id, clip_storage_path: clipStoragePath, tipo_analisis: tipoFinal };
       const { data, error: ie } = await supabase.from('tactical_analysis').insert(payload).select().single();
@@ -917,6 +1002,8 @@ const AnalisisTacticoPage: React.FC = () => {
       setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]);
       setDescription(''); setSelectedMatchId(''); setSelectedVideoId(''); setSelectedVideo(null); setMatchVideos([]);
       setTipoAnalisis(''); setTipoAnalisisCustom(''); setShowCustomTipo(false);
+      if (teamLogoPreviewUrl) URL.revokeObjectURL(teamLogoPreviewUrl);
+      setPendingTeamLogoFile(null); setTeamLogoPreviewUrl(null); setTeamLogoPath(null); setTeamLogoCheckedFor(null);
       setUploadProgress(''); setView('list');
     } catch (err) { setError('Error al guardar el análisis.'); console.error(err); }
     finally { setSaving(false); setUploadingClip(false); setUploadProgress(''); }
@@ -1336,6 +1423,29 @@ const AnalisisTacticoPage: React.FC = () => {
                     className="w-full mt-2 bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none" autoFocus />
                 )}
               </div>
+              {selectedMatchId && (
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Logo del equipo</label>
+                  {teamLogoPreviewUrl ? (
+                    <div className="flex items-center gap-3">
+                      <img src={teamLogoPreviewUrl} alt="Logo del equipo" className="w-10 h-10 object-contain bg-gray-900 rounded border border-gray-600" />
+                      <span className="text-xs text-cyan-400">Nuevo logo listo — se sube al guardar</span>
+                    </div>
+                  ) : teamLogoPath ? (
+                    <div className="flex items-center gap-2 text-xs text-green-400">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 flex-shrink-0"><path d="M20 6L9 17l-5-5" /></svg>
+                      <span>Logo del equipo ya guardado</span>
+                      <label className="text-cyan-400 hover:text-cyan-300 cursor-pointer underline ml-1">Cambiar<input type="file" accept="image/*" className="hidden" onChange={handleTeamLogoSelect} /></label>
+                    </div>
+                  ) : (
+                    <label className="flex items-center gap-2 text-xs text-gray-400 hover:text-gray-200 cursor-pointer border border-dashed border-gray-600 rounded-lg px-3 py-2 w-full transition-colors">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 flex-shrink-0"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>
+                      Subir logo del equipo (opcional, solo se pide una vez)
+                      <input type="file" accept="image/*" className="hidden" onChange={handleTeamLogoSelect} />
+                    </label>
+                  )}
+                </div>
+              )}
               <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Descripción táctica (opcional)..." rows={2}
                 className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none resize-none" />
               {(saving || uploadingClip) && uploadProgress && (
@@ -1508,6 +1618,7 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
 
 
