@@ -182,6 +182,7 @@ export interface TacticalAnalysis {
   created_by: string;
   created_at: string;
   clip_storage_path?: string | null;  // Path en bucket tactical-clips — null si no se subió
+  tipo_analisis?: string | null;      // Carpeta/categoría del análisis (ej. "ABP", "Presión") — null = Sin categoría
 }
 
 export interface TacticalAnalysisInsert {
@@ -193,6 +194,7 @@ export interface TacticalAnalysisInsert {
   description?: string;
   created_by: string;
   clip_storage_path?: string | null;
+  tipo_analisis?: string | null;
 }
 
 

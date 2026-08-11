@@ -5,6 +5,7 @@ import { ROLES } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
 import type { Match, TacticalAnalysis, TacticalAnnotation, TacticalAnalysisInsert, AnnotationType } from '../types';
 import { fetchVideosForMatch, type Video as VideoMeta } from '../services/videosService';
+import { LOGO_BASE64 } from '../constants/logoBase64';
 import {
   compressVideo,
   createTrackingJob,
@@ -25,7 +26,11 @@ const TOOL_COLORS = [
 ];
 const STROKE_WIDTHS = [2, 4, 6, 8];
 const DEFAULT_SECONDS_BEFORE = 8;
+// Segundos que el clip descargable mantiene el cuadro congelado con las anotaciones al final,
+// para que quede grabado dentro del archivo (antes no se grababa, solo se veía en la app).
+const FREEZE_SECONDS = 5;
 const CLIP_BUCKET = 'tactical-clips';
+const TEAM_LOGO_BUCKET = 'team-logos';
 const TELESTRATION_BUCKET = 'telestration-clips';
 
 const TRACKING_COLORS = [
@@ -231,29 +236,136 @@ function drawTelestration(ctx: CanvasRenderingContext2D, W: number, H: number, p
 
 // ─── Extracción de clip ───────────────────────────────────────────────────────
 
-async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: number, secondsBefore: number): Promise<Blob> {
+// Graba el clip descargable como una réplica de lo que se ve en la app: el video en movimiento
+// y, al llegar al momento marcado, el cuadro congelado con las anotaciones dibujadas encima
+// durante FREEZE_SECONDS. Se graba desde un canvas (no directo del video) para poder incluir
+// las anotaciones dentro del archivo. El audio original se preserva por separado, ya que un
+// canvas no tiene sonido propio.
+// Carga el logo de GolAnalytics una sola vez y lo reutiliza en todos los clips (mismo logo
+// que ya usan los reportes PDF, definido en constants/logoBase64.ts).
+let cachedGolLogoImg: HTMLImageElement | null = null;
+let cachedGolLogoPromise: Promise<HTMLImageElement | null> | null = null;
+function loadGolLogo(): Promise<HTMLImageElement | null> {
+  if (cachedGolLogoImg) return Promise.resolve(cachedGolLogoImg);
+  if (cachedGolLogoPromise) return cachedGolLogoPromise;
+  cachedGolLogoPromise = new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => { cachedGolLogoImg = img; resolve(img); };
+    img.onerror = () => { console.warn('No se pudo cargar el logo de GolAnalytics para el clip'); resolve(null); };
+    img.src = LOGO_BASE64;
+  });
+  return cachedGolLogoPromise;
+}
+
+// Dibuja los logos en las esquinas inferiores, tamaño pequeño para no tapar jugadores ni
+// jugadas: GolAnalytics a la derecha (fijo, siempre el mismo), equipo a la izquierda (varía
+// según el equipo del análisis, puede no existir todavía).
+function drawWatermarkLogos(ctx: CanvasRenderingContext2D, width: number, height: number, golLogo: HTMLImageElement | null, teamLogo: HTMLImageElement | null) {
+  const margin = width * 0.02;
+  const logoW = width * 0.08;
+  if (golLogo && golLogo.naturalWidth) {
+    const logoH = logoW * (golLogo.naturalHeight / golLogo.naturalWidth);
+    ctx.drawImage(golLogo, width - logoW - margin, height - logoH - margin, logoW, logoH);
+  }
+  if (teamLogo && teamLogo.naturalWidth) {
+    const logoH = logoW * (teamLogo.naturalHeight / teamLogo.naturalWidth);
+    ctx.drawImage(teamLogo, margin, height - logoH - margin, logoW, logoH);
+  }
+}
+
+// Carga una imagen desde una URL (usado para el logo del equipo, que a diferencia del logo de
+// GolAnalytics no es un base64 fijo sino un archivo distinto por equipo en Supabase Storage).
+// crossOrigin es necesario para poder dibujarla en un canvas que luego se graba sin "mancharlo".
+function loadImageFromUrl(url: string): Promise<HTMLImageElement | null> {
+  return new Promise(resolve => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => { console.warn('No se pudo cargar el logo del equipo para el clip'); resolve(null); };
+    img.src = url;
+  });
+}
+// Caché en memoria de logos de equipo ya cargados en esta sesión (evita re-descargar el mismo
+// logo en cada clip). Se invalida automáticamente si se sube un logo nuevo para ese equipo.
+const teamLogoImgCache = new Map<string, HTMLImageElement | null>();
+
+async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: number, secondsBefore: number, annotations: TacticalAnnotation[], teamLogo: HTMLImageElement | null): Promise<Blob> {
+  const golLogo = await loadGolLogo();
   return new Promise((resolve, reject) => {
     const startAt = Math.max(0, frameTimestamp - secondsBefore);
-    const duration = frameTimestamp - startAt;
-    const mimeType = MediaRecorder.isTypeSupported('video/mp4') ? 'video/mp4'
+    const moveDuration = frameTimestamp - startAt;
+    // Se exige explícitamente el códec H.264 (avc1) en vez de un 'video/mp4' genérico.
+    // 'video/mp4' genérico no garantiza qué códec usa el navegador por dentro (algunos
+    // navegadores/hardware pueden usar AV1 u otro códec no soportado por Safari, aunque
+    // el contenedor sea .mp4). H.264 es el único códec universalmente compatible con
+    // todos los navegadores, incluyendo Safari en iPhone/iPad.
+    const mimeType = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1') ? 'video/mp4;codecs=avc1'
       : MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
-    const stream = (videoElement as any).captureStream?.() ?? (videoElement as any).mozCaptureStream?.();
-    if (!stream) { reject(new Error('captureStream no soportado')); return; }
-    const recorder = new MediaRecorder(stream, { mimeType });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = videoElement.videoWidth;
+    canvas.height = videoElement.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) { reject(new Error('No se pudo crear el canvas de grabación')); return; }
+
+    const canvasStream = canvas.captureStream(25);
+
+    // El audio no vive en el canvas — se toma del video original y se combina con el video del canvas.
+    let recordStream: MediaStream = canvasStream;
+    try {
+      const sourceStream: MediaStream | undefined = (videoElement as any).captureStream?.() ?? (videoElement as any).mozCaptureStream?.();
+      const audioTracks = sourceStream?.getAudioTracks?.() ?? [];
+      if (audioTracks.length > 0) recordStream = new MediaStream([...canvasStream.getVideoTracks(), ...audioTracks]);
+    } catch (err) { console.warn('No se pudo incluir audio en el clip:', err); }
+
+    const recorder = new MediaRecorder(recordStream, { mimeType });
     const chunks: BlobPart[] = [];
     recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
-    recorder.onstop = () => resolve(new Blob(chunks, { type: mimeType }));
+    recorder.onstop = () => { recordStream.getTracks().forEach(t => t.stop()); resolve(new Blob(chunks, { type: mimeType })); };
     recorder.onerror = e => reject(e);
+
+    let frozen = false;
+
+    const drawMovingFrame = () => {
+      if (frozen) return;
+      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+      drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo, teamLogo);
+      if (videoElement.currentTime >= frameTimestamp || videoElement.ended) freeze();
+      else requestAnimationFrame(drawMovingFrame);
+    };
+
+    const freeze = () => {
+      if (frozen) return;
+      frozen = true;
+      videoElement.pause();
+      const freezeStartedAt = performance.now();
+      // Se sigue redibujando activamente la misma imagen fija en cada cuadro durante todo
+      // FREEZE_SECONDS, en vez de dejar de dibujar y confiar en que canvas.captureStream()
+      // siga entregando cuadros por su cuenta — no todos los navegadores lo hacen de forma
+      // confiable con un canvas estático, y eso cortaba el video antes de tiempo.
+      const drawFrozenFrame = () => {
+        ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+        annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height));
+        drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo, teamLogo);
+        if (performance.now() - freezeStartedAt < FREEZE_SECONDS * 1000) {
+          requestAnimationFrame(drawFrozenFrame);
+        } else if (recorder.state === 'recording') {
+          recorder.stop();
+        }
+      };
+      requestAnimationFrame(drawFrozenFrame);
+    };
+
     videoElement.currentTime = startAt;
     videoElement.onseeked = () => {
-      videoElement.onseeked = null; recorder.start(); videoElement.play();
-      const check = () => {
-        if (videoElement.currentTime >= frameTimestamp) { videoElement.pause(); recorder.stop(); stream.getTracks().forEach((t: MediaStreamTrack) => t.stop()); }
-        else { requestAnimationFrame(check); }
-      };
-      requestAnimationFrame(check);
-      setTimeout(() => { if (recorder.state === 'recording') { videoElement.pause(); recorder.stop(); } }, (duration + 5) * 1000);
+      videoElement.onseeked = null;
+      recorder.start();
+      videoElement.play();
+      requestAnimationFrame(drawMovingFrame);
     };
+
+    // Salvaguarda por si algo se cuelga (ej. el video nunca llega al timestamp esperado).
+    setTimeout(() => { if (recorder.state === 'recording') freeze(); }, (moveDuration + FREEZE_SECONDS + 5) * 1000);
   });
 }
 
@@ -288,6 +400,54 @@ const AnalisisTacticoPage: React.FC = () => {
   const [filterMatchId, setFilterMatchId] = useState('all');
   const [filterTorneo, setFilterTorneo] = useState('all');
   const [filterCategoria, setFilterCategoria] = useState('all');
+  // ── Carpetas / tipo de análisis ──────────────────────────────────────────
+  const [tipoAnalisis, setTipoAnalisis] = useState('');           // valor elegido al crear
+  const [tipoAnalisisCustom, setTipoAnalisisCustom] = useState(''); // carpeta nueva escrita a mano
+  const [showCustomTipo, setShowCustomTipo] = useState(false);
+  // ── Logo del equipo ──────────────────────────────────────────────────────
+  const [teamLogoPath, setTeamLogoPath] = useState<string | null>(null);       // ya guardado en teams.logo_path
+  const [teamLogoCheckedFor, setTeamLogoCheckedFor] = useState<string | null>(null); // team_id ya consultado, evita refetch
+  const [pendingTeamLogoFile, setPendingTeamLogoFile] = useState<File | null>(null); // archivo elegido, aún no subido
+  const [teamLogoPreviewUrl, setTeamLogoPreviewUrl] = useState<string | null>(null);
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkMoveTarget, setBulkMoveTarget] = useState('');
+  const [bulkMoveCustom, setBulkMoveCustom] = useState('');
+  const [showBulkMoveCustom, setShowBulkMoveCustom] = useState(false);
+  const [movingIds, setMovingIds] = useState<Set<string>>(new Set());
+  const [downloadingIds, setDownloadingIds] = useState<Set<string>>(new Set());
+
+  // Descarga un clip como archivo real (no solo abrirlo en el navegador). Se usa tanto desde
+  // la vista de revisión como desde cada tarjeta de la lista. Genera un link firmado nuevo,
+  // trae el video como blob, y dispara la descarga con un nombre legible.
+  const downloadClip = async (analysis: TacticalAnalysis) => {
+    if (!analysis.clip_storage_path) return;
+    setDownloadingIds(prev => new Set(prev).add(analysis.id));
+    try {
+      const { data: signed, error: se } = await supabase.storage.from(CLIP_BUCKET).createSignedUrl(analysis.clip_storage_path, 60);
+      if (se || !signed?.signedUrl) throw se || new Error('No se pudo generar el link de descarga');
+      const response = await fetch(signed.signedUrl);
+      if (!response.ok) throw new Error('No se pudo descargar el archivo');
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const match = matches.find(m => m.id === analysis.match_id);
+      const safeName = (match ? `${match.nombre_equipo}_vs_${match.rival}_J${match.jornada}` : 'analisis').replace(/[^a-zA-Z0-9_-]+/g, '_');
+      const ext = analysis.clip_storage_path.split('.').pop() || 'mp4';
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `${safeName}_${formatTime(analysis.timestamp_video).replace(':', '-')}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(blobUrl);
+    } catch (err) {
+      console.error(err);
+      setError('No se pudo descargar el clip.');
+    } finally {
+      setDownloadingIds(prev => { const next = new Set(prev); next.delete(analysis.id); return next; });
+    }
+  };
   const [selectedMatchId, setSelectedMatchId] = useState('');
   const [matchVideos, setMatchVideos] = useState<VideoMeta[]>([]);
   const [loadingVideos, setLoadingVideos] = useState(false);
@@ -397,6 +557,19 @@ const AnalisisTacticoPage: React.FC = () => {
     };
     fetchData();
   }, [isAdmin, profile?.team_id]);
+
+  useEffect(() => {
+    const matchTeamId = matches.find(m => m.id === selectedMatchId)?.team_id;
+    if (!matchTeamId) { setTeamLogoPath(null); setTeamLogoCheckedFor(null); return; }
+    if (teamLogoCheckedFor === matchTeamId) return; // ya consultado para este equipo, evita refetch en cada render
+    (async () => {
+      try {
+        const { data, error: te } = await supabase.from('teams').select('logo_path').eq('id', matchTeamId).single();
+        setTeamLogoPath(te ? null : (data?.logo_path ?? null));
+      } catch { setTeamLogoPath(null); }
+      setTeamLogoCheckedFor(matchTeamId);
+    })();
+  }, [selectedMatchId, matches, teamLogoCheckedFor]);
 
   useEffect(() => {
     if (!selectedMatchId) { setMatchVideos([]); setSelectedVideoId(''); setSelectedVideo(null); return; }
@@ -680,6 +853,74 @@ const AnalisisTacticoPage: React.FC = () => {
     return true;
   });
 
+  // Carpetas ya usadas (para el selector al crear y al mover), ordenadas alfabéticamente
+  const tiposList: string[] = analyses.map(a => (a.tipo_analisis || '').trim()).filter(t => t.length > 0);
+  const existingTipos: string[] = Array.from(new Set<string>(tiposList)).sort((a: string, b: string) => a.localeCompare(b));
+
+  // Análisis agrupados por carpeta ("Sin categoría" al final)
+  const SIN_CATEGORIA = 'Sin categoría';
+  const groupedAnalyses = (() => {
+    const groups = new Map<string, TacticalAnalysis[]>();
+    filteredAnalyses.forEach(a => {
+      const key = a.tipo_analisis?.trim() || SIN_CATEGORIA;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(a);
+    });
+    const keys = [...groups.keys()].filter(k => k !== SIN_CATEGORIA).sort((a, b) => a.localeCompare(b));
+    if (groups.has(SIN_CATEGORIA)) keys.push(SIN_CATEGORIA);
+    return keys.map(k => [k, groups.get(k)!] as [string, TacticalAnalysis[]]);
+  })();
+
+  const toggleFolder = (name: string) => setCollapsedFolders(prev => { const next = new Set(prev); next.has(name) ? next.delete(name) : next.add(name); return next; });
+
+  // Mueve uno o varios análisis a una carpeta (o a "Sin categoría" si tipo es null). Usado por el
+  // dropdown individual de cada tarjeta y por la barra de acción en lote.
+  const moveAnalysesToFolder = async (ids: string[], tipo: string | null) => {
+    if (ids.length === 0) return;
+    setMovingIds(prev => new Set([...prev, ...ids]));
+    try {
+      const { error: me } = await supabase.from('tactical_analysis').update({ tipo_analisis: tipo }).in('id', ids);
+      if (me) throw me;
+      setAnalyses(prev => prev.map(a => ids.includes(a.id) ? { ...a, tipo_analisis: tipo } : a));
+      setSelectedIds(new Set());
+      setBulkMoveTarget(''); setBulkMoveCustom(''); setShowBulkMoveCustom(false);
+    } catch (err) {
+      console.error(err);
+      setError('No se pudo mover el análisis a la carpeta.');
+    } finally {
+      setMovingIds(prev => { const next = new Set(prev); ids.forEach(id => next.delete(id)); return next; });
+    }
+  };
+
+  const toggleSelected = (id: string) => setSelectedIds(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next; });
+
+  // Elegir un archivo de logo (aún no se sube — se sube al guardar el análisis).
+  const handleTeamLogoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setPendingTeamLogoFile(file);
+    if (teamLogoPreviewUrl) URL.revokeObjectURL(teamLogoPreviewUrl);
+    setTeamLogoPreviewUrl(URL.createObjectURL(file));
+  };
+
+  // Sube el logo al bucket team-logos y lo guarda en teams.logo_path (una sola vez por equipo).
+  const uploadTeamLogo = async (teamId: string, file: File): Promise<string | null> => {
+    try {
+      const ext = (file.name.split('.').pop() || 'png').toLowerCase();
+      const path = `${teamId}.${ext}`;
+      const { error: ue } = await supabase.storage.from(TEAM_LOGO_BUCKET).upload(path, file, { upsert: true, contentType: file.type });
+      if (ue) throw ue;
+      const { error: te } = await supabase.from('teams').update({ logo_path: path }).eq('id', teamId);
+      if (te) throw te;
+      teamLogoImgCache.delete(path); // invalida el caché por si había un logo viejo con el mismo nombre
+      return path;
+    } catch (err) {
+      console.error('Error subiendo logo del equipo:', err);
+      setError('No se pudo subir el logo del equipo (el análisis se guardará sin él).');
+      return null;
+    }
+  };
+
   const getAbsoluteTs = (video: VideoMeta, ts: number) => parseOffset(video.start_offset_seconds) + ts;
   const getMatchLabel = (id: string) => { const m = matches.find(x => x.id === id); return m ? `${m.nombre_equipo} vs ${m.rival} — J${m.jornada} (${m.torneo})` : id; };
 
@@ -723,9 +964,28 @@ const AnalisisTacticoPage: React.FC = () => {
     const video = videoRef.current; if (!video) return;
     setSaving(true); setError(null); let clipStoragePath: string | null = null;
     try {
+      const matchTeamId = matches.find(m => m.id === selectedMatchId)?.team_id ?? profile?.team_id ?? '';
+
+      // Si el usuario eligió un logo nuevo para este equipo, se sube y se guarda en teams.logo_path
+      // (solo la primera vez — de ahí en adelante ya no se vuelve a pedir para ese equipo).
+      let finalTeamLogoPath = teamLogoPath;
+      if (pendingTeamLogoFile && matchTeamId) {
+        const uploaded = await uploadTeamLogo(matchTeamId, pendingTeamLogoFile);
+        if (uploaded) finalTeamLogoPath = uploaded;
+      }
+      let teamLogoImg: HTMLImageElement | null = null;
+      if (finalTeamLogoPath) {
+        if (teamLogoImgCache.has(finalTeamLogoPath)) {
+          teamLogoImg = teamLogoImgCache.get(finalTeamLogoPath) ?? null;
+        } else {
+          const { data: signed } = await supabase.storage.from(TEAM_LOGO_BUCKET).createSignedUrl(finalTeamLogoPath, 3600);
+          if (signed?.signedUrl) { teamLogoImg = await loadImageFromUrl(signed.signedUrl); teamLogoImgCache.set(finalTeamLogoPath, teamLogoImg); }
+        }
+      }
+
       setUploadingClip(true); setUploadProgress('Extrayendo clip de video...');
       let clipBlob: Blob | null = null;
-      try { clipBlob = await extractClip(video, frameTimestamp, secondsBefore); } catch (err) { console.warn('No se pudo extraer el clip:', err); }
+      try { clipBlob = await extractClip(video, frameTimestamp, secondsBefore, annotations, teamLogoImg); } catch (err) { console.warn('No se pudo extraer el clip:', err); }
       if (clipBlob) {
         setUploadProgress('Subiendo clip a Storage...');
         const ext = clipBlob.type.includes('mp4') ? 'mp4' : 'webm';
@@ -734,13 +994,16 @@ const AnalisisTacticoPage: React.FC = () => {
         if (ue) console.warn('Error subiendo clip:', ue); else clipStoragePath = ud.path;
       }
       setUploadingClip(false); setUploadProgress('Guardando análisis...');
-      const matchTeamId = matches.find(m => m.id === selectedMatchId)?.team_id ?? profile?.team_id ?? '';
-      const payload: TacticalAnalysisInsert = { match_id: selectedMatchId, team_id: matchTeamId, video_id: selectedVideoId, timestamp_video: frameTimestamp, annotations, description: description.trim() || undefined, created_by: user!.id, clip_storage_path: clipStoragePath };
+      const tipoFinal = (showCustomTipo ? tipoAnalisisCustom.trim() : tipoAnalisis.trim()) || null;
+      const payload: TacticalAnalysisInsert = { match_id: selectedMatchId, team_id: matchTeamId, video_id: selectedVideoId, timestamp_video: frameTimestamp, annotations, description: description.trim() || undefined, created_by: user!.id, clip_storage_path: clipStoragePath, tipo_analisis: tipoFinal };
       const { data, error: ie } = await supabase.from('tactical_analysis').insert(payload).select().single();
       if (ie) throw ie;
       setAnalyses(prev => [data, ...prev]);
       setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]);
       setDescription(''); setSelectedMatchId(''); setSelectedVideoId(''); setSelectedVideo(null); setMatchVideos([]);
+      setTipoAnalisis(''); setTipoAnalisisCustom(''); setShowCustomTipo(false);
+      if (teamLogoPreviewUrl) URL.revokeObjectURL(teamLogoPreviewUrl);
+      setPendingTeamLogoFile(null); setTeamLogoPreviewUrl(null); setTeamLogoPath(null); setTeamLogoCheckedFor(null);
       setUploadProgress(''); setView('list');
     } catch (err) { setError('Error al guardar el análisis.'); console.error(err); }
     finally { setSaving(false); setUploadingClip(false); setUploadProgress(''); }
@@ -885,12 +1148,21 @@ const AnalisisTacticoPage: React.FC = () => {
           <button onClick={() => { setView('list'); setSelectedAnalysis(null); setClipUrl(null); setTelestrationClips([]); setTelestrationUrls({}); }} className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>Volver
           </button>
-          {isAdmin && (
-            <button onClick={() => setConfirmDeleteId(selectedAnalysis.id)} disabled={deletingId === selectedAnalysis.id}
-              className="flex items-center gap-2 px-3 py-1.5 bg-red-900/40 hover:bg-red-900/70 border border-red-800 text-red-400 hover:text-red-300 rounded-lg text-xs transition-colors disabled:opacity-40">
-              {deletingId === selectedAnalysis.id ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>}Eliminar análisis
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {selectedAnalysis.clip_storage_path && (
+              <button onClick={() => downloadClip(selectedAnalysis)} disabled={downloadingIds.has(selectedAnalysis.id)}
+                className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg text-xs transition-colors disabled:opacity-40">
+                {downloadingIds.has(selectedAnalysis.id) ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>}
+                Descargar
+              </button>
+            )}
+            {isAdmin && (
+              <button onClick={() => setConfirmDeleteId(selectedAnalysis.id)} disabled={deletingId === selectedAnalysis.id}
+                className="flex items-center gap-2 px-3 py-1.5 bg-red-900/40 hover:bg-red-900/70 border border-red-800 text-red-400 hover:text-red-300 rounded-lg text-xs transition-colors disabled:opacity-40">
+                {deletingId === selectedAnalysis.id ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>}Eliminar análisis
+              </button>
+            )}
+          </div>
         </div>
         {error && <div className="bg-red-900/40 border border-red-500 rounded-lg p-3 text-red-300 text-sm">{error}</div>}
         <div className="bg-gray-800 rounded-xl p-4 space-y-2">
@@ -1132,6 +1404,48 @@ const AnalisisTacticoPage: React.FC = () => {
               <canvas ref={canvasRef} className="w-full h-auto block" style={{ cursor: TOOLS.find(t => t.type === activeTool)?.cursor || 'crosshair' }} onMouseDown={handleCanvasMouseDown} />
             </div>
             <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Carpeta / tipo de análisis</label>
+                <select
+                  value={showCustomTipo ? '__new__' : tipoAnalisis}
+                  onChange={e => {
+                    if (e.target.value === '__new__') { setShowCustomTipo(true); setTipoAnalisis(''); }
+                    else { setShowCustomTipo(false); setTipoAnalisis(e.target.value); }
+                  }}
+                  className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none"
+                >
+                  <option value="">Sin categoría</option>
+                  {existingTipos.map(t => <option key={t} value={t}>{t}</option>)}
+                  <option value="__new__">+ Nueva carpeta...</option>
+                </select>
+                {showCustomTipo && (
+                  <input type="text" value={tipoAnalisisCustom} onChange={e => setTipoAnalisisCustom(e.target.value)} placeholder="Ej. ABP, Presión, Marcas tiro esquina"
+                    className="w-full mt-2 bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none" autoFocus />
+                )}
+              </div>
+              {selectedMatchId && (
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Logo del equipo</label>
+                  {teamLogoPreviewUrl ? (
+                    <div className="flex items-center gap-3">
+                      <img src={teamLogoPreviewUrl} alt="Logo del equipo" className="w-10 h-10 object-contain bg-gray-900 rounded border border-gray-600" />
+                      <span className="text-xs text-cyan-400">Nuevo logo listo — se sube al guardar</span>
+                    </div>
+                  ) : teamLogoPath ? (
+                    <div className="flex items-center gap-2 text-xs text-green-400">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 flex-shrink-0"><path d="M20 6L9 17l-5-5" /></svg>
+                      <span>Logo del equipo ya guardado</span>
+                      <label className="text-cyan-400 hover:text-cyan-300 cursor-pointer underline ml-1">Cambiar<input type="file" accept="image/*" className="hidden" onChange={handleTeamLogoSelect} /></label>
+                    </div>
+                  ) : (
+                    <label className="flex items-center gap-2 text-xs text-gray-400 hover:text-gray-200 cursor-pointer border border-dashed border-gray-600 rounded-lg px-3 py-2 w-full transition-colors">
+                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 flex-shrink-0"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>
+                      Subir logo del equipo (opcional, solo se pide una vez)
+                      <input type="file" accept="image/*" className="hidden" onChange={handleTeamLogoSelect} />
+                    </label>
+                  )}
+                </div>
+              )}
               <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Descripción táctica (opcional)..." rows={2}
                 className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none resize-none" />
               {(saving || uploadingClip) && uploadProgress && (
@@ -1158,7 +1472,15 @@ const AnalisisTacticoPage: React.FC = () => {
           <h1 className="text-2xl font-bold text-white">Análisis Táctico</h1>
           <p className="text-gray-400 text-sm mt-0.5">{isAdmin ? 'Crea y revisa análisis tácticos con anotaciones sobre frames de video.' : 'Revisa los análisis tácticos de tu equipo.'}</p>
         </div>
-        {isAdmin && (<button onClick={() => setView('create')} className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M12 5v14M5 12h14" /></svg>Nuevo análisis</button>)}
+        {isAdmin && (
+          <div className="flex items-center gap-2">
+            <button onClick={() => { setSelectMode(s => !s); setSelectedIds(new Set()); }} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${selectMode ? 'bg-gray-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg>
+              {selectMode ? 'Cancelar selección' : 'Seleccionar'}
+            </button>
+            <button onClick={() => setView('create')} className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M12 5v14M5 12h14" /></svg>Nuevo análisis</button>
+          </div>
+        )}
       </div>
       {error && <div className="bg-red-900/40 border border-red-500 rounded-lg p-3 text-red-300 text-sm">{error}</div>}
       <div className="bg-gray-800 rounded-xl p-4">
@@ -1168,6 +1490,35 @@ const AnalisisTacticoPage: React.FC = () => {
           <div><label className="block text-xs text-gray-500 mb-1">Partido</label><select value={filterMatchId} onChange={e => setFilterMatchId(e.target.value)} className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none"><option value="all">Todos</option>{matches.map(m => <option key={m.id} value={m.id}>{m.nombre_equipo} vs {m.rival} — J{m.jornada}</option>)}</select></div>
         </div>
       </div>
+      {selectMode && selectedIds.size > 0 && (
+        <div className="bg-cyan-900/30 border border-cyan-700 rounded-xl p-3 flex flex-wrap items-center gap-3">
+          <span className="text-sm text-cyan-200 font-medium">{selectedIds.size} análisis seleccionado{selectedIds.size !== 1 ? 's' : ''}</span>
+          <select
+            value={showBulkMoveCustom ? '__new__' : bulkMoveTarget}
+            onChange={e => {
+              if (e.target.value === '__new__') { setShowBulkMoveCustom(true); setBulkMoveTarget(''); }
+              else { setShowBulkMoveCustom(false); setBulkMoveTarget(e.target.value); }
+            }}
+            className="bg-gray-700 text-white rounded-lg px-3 py-1.5 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none"
+          >
+            <option value="">Mover a: Sin categoría</option>
+            {existingTipos.map(t => <option key={t} value={t}>Mover a: {t}</option>)}
+            <option value="__new__">+ Nueva carpeta...</option>
+          </select>
+          {showBulkMoveCustom && (
+            <input type="text" value={bulkMoveCustom} onChange={e => setBulkMoveCustom(e.target.value)} placeholder="Nombre de la carpeta"
+              className="bg-gray-700 text-white rounded-lg px-3 py-1.5 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none" autoFocus />
+          )}
+          <button
+            onClick={() => moveAnalysesToFolder([...selectedIds], (showBulkMoveCustom ? bulkMoveCustom.trim() : bulkMoveTarget.trim()) || null)}
+            disabled={[...selectedIds].some(id => movingIds.has(id)) || (showBulkMoveCustom && !bulkMoveCustom.trim())}
+            className="flex items-center gap-2 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-40 text-white rounded-lg text-sm font-medium transition-colors"
+          >
+            {[...selectedIds].some(id => movingIds.has(id)) ? <Spinner /> : null}Mover
+          </button>
+          <button onClick={() => setSelectedIds(new Set())} className="text-xs text-gray-400 hover:text-gray-200 underline">Deseleccionar todo</button>
+        </div>
+      )}
       {filteredAnalyses.length === 0 ? (
         <div className="text-center py-16 text-gray-500">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-12 h-12 mx-auto mb-3 opacity-40"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M9 21V9" /></svg>
@@ -1175,33 +1526,88 @@ const AnalisisTacticoPage: React.FC = () => {
           {isAdmin && <button onClick={() => setView('create')} className="mt-3 text-cyan-400 hover:text-cyan-300 text-sm underline">Crear el primero</button>}
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-          {filteredAnalyses.map(analysis => {
-            const match = matches.find(m => m.id === analysis.match_id);
-            const date = new Date(analysis.created_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
+        <div className="space-y-3">
+          {groupedAnalyses.map(([folderName, items]) => {
+            const isOpen = !collapsedFolders.has(folderName);
             return (
-              <div key={analysis.id} className="bg-gray-800 rounded-xl p-4 border border-gray-700 hover:border-cyan-700 transition-colors group relative">
-                {isAdmin && (<button onClick={e => { e.stopPropagation(); setConfirmDeleteId(analysis.id); }} disabled={deletingId === analysis.id} className="absolute top-3 right-3 p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-900/30 transition-colors opacity-0 group-hover:opacity-100 disabled:opacity-40" title="Eliminar análisis">{deletingId === analysis.id ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>}</button>)}
-                <div className="cursor-pointer" onClick={() => { setSelectedAnalysis(analysis); setView('review'); }}>
-                  <div className="flex items-start justify-between mb-2 pr-6">
-                    <div className="flex-1 min-w-0"><p className="text-white font-medium text-sm truncate">{match ? `${match.nombre_equipo} vs ${match.rival}` : 'Partido desconocido'}</p><p className="text-gray-500 text-xs mt-0.5">{match ? `${match.torneo} · J${match.jornada}` : ''}</p></div>
-                    <div className="flex flex-col items-end gap-1 ml-2 flex-shrink-0">
-                      <span className="text-xs text-cyan-400 bg-cyan-900/30 px-2 py-0.5 rounded">{formatTime(analysis.timestamp_video)}</span>
-                      {analysis.clip_storage_path && (<span className="text-xs text-green-400 bg-green-900/30 px-2 py-0.5 rounded flex items-center gap-1"><svg viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3"><path d="M8 5v14l11-7z" /></svg>Video</span>)}
-                    </div>
+              <div key={folderName} className="bg-gray-800/60 rounded-xl border border-gray-700 overflow-hidden">
+                <button onClick={() => toggleFolder(folderName)} className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-800 transition-colors">
+                  <div className="flex items-center gap-2">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={`w-4 h-4 ${folderName === SIN_CATEGORIA ? 'text-gray-500' : 'text-cyan-500'}`}><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
+                    <span className="text-white font-medium text-sm">{folderName}</span>
+                    <span className="text-xs text-gray-500 bg-gray-700 px-2 py-0.5 rounded-full">{items.length}</span>
                   </div>
-                  {analysis.description && <p className="text-gray-400 text-xs mb-3 line-clamp-2">{analysis.description}</p>}
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-1 flex-wrap">
-                      {[...new Set(analysis.annotations.map(a => a.type))].slice(0, 4).map(type => (<span key={type} className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded">{TOOLS.find(t => t.type === type)?.label.split(' ')[0] ?? type}</span>))}
-                      {analysis.annotations.length > 0 && <span className="text-xs text-gray-500 ml-1">{analysis.annotations.length} ann.</span>}
-                    </div>
-                    <span className="text-xs text-gray-600">{date}</span>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={`w-4 h-4 text-gray-500 transition-transform ${isOpen ? 'rotate-180' : ''}`}><path d="M6 9l6 6 6-6" /></svg>
+                </button>
+                {isOpen && (
+                  <div className="px-4 pb-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {items.map(analysis => {
+                      const match = matches.find(m => m.id === analysis.match_id);
+                      const date = new Date(analysis.created_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
+                      const isSelected = selectedIds.has(analysis.id);
+                      const isMoving = movingIds.has(analysis.id);
+                      return (
+                        <div key={analysis.id} className={`bg-gray-800 rounded-xl p-4 border transition-colors group relative ${isSelected ? 'border-cyan-500' : 'border-gray-700 hover:border-cyan-700'}`}>
+                          {selectMode && isAdmin && (
+                            <button onClick={e => { e.stopPropagation(); toggleSelected(analysis.id); }} className={`absolute top-3 left-3 w-5 h-5 rounded border-2 flex items-center justify-center z-10 transition-colors ${isSelected ? 'bg-cyan-600 border-cyan-500' : 'border-gray-500 bg-gray-900'}`}>
+                              {isSelected && <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" className="w-3 h-3"><path d="M20 6L9 17l-5-5" /></svg>}
+                            </button>
+                          )}
+                          {!selectMode && (
+                            <div className="absolute top-3 right-3 flex items-center gap-1 z-10">
+                              {analysis.clip_storage_path && (
+                                <button onClick={e => { e.stopPropagation(); downloadClip(analysis); }} disabled={downloadingIds.has(analysis.id)}
+                                  className="p-1.5 rounded-lg bg-gray-900/70 text-gray-300 hover:text-cyan-400 hover:bg-cyan-900/50 transition-colors disabled:opacity-40" title="Descargar clip">
+                                  {downloadingIds.has(analysis.id) ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>}
+                                </button>
+                              )}
+                              {isAdmin && (
+                                <button onClick={e => { e.stopPropagation(); setConfirmDeleteId(analysis.id); }} disabled={deletingId === analysis.id}
+                                  className="p-1.5 rounded-lg bg-gray-900/70 text-gray-300 hover:text-red-400 hover:bg-red-900/50 transition-colors disabled:opacity-40" title="Eliminar análisis">
+                                  {deletingId === analysis.id ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>}
+                                </button>
+                              )}
+                            </div>
+                          )}
+                          <div className={`cursor-pointer ${selectMode ? 'pl-6' : ''}`} onClick={() => { if (selectMode) { toggleSelected(analysis.id); } else { setSelectedAnalysis(analysis); setView('review'); } }}>
+                            <div className="flex items-start justify-between mb-2 pr-14">
+                              <div className="flex-1 min-w-0"><p className="text-white font-medium text-sm truncate">{match ? `${match.nombre_equipo} vs ${match.rival}` : 'Partido desconocido'}</p><p className="text-gray-500 text-xs mt-0.5">{match ? `${match.torneo} · J${match.jornada}` : ''}</p></div>
+                              <div className="flex flex-col items-end gap-1 ml-2 flex-shrink-0">
+                                <span className="text-xs text-cyan-400 bg-cyan-900/30 px-2 py-0.5 rounded">{formatTime(analysis.timestamp_video)}</span>
+                                {analysis.clip_storage_path && (<span className="text-xs text-green-400 bg-green-900/30 px-2 py-0.5 rounded flex items-center gap-1"><svg viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3"><path d="M8 5v14l11-7z" /></svg>Video</span>)}
+                              </div>
+                            </div>
+                            {analysis.description && <p className="text-gray-400 text-xs mb-3 line-clamp-2">{analysis.description}</p>}
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-1 flex-wrap">
+                                {[...new Set(analysis.annotations.map(a => a.type))].slice(0, 4).map(type => (<span key={type} className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded">{TOOLS.find(t => t.type === type)?.label.split(' ')[0] ?? type}</span>))}
+                                {analysis.annotations.length > 0 && <span className="text-xs text-gray-500 ml-1">{analysis.annotations.length} ann.</span>}
+                              </div>
+                              <span className="text-xs text-gray-600">{date}</span>
+                            </div>
+                            <div className="mt-3 flex items-center gap-1 text-cyan-500 group-hover:text-cyan-400 text-xs transition-colors">
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>Ver análisis
+                            </div>
+                          </div>
+                          {isAdmin && !selectMode && (
+                            <div className="mt-3 pt-3 border-t border-gray-700" onClick={e => e.stopPropagation()}>
+                              <select
+                                value={analysis.tipo_analisis || ''}
+                                disabled={isMoving}
+                                onChange={e => moveAnalysesToFolder([analysis.id], e.target.value === '__new__' ? (window.prompt('Nombre de la nueva carpeta:') || '').trim() || null : (e.target.value || null))}
+                                className="w-full bg-gray-700 text-gray-300 rounded-lg px-2 py-1.5 text-xs border border-gray-600 focus:border-cyan-500 focus:outline-none disabled:opacity-50"
+                              >
+                                <option value="">Mover a: Sin categoría</option>
+                                {existingTipos.map(t => <option key={t} value={t}>Mover a: {t}</option>)}
+                                <option value="__new__">+ Nueva carpeta...</option>
+                              </select>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
-                  <div className="mt-3 flex items-center gap-1 text-cyan-500 group-hover:text-cyan-400 text-xs transition-colors">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>Ver análisis
-                  </div>
-                </div>
+                )}
               </div>
             );
           })}
@@ -1212,6 +1618,28 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
