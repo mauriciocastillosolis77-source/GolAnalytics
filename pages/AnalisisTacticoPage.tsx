@@ -409,7 +409,10 @@ const AnalisisTacticoPage: React.FC = () => {
   const [teamLogoCheckedFor, setTeamLogoCheckedFor] = useState<string | null>(null); // team_id ya consultado, evita refetch
   const [pendingTeamLogoFile, setPendingTeamLogoFile] = useState<File | null>(null); // archivo elegido, aún no subido
   const [teamLogoPreviewUrl, setTeamLogoPreviewUrl] = useState<string | null>(null);
-  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set());
+  const [selectedFolder, setSelectedFolder] = useState<string | null>(null); // null = viendo el grid de carpetas
+  const [comparingIds, setComparingIds] = useState<string[] | null>(null); // null = no está comparando
+  const [compareUrls, setCompareUrls] = useState<Record<string, string>>({});
+  const [compareLoading, setCompareLoading] = useState<Set<string>>(new Set());
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMoveTarget, setBulkMoveTarget] = useState('');
@@ -570,6 +573,28 @@ const AnalisisTacticoPage: React.FC = () => {
       setTeamLogoCheckedFor(matchTeamId);
     })();
   }, [selectedMatchId, matches, teamLogoCheckedFor]);
+
+  // Carga las URLs firmadas de los clips que se están comparando (hasta 4 a la vez).
+  useEffect(() => {
+    if (!comparingIds || comparingIds.length === 0) return;
+    const idsToLoad = comparingIds.filter(id => !compareUrls[id]);
+    if (idsToLoad.length === 0) return;
+    setCompareLoading(prev => new Set([...prev, ...idsToLoad]));
+    (async () => {
+      const results = await Promise.all(idsToLoad.map(async id => {
+        const analysis = analyses.find(a => a.id === id);
+        if (!analysis?.clip_storage_path) return [id, null] as const;
+        const { data } = await supabase.storage.from(CLIP_BUCKET).createSignedUrl(analysis.clip_storage_path, 3600);
+        return [id, data?.signedUrl ?? null] as const;
+      }));
+      setCompareUrls(prev => {
+        const next = { ...prev };
+        results.forEach(([id, url]) => { if (url) next[id] = url; });
+        return next;
+      });
+      setCompareLoading(prev => { const next = new Set(prev); idsToLoad.forEach(id => next.delete(id)); return next; });
+    })();
+  }, [comparingIds, analyses]);
 
   useEffect(() => {
     if (!selectedMatchId) { setMatchVideos([]); setSelectedVideoId(''); setSelectedVideo(null); return; }
@@ -870,8 +895,6 @@ const AnalisisTacticoPage: React.FC = () => {
     if (groups.has(SIN_CATEGORIA)) keys.push(SIN_CATEGORIA);
     return keys.map(k => [k, groups.get(k)!] as [string, TacticalAnalysis[]]);
   })();
-
-  const toggleFolder = (name: string) => setCollapsedFolders(prev => { const next = new Set(prev); next.has(name) ? next.delete(name) : next.add(name); return next; });
 
   // Mueve uno o varios análisis a una carpeta (o a "Sin categoría" si tipo es null). Usado por el
   // dropdown individual de cada tarjeta y por la barra de acción en lote.
@@ -1474,10 +1497,12 @@ const AnalisisTacticoPage: React.FC = () => {
         </div>
         {isAdmin && (
           <div className="flex items-center gap-2">
-            <button onClick={() => { setSelectMode(s => !s); setSelectedIds(new Set()); }} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${selectMode ? 'bg-gray-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg>
-              {selectMode ? 'Cancelar selección' : 'Seleccionar'}
-            </button>
+            {selectedFolder !== null && (
+              <button onClick={() => { setSelectMode(s => !s); setSelectedIds(new Set()); }} className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${selectMode ? 'bg-gray-600 text-white' : 'bg-gray-700 hover:bg-gray-600 text-gray-300'}`}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg>
+                {selectMode ? 'Cancelar selección' : 'Seleccionar'}
+              </button>
+            )}
             <button onClick={() => setView('create')} className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M12 5v14M5 12h14" /></svg>Nuevo análisis</button>
           </div>
         )}
@@ -1517,107 +1542,181 @@ const AnalisisTacticoPage: React.FC = () => {
             {[...selectedIds].some(id => movingIds.has(id)) ? <Spinner /> : null}Mover
           </button>
           <button onClick={() => setSelectedIds(new Set())} className="text-xs text-gray-400 hover:text-gray-200 underline">Deseleccionar todo</button>
+          <div className="w-px h-5 bg-cyan-800 mx-1" />
+          <button
+            onClick={() => { setComparingIds([...selectedIds].slice(0, 4)); setSelectMode(false); setSelectedIds(new Set()); }}
+            disabled={selectedIds.size < 1 || selectedIds.size > 4}
+            title={selectedIds.size > 4 ? 'Máximo 4 análisis para comparar' : ''}
+            className="flex items-center gap-2 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-30 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
+            Comparar ({selectedIds.size}/4)
+          </button>
         </div>
       )}
-      {filteredAnalyses.length === 0 ? (
-        <div className="text-center py-16 text-gray-500">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-12 h-12 mx-auto mb-3 opacity-40"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M9 21V9" /></svg>
-          <p className="text-sm">No hay análisis tácticos{filterMatchId !== 'all' || filterTorneo !== 'all' || filterCategoria !== 'all' ? ' con estos filtros' : ' guardados'}.</p>
-          {isAdmin && <button onClick={() => setView('create')} className="mt-3 text-cyan-400 hover:text-cyan-300 text-sm underline">Crear el primero</button>}
-        </div>
+      {selectedFolder === null ? (
+        // ── Pantalla 1: grid de carpetas ──────────────────────────────────
+        groupedAnalyses.length === 0 ? (
+          <div className="text-center py-16 text-gray-500">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-12 h-12 mx-auto mb-3 opacity-40"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M9 21V9" /></svg>
+            <p className="text-sm">No hay análisis tácticos{filterMatchId !== 'all' || filterTorneo !== 'all' || filterCategoria !== 'all' ? ' con estos filtros' : ' guardados'}.</p>
+            {isAdmin && <button onClick={() => setView('create')} className="mt-3 text-cyan-400 hover:text-cyan-300 text-sm underline">Crear el primero</button>}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {groupedAnalyses.map(([folderName, items]) => (
+              <button key={folderName} onClick={() => setSelectedFolder(folderName)}
+                className="flex items-center gap-3 bg-gray-800/60 hover:bg-gray-800 border border-gray-700 hover:border-cyan-700 rounded-xl p-4 text-left transition-colors">
+                <div className={`w-11 h-11 rounded-lg flex items-center justify-center flex-shrink-0 ${folderName === SIN_CATEGORIA ? 'bg-gray-700' : 'bg-cyan-900/40'}`}>
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={`w-5 h-5 ${folderName === SIN_CATEGORIA ? 'text-gray-400' : 'text-cyan-400'}`}><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-white font-medium text-sm truncate">{folderName}</p>
+                  <p className="text-gray-500 text-xs mt-0.5">{items.length} análisis</p>
+                </div>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-gray-600 flex-shrink-0"><path d="M9 18l6-6-6-6" /></svg>
+              </button>
+            ))}
+          </div>
+        )
       ) : (
-        <div className="space-y-3">
-          {groupedAnalyses.map(([folderName, items]) => {
-            const isOpen = !collapsedFolders.has(folderName);
+        // ── Pantalla 2: dentro de la carpeta ──────────────────────────────
+        (() => {
+          const items = groupedAnalyses.find(([name]) => name === selectedFolder)?.[1] ?? [];
+
+          // ── Modo comparación: hasta 4 videos en simultáneo ────────────────
+          if (comparingIds !== null) {
+            const compareAnalyses = comparingIds
+              .map(id => analyses.find(a => a.id === id))
+              .filter((a): a is TacticalAnalysis => !!a);
             return (
-              <div key={folderName} className="bg-gray-800/60 rounded-xl border border-gray-700 overflow-hidden">
-                <button onClick={() => toggleFolder(folderName)} className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-gray-800 transition-colors">
-                  <div className="flex items-center gap-2">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={`w-4 h-4 ${folderName === SIN_CATEGORIA ? 'text-gray-500' : 'text-cyan-500'}`}><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
-                    <span className="text-white font-medium text-sm">{folderName}</span>
-                    <span className="text-xs text-gray-500 bg-gray-700 px-2 py-0.5 rounded-full">{items.length}</span>
-                  </div>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className={`w-4 h-4 text-gray-500 transition-transform ${isOpen ? 'rotate-180' : ''}`}><path d="M6 9l6 6 6-6" /></svg>
+              <div className="space-y-4">
+                <button onClick={() => setComparingIds(null)} className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-cyan-400 transition-colors">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M15 18l-6-6 6-6" /></svg>
+                  {selectedFolder}
                 </button>
-                {isOpen && (
-                  <div className="px-4 pb-4 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-                    {items.map(analysis => {
-                      const match = matches.find(m => m.id === analysis.match_id);
-                      const date = new Date(analysis.created_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
-                      const isSelected = selectedIds.has(analysis.id);
-                      const isMoving = movingIds.has(analysis.id);
-                      return (
-                        <div key={analysis.id} className={`bg-gray-800 rounded-xl p-4 border transition-colors group relative ${isSelected ? 'border-cyan-500' : 'border-gray-700 hover:border-cyan-700'}`}>
-                          {selectMode && isAdmin && (
-                            <button onClick={e => { e.stopPropagation(); toggleSelected(analysis.id); }} className={`absolute top-3 left-3 w-5 h-5 rounded border-2 flex items-center justify-center z-10 transition-colors ${isSelected ? 'bg-cyan-600 border-cyan-500' : 'border-gray-500 bg-gray-900'}`}>
-                              {isSelected && <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" className="w-3 h-3"><path d="M20 6L9 17l-5-5" /></svg>}
-                            </button>
-                          )}
-                          {!selectMode && (
-                            <div className="absolute top-3 right-3 flex items-center gap-1 z-10">
-                              {analysis.clip_storage_path && (
-                                <button onClick={e => { e.stopPropagation(); downloadClip(analysis); }} disabled={downloadingIds.has(analysis.id)}
-                                  className="p-1.5 rounded-lg bg-gray-900/70 text-gray-300 hover:text-cyan-400 hover:bg-cyan-900/50 transition-colors disabled:opacity-40" title="Descargar clip">
-                                  {downloadingIds.has(analysis.id) ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>}
-                                </button>
-                              )}
-                              {isAdmin && (
-                                <button onClick={e => { e.stopPropagation(); setConfirmDeleteId(analysis.id); }} disabled={deletingId === analysis.id}
-                                  className="p-1.5 rounded-lg bg-gray-900/70 text-gray-300 hover:text-red-400 hover:bg-red-900/50 transition-colors disabled:opacity-40" title="Eliminar análisis">
-                                  {deletingId === analysis.id ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>}
-                                </button>
-                              )}
-                            </div>
-                          )}
-                          <div className={`cursor-pointer ${selectMode ? 'pl-6' : ''}`} onClick={() => { if (selectMode) { toggleSelected(analysis.id); } else { setSelectedAnalysis(analysis); setView('review'); } }}>
-                            <div className="flex items-start justify-between mb-2 pr-14">
-                              <div className="flex-1 min-w-0"><p className="text-white font-medium text-sm truncate">{match ? `${match.nombre_equipo} vs ${match.rival}` : 'Partido desconocido'}</p><p className="text-gray-500 text-xs mt-0.5">{match ? `${match.torneo} · J${match.jornada}` : ''}</p></div>
-                              <div className="flex flex-col items-end gap-1 ml-2 flex-shrink-0">
-                                <span className="text-xs text-cyan-400 bg-cyan-900/30 px-2 py-0.5 rounded">{formatTime(analysis.timestamp_video)}</span>
-                                {analysis.clip_storage_path && (<span className="text-xs text-green-400 bg-green-900/30 px-2 py-0.5 rounded flex items-center gap-1"><svg viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3"><path d="M8 5v14l11-7z" /></svg>Video</span>)}
-                              </div>
-                            </div>
-                            {analysis.description && <p className="text-gray-400 text-xs mb-3 line-clamp-2">{analysis.description}</p>}
-                            <div className="flex items-center justify-between">
-                              <div className="flex items-center gap-1 flex-wrap">
-                                {[...new Set(analysis.annotations.map(a => a.type))].slice(0, 4).map(type => (<span key={type} className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded">{TOOLS.find(t => t.type === type)?.label.split(' ')[0] ?? type}</span>))}
-                                {analysis.annotations.length > 0 && <span className="text-xs text-gray-500 ml-1">{analysis.annotations.length} ann.</span>}
-                              </div>
-                              <span className="text-xs text-gray-600">{date}</span>
-                            </div>
-                            <div className="mt-3 flex items-center gap-1 text-cyan-500 group-hover:text-cyan-400 text-xs transition-colors">
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>Ver análisis
-                            </div>
-                          </div>
-                          {isAdmin && !selectMode && (
-                            <div className="mt-3 pt-3 border-t border-gray-700" onClick={e => e.stopPropagation()}>
-                              <select
-                                value={analysis.tipo_analisis || ''}
-                                disabled={isMoving}
-                                onChange={e => moveAnalysesToFolder([analysis.id], e.target.value === '__new__' ? (window.prompt('Nombre de la nueva carpeta:') || '').trim() || null : (e.target.value || null))}
-                                className="w-full bg-gray-700 text-gray-300 rounded-lg px-2 py-1.5 text-xs border border-gray-600 focus:border-cyan-500 focus:outline-none disabled:opacity-50"
-                              >
-                                <option value="">Mover a: Sin categoría</option>
-                                {existingTipos.map(t => <option key={t} value={t}>Mover a: {t}</option>)}
-                                <option value="__new__">+ Nueva carpeta...</option>
-                              </select>
-                            </div>
-                          )}
+                <h2 className="text-lg font-bold text-white">Comparando {compareAnalyses.length} análisis</h2>
+                <div className={`grid grid-cols-1 ${compareAnalyses.length > 1 ? 'lg:grid-cols-2' : ''} gap-4`}>
+                  {compareAnalyses.map(analysis => {
+                    const match = matches.find(m => m.id === analysis.match_id);
+                    const url = compareUrls[analysis.id];
+                    const loading = compareLoading.has(analysis.id);
+                    return (
+                      <div key={analysis.id} className="bg-gray-800 rounded-xl p-3 border border-gray-700">
+                        <div className="mb-2">
+                          <p className="text-white font-medium text-sm">{match ? `${match.nombre_equipo} vs ${match.rival}` : 'Partido desconocido'}</p>
+                          <p className="text-gray-500 text-xs">{match ? `${match.torneo} · J${match.jornada}` : ''} · {formatTime(analysis.timestamp_video)}</p>
                         </div>
-                      );
-                    })}
-                  </div>
-                )}
+                        {!analysis.clip_storage_path ? (
+                          <div className="aspect-video bg-gray-900 rounded-lg flex items-center justify-center text-gray-600 text-xs text-center px-4">Este análisis no tiene video guardado</div>
+                        ) : loading || !url ? (
+                          <div className="aspect-video bg-gray-900 rounded-lg flex items-center justify-center"><Spinner /></div>
+                        ) : (
+                          <video src={url} controls className="w-full rounded-lg bg-black" />
+                        )}
+                        {analysis.description && <p className="text-gray-400 text-xs mt-2 line-clamp-2">{analysis.description}</p>}
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
             );
-          })}
-        </div>
+          }
+
+          return (
+            <div className="space-y-4">
+              <button onClick={() => { setSelectedFolder(null); setSelectMode(false); setSelectedIds(new Set()); setComparingIds(null); }}
+                className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-cyan-400 transition-colors">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M15 18l-6-6 6-6" /></svg>
+                Análisis Táctico
+              </button>
+              <div className="flex items-center gap-2">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" className={`w-4 h-4 ${selectedFolder === SIN_CATEGORIA ? 'text-gray-500' : 'text-cyan-500'}`}><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" /></svg>
+                <h2 className="text-lg font-bold text-white">{selectedFolder}</h2>
+                <span className="text-xs text-gray-500 bg-gray-700 px-2 py-0.5 rounded-full">{items.length}</span>
+              </div>
+              {items.length === 0 ? (
+                <div className="text-center py-12 text-gray-500 text-sm">Esta carpeta ya no tiene análisis (puede que los hayas movido a otra).</div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+                  {items.map(analysis => {
+                    const match = matches.find(m => m.id === analysis.match_id);
+                    const date = new Date(analysis.created_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
+                    const isSelected = selectedIds.has(analysis.id);
+                    const isMoving = movingIds.has(analysis.id);
+                    return (
+                      <div key={analysis.id} className={`bg-gray-800 rounded-xl p-4 border transition-colors group relative ${isSelected ? 'border-cyan-500' : 'border-gray-700 hover:border-cyan-700'}`}>
+                        {selectMode && isAdmin && (
+                          <button onClick={e => { e.stopPropagation(); toggleSelected(analysis.id); }} className={`absolute top-3 left-3 w-5 h-5 rounded border-2 flex items-center justify-center z-10 transition-colors ${isSelected ? 'bg-cyan-600 border-cyan-500' : 'border-gray-500 bg-gray-900'}`}>
+                            {isSelected && <svg viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" className="w-3 h-3"><path d="M20 6L9 17l-5-5" /></svg>}
+                          </button>
+                        )}
+                        {!selectMode && (
+                          <div className="absolute top-3 right-3 flex items-center gap-1 z-10">
+                            {analysis.clip_storage_path && (
+                              <button onClick={e => { e.stopPropagation(); downloadClip(analysis); }} disabled={downloadingIds.has(analysis.id)}
+                                className="p-1.5 rounded-lg bg-gray-900/70 text-gray-300 hover:text-cyan-400 hover:bg-cyan-900/50 transition-colors disabled:opacity-40" title="Descargar clip">
+                                {downloadingIds.has(analysis.id) ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>}
+                              </button>
+                            )}
+                            {isAdmin && (
+                              <button onClick={e => { e.stopPropagation(); setConfirmDeleteId(analysis.id); }} disabled={deletingId === analysis.id}
+                                className="p-1.5 rounded-lg bg-gray-900/70 text-gray-300 hover:text-red-400 hover:bg-red-900/50 transition-colors disabled:opacity-40" title="Eliminar análisis">
+                                {deletingId === analysis.id ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" /></svg>}
+                              </button>
+                            )}
+                          </div>
+                        )}
+                        <div className={`cursor-pointer ${selectMode ? 'pl-6' : ''}`} onClick={() => { if (selectMode) { toggleSelected(analysis.id); } else { setSelectedAnalysis(analysis); setView('review'); } }}>
+                          <div className="flex items-start justify-between mb-2 pr-14">
+                            <div className="flex-1 min-w-0"><p className="text-white font-medium text-sm truncate">{match ? `${match.nombre_equipo} vs ${match.rival}` : 'Partido desconocido'}</p><p className="text-gray-500 text-xs mt-0.5">{match ? `${match.torneo} · J${match.jornada}` : ''}</p></div>
+                            <div className="flex flex-col items-end gap-1 ml-2 flex-shrink-0">
+                              <span className="text-xs text-cyan-400 bg-cyan-900/30 px-2 py-0.5 rounded">{formatTime(analysis.timestamp_video)}</span>
+                              {analysis.clip_storage_path && (<span className="text-xs text-green-400 bg-green-900/30 px-2 py-0.5 rounded flex items-center gap-1"><svg viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3"><path d="M8 5v14l11-7z" /></svg>Video</span>)}
+                            </div>
+                          </div>
+                          {analysis.description && <p className="text-gray-400 text-xs mb-3 line-clamp-2">{analysis.description}</p>}
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1 flex-wrap">
+                              {[...new Set(analysis.annotations.map(a => a.type))].slice(0, 4).map(type => (<span key={type} className="text-xs bg-gray-700 text-gray-400 px-1.5 py-0.5 rounded">{TOOLS.find(t => t.type === type)?.label.split(' ')[0] ?? type}</span>))}
+                              {analysis.annotations.length > 0 && <span className="text-xs text-gray-500 ml-1">{analysis.annotations.length} ann.</span>}
+                            </div>
+                            <span className="text-xs text-gray-600">{date}</span>
+                          </div>
+                          <div className="mt-3 flex items-center gap-1 text-cyan-500 group-hover:text-cyan-400 text-xs transition-colors">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>Ver análisis
+                          </div>
+                        </div>
+                        {isAdmin && !selectMode && (
+                          <div className="mt-3 pt-3 border-t border-gray-700" onClick={e => e.stopPropagation()}>
+                            <select
+                              value={analysis.tipo_analisis || ''}
+                              disabled={isMoving}
+                              onChange={e => moveAnalysesToFolder([analysis.id], e.target.value === '__new__' ? (window.prompt('Nombre de la nueva carpeta:') || '').trim() || null : (e.target.value || null))}
+                              className="w-full bg-gray-700 text-gray-300 rounded-lg px-2 py-1.5 text-xs border border-gray-600 focus:border-cyan-500 focus:outline-none disabled:opacity-50"
+                            >
+                              <option value="">Mover a: Sin categoría</option>
+                              {existingTipos.map(t => <option key={t} value={t}>Mover a: {t}</option>)}
+                              <option value="__new__">+ Nueva carpeta...</option>
+                            </select>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })()
       )}
     </div>
   );
 };
 
 export default AnalisisTacticoPage;
+
+
 
 
 

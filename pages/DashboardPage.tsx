@@ -836,12 +836,18 @@ const DashboardPage: React.FC = () => {
             </div>
 
             {/* Tab Navigation */}
-            <div className="flex justify-center">
-                <div className="flex space-x-1 bg-gray-800 p-1 rounded-lg">
-                    <button onClick={() => setActiveTab('general')} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${activeTab === 'general' ? 'bg-cyan-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}>
+            <div className="flex flex-col items-center gap-2.5">
+                <p className="text-sm text-gray-400 flex items-center gap-1.5">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-cyan-400"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg>
+                    Elige una vista para explorar más estadísticas
+                </p>
+                <div className="flex gap-2 bg-gray-800 p-1.5 rounded-xl border border-gray-700">
+                    <button onClick={() => setActiveTab('general')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg transition-all ${activeTab === 'general' ? 'bg-cyan-600 text-white shadow-lg shadow-cyan-900/50' : 'bg-gray-700 text-gray-300 border border-gray-600 hover:bg-gray-600 hover:text-white'}`}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M3 3v18h18" /><rect x="7" y="12" width="3" height="6" /><rect x="12" y="8" width="3" height="10" /><rect x="17" y="5" width="3" height="13" /></svg>
                         Análisis General
                     </button>
-                    <button onClick={() => setActiveTab('player')} className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${activeTab === 'player' ? 'bg-cyan-600 text-white' : 'text-gray-300 hover:bg-gray-700'}`}>
+                    <button onClick={() => setActiveTab('player')} className={`flex items-center gap-2 px-5 py-2.5 text-sm font-semibold rounded-lg transition-all ${activeTab === 'player' ? 'bg-cyan-600 text-white shadow-lg shadow-cyan-900/50' : 'bg-gray-700 text-gray-300 border border-gray-600 hover:bg-gray-600 hover:text-white'}`}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><circle cx="12" cy="8" r="4" /><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8" /></svg>
                         Análisis por Jugador
                     </button>
                 </div>
@@ -1152,13 +1158,13 @@ const DashboardPage: React.FC = () => {
                         </div>
                     </div>
 
-                    <div className="bg-gray-800 p-6 rounded-lg h-96 flex flex-col">
+                    <div className="bg-gray-800 p-6 rounded-lg flex flex-col" style={{ height: `${Math.max(384, recuperacionBalonPorJugador.length * 36 + 60)}px` }}>
                         <h3 className="text-lg font-semibold text-white mb-4">Recuperación de Balón por Jugador</h3>
                         <ResponsiveContainer width="100%" height="100%">
                             <BarChart data={recuperacionBalonPorJugador} layout="vertical" margin={{ top: 5, right: 20, left: 10, bottom: 5 }}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#374151" horizontal={false} />
                                 <XAxis type="number" stroke="#9CA3AF" allowDecimals={false} />
-                                <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={100} tick={{ fontSize: 14, fill: '#D1D5DB' }} />
+                                <YAxis type="category" dataKey="name" stroke="#9CA3AF" width={100} tick={{ fontSize: 14, fill: '#D1D5DB' }} interval={0} />
                                 <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} cursor={{fill: 'rgba(107, 114, 128, 0.2)'}}/>
                                 <Bar dataKey="value" fill="#16A34A" name="Recuperaciones" />
                             </BarChart>
@@ -1430,4 +1436,5 @@ const DashboardPage: React.FC = () => {
 };
 
 export default DashboardPage;
+
 
