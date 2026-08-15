@@ -410,6 +410,9 @@ const AnalisisTacticoPage: React.FC = () => {
   const [pendingTeamLogoFile, setPendingTeamLogoFile] = useState<File | null>(null); // archivo elegido, aún no subido
   const [teamLogoPreviewUrl, setTeamLogoPreviewUrl] = useState<string | null>(null);
   const [selectedFolder, setSelectedFolder] = useState<string | null>(null); // null = viendo el grid de carpetas
+  const [comparingIds, setComparingIds] = useState<string[] | null>(null); // null = no está comparando
+  const [compareUrls, setCompareUrls] = useState<Record<string, string>>({});
+  const [compareLoading, setCompareLoading] = useState<Set<string>>(new Set());
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkMoveTarget, setBulkMoveTarget] = useState('');
@@ -570,6 +573,28 @@ const AnalisisTacticoPage: React.FC = () => {
       setTeamLogoCheckedFor(matchTeamId);
     })();
   }, [selectedMatchId, matches, teamLogoCheckedFor]);
+
+  // Carga las URLs firmadas de los clips que se están comparando (hasta 4 a la vez).
+  useEffect(() => {
+    if (!comparingIds || comparingIds.length === 0) return;
+    const idsToLoad = comparingIds.filter(id => !compareUrls[id]);
+    if (idsToLoad.length === 0) return;
+    setCompareLoading(prev => new Set([...prev, ...idsToLoad]));
+    (async () => {
+      const results = await Promise.all(idsToLoad.map(async id => {
+        const analysis = analyses.find(a => a.id === id);
+        if (!analysis?.clip_storage_path) return [id, null] as const;
+        const { data } = await supabase.storage.from(CLIP_BUCKET).createSignedUrl(analysis.clip_storage_path, 3600);
+        return [id, data?.signedUrl ?? null] as const;
+      }));
+      setCompareUrls(prev => {
+        const next = { ...prev };
+        results.forEach(([id, url]) => { if (url) next[id] = url; });
+        return next;
+      });
+      setCompareLoading(prev => { const next = new Set(prev); idsToLoad.forEach(id => next.delete(id)); return next; });
+    })();
+  }, [comparingIds, analyses]);
 
   useEffect(() => {
     if (!selectedMatchId) { setMatchVideos([]); setSelectedVideoId(''); setSelectedVideo(null); return; }
@@ -1517,6 +1542,16 @@ const AnalisisTacticoPage: React.FC = () => {
             {[...selectedIds].some(id => movingIds.has(id)) ? <Spinner /> : null}Mover
           </button>
           <button onClick={() => setSelectedIds(new Set())} className="text-xs text-gray-400 hover:text-gray-200 underline">Deseleccionar todo</button>
+          <div className="w-px h-5 bg-cyan-800 mx-1" />
+          <button
+            onClick={() => { setComparingIds([...selectedIds].slice(0, 4)); setSelectMode(false); setSelectedIds(new Set()); }}
+            disabled={selectedIds.size < 1 || selectedIds.size > 4}
+            title={selectedIds.size > 4 ? 'Máximo 4 análisis para comparar' : ''}
+            className="flex items-center gap-2 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-30 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>
+            Comparar ({selectedIds.size}/4)
+          </button>
         </div>
       )}
       {selectedFolder === null ? (
@@ -1548,9 +1583,49 @@ const AnalisisTacticoPage: React.FC = () => {
         // ── Pantalla 2: dentro de la carpeta ──────────────────────────────
         (() => {
           const items = groupedAnalyses.find(([name]) => name === selectedFolder)?.[1] ?? [];
+
+          // ── Modo comparación: hasta 4 videos en simultáneo ────────────────
+          if (comparingIds !== null) {
+            const compareAnalyses = comparingIds
+              .map(id => analyses.find(a => a.id === id))
+              .filter((a): a is TacticalAnalysis => !!a);
+            return (
+              <div className="space-y-4">
+                <button onClick={() => setComparingIds(null)} className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-cyan-400 transition-colors">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M15 18l-6-6 6-6" /></svg>
+                  {selectedFolder}
+                </button>
+                <h2 className="text-lg font-bold text-white">Comparando {compareAnalyses.length} análisis</h2>
+                <div className={`grid grid-cols-1 ${compareAnalyses.length > 1 ? 'lg:grid-cols-2' : ''} gap-4`}>
+                  {compareAnalyses.map(analysis => {
+                    const match = matches.find(m => m.id === analysis.match_id);
+                    const url = compareUrls[analysis.id];
+                    const loading = compareLoading.has(analysis.id);
+                    return (
+                      <div key={analysis.id} className="bg-gray-800 rounded-xl p-3 border border-gray-700">
+                        <div className="mb-2">
+                          <p className="text-white font-medium text-sm">{match ? `${match.nombre_equipo} vs ${match.rival}` : 'Partido desconocido'}</p>
+                          <p className="text-gray-500 text-xs">{match ? `${match.torneo} · J${match.jornada}` : ''} · {formatTime(analysis.timestamp_video)}</p>
+                        </div>
+                        {!analysis.clip_storage_path ? (
+                          <div className="aspect-video bg-gray-900 rounded-lg flex items-center justify-center text-gray-600 text-xs text-center px-4">Este análisis no tiene video guardado</div>
+                        ) : loading || !url ? (
+                          <div className="aspect-video bg-gray-900 rounded-lg flex items-center justify-center"><Spinner /></div>
+                        ) : (
+                          <video src={url} controls className="w-full rounded-lg bg-black" />
+                        )}
+                        {analysis.description && <p className="text-gray-400 text-xs mt-2 line-clamp-2">{analysis.description}</p>}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          }
+
           return (
             <div className="space-y-4">
-              <button onClick={() => { setSelectedFolder(null); setSelectMode(false); setSelectedIds(new Set()); }}
+              <button onClick={() => { setSelectedFolder(null); setSelectMode(false); setSelectedIds(new Set()); setComparingIds(null); }}
                 className="flex items-center gap-1.5 text-sm text-gray-400 hover:text-cyan-400 transition-colors">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M15 18l-6-6 6-6" /></svg>
                 Análisis Táctico
@@ -1640,6 +1715,7 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
 
 
 
