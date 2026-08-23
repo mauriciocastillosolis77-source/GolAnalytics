@@ -349,6 +349,7 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
       // siga entregando cuadros por su cuenta — no todos los navegadores lo hacen de forma
       // confiable con un canvas estático, y eso cortaba el video antes de tiempo.
       const drawFrozenFrame = () => {
+        if (phase !== 'frozen') return; // evita que un cuadro tardío se dibuje ya en otra fase
         ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
         annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height));
         drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo, teamLogo);
@@ -1794,41 +1795,3 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
