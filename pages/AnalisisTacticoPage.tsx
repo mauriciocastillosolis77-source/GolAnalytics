@@ -548,7 +548,6 @@ const AnalisisTacticoPage: React.FC = () => {
   const [previewAnn, setPreviewAnn] = useState<TacticalAnnotation | null>(null);
 
   const [selectedAnalysis, setSelectedAnalysis] = useState<TacticalAnalysis | null>(null);
-  const reviewCanvasRef = useRef<HTMLCanvasElement>(null);
   const reviewVideoRef = useRef<HTMLVideoElement>(null);
   const [clipUrl, setClipUrl] = useState<string | null>(null);
   const [loadingClip, setLoadingClip] = useState(false);
@@ -1253,10 +1252,7 @@ const AnalisisTacticoPage: React.FC = () => {
             <p className="text-sm font-medium text-gray-300">Contexto del partido</p>
             <p className="text-xs text-gray-500">El video se detiene en el frame con las anotaciones</p>
             <div className="relative rounded-lg overflow-hidden bg-black">
-              <video ref={reviewVideoRef} src={clipUrl} className="w-full block" controls playsInline
-                onEnded={() => { const video = reviewVideoRef.current; const canvas = reviewCanvasRef.current; if (!video || !canvas || !selectedAnalysis) return; canvas.width = video.videoWidth; canvas.height = video.videoHeight; const ctx = canvas.getContext('2d'); if (!ctx) return; ctx.drawImage(video, 0, 0); selectedAnalysis.annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height)); canvas.style.display = 'block'; }}
-                onPlay={() => { const canvas = reviewCanvasRef.current; if (canvas) canvas.style.display = 'none'; }} />
-              <canvas ref={reviewCanvasRef} className="absolute inset-0 w-full h-full" style={{ display: 'none' }} />
+              <video ref={reviewVideoRef} src={clipUrl} className="w-full block" controls playsInline />
             </div>
           </div>
         ) : (
