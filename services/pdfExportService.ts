@@ -35,6 +35,13 @@ interface ExportOptions {
   playerName?: string;
   playerNumber?: number;
   playerPosition?: string;
+  // KPIs del jugador (opcional) — replica las tarjetas de la página de Rendimiento en el PDF
+  kpis?: {
+    totalAcciones: number;
+    efectividadGlobal: number;
+    mejorJornada: { jornada: number; efectividad: number } | null;
+    peorJornada: { jornada: number; efectividad: number } | null;
+  };
 }
 
 const COLORS = {
@@ -204,6 +211,42 @@ function addParagraph(doc: jsPDF, text: string, startY: number, maxWidth: number
   return startY + lines.length * 5 + 5;
 }
 
+// Dibuja las 4 tarjetas KPI del jugador (Total Acciones, Efectividad Global, Mejor y Peor Jornada),
+// replicando las tarjetas que se ven en la página de Rendimiento, con sus mismos colores.
+function addKpiCards(doc: jsPDF, kpis: NonNullable<ExportOptions['kpis']>, startY: number, pageWidth: number): number {
+  const cardColors: [number, number, number][] = [
+    [13, 148, 136],  // teal — Total Acciones
+    [37, 99, 235],   // azul — Efectividad Global
+    [22, 163, 74],   // verde — Mejor Jornada
+    [234, 88, 12],   // naranja — Peor Jornada
+  ];
+  const cards = [
+    { label: 'Total Acciones', value: `${kpis.totalAcciones}` },
+    { label: 'Efectividad Global', value: `${kpis.efectividadGlobal}%` },
+    { label: 'Mejor Jornada', value: kpis.mejorJornada ? `J${kpis.mejorJornada.jornada} (${kpis.mejorJornada.efectividad}%)` : '—' },
+    { label: 'Peor Jornada', value: kpis.peorJornada ? `J${kpis.peorJornada.jornada} (${kpis.peorJornada.efectividad}%)` : '—' },
+  ];
+
+  const gap = 4;
+  const cardWidth = (pageWidth - 30 - gap * 3) / 4;
+  const cardHeight = 20;
+
+  cards.forEach((card, i) => {
+    const x = 15 + i * (cardWidth + gap);
+    doc.setFillColor(...cardColors[i]);
+    doc.roundedRect(x, startY, cardWidth, cardHeight, 2, 2, 'F');
+    doc.setFontSize(7);
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'normal');
+    doc.text(card.label, x + 4, startY + 7);
+    doc.setFontSize(13);
+    doc.setFont('helvetica', 'bold');
+    doc.text(card.value, x + 4, startY + 16);
+  });
+
+  return startY + cardHeight + 8;
+}
+
 function addTendenciaBox(doc: jsPDF, tendencia: string, descripcion: string, startY: number, pageWidth: number): number {
   const boxWidth = pageWidth - 30;
   const tendenciaColor = getTendenciaColor(tendencia);
@@ -370,6 +413,10 @@ export async function exportPlayerAnalysisToPDF(
   
   let y = addHeader(doc, options, 'ANALISIS DE RENDIMIENTO INDIVIDUAL', logoBase64);
   
+  if (options.kpis) {
+    y = addKpiCards(doc, options.kpis, y, pageWidth);
+  }
+  
   y = addTendenciaBox(doc, analysis.tendencia, analysis.tendenciaDescripcion, y, pageWidth);
   
   y = addSection(doc, 'FORTALEZAS DEL JUGADOR', y, pageWidth);
@@ -381,7 +428,21 @@ export async function exportPlayerAnalysisToPDF(
   
   if (analysis.comparativoProfesional) {
     y += 5;
+    // Si no queda espacio suficiente para el encabezado de la sección + las etiquetas + al menos
+    // un elemento de la lista, se pasa todo el bloque a la página siguiente — evita que el título
+    // "Metricas de referencia:" quede huérfano al final de una página con su contenido en la otra.
+    if (y > 225) {
+      doc.addPage();
+      y = 20;
+    }
     y = addSection(doc, 'COMPARATIVO PROFESIONAL', y, pageWidth);
+    
+    // Subtítulo aclaratorio: explica qué representa esta sección
+    doc.setFontSize(8);
+    doc.setTextColor(...COLORS.text);
+    doc.setFont('helvetica', 'italic');
+    doc.text('Cualidades de referencia de un jugador profesional en esta posicion, como guia de desarrollo.', 15, y);
+    y += 7;
     
     doc.setFontSize(10);
     doc.setTextColor(...COLORS.dark);
@@ -390,6 +451,11 @@ export async function exportPlayerAnalysisToPDF(
     y += 8;
     
     if (analysis.comparativoProfesional.metricasReferencia?.length > 0) {
+      // Mantiene la etiqueta junto con al menos el primer elemento de su lista
+      if (y > 255) {
+        doc.addPage();
+        y = 20;
+      }
       doc.setFont('helvetica', 'bold');
       doc.text('Metricas de referencia:', 15, y);
       y += 6;
@@ -424,3 +490,4 @@ export async function exportPlayerAnalysisToPDF(
   const fileName = `GolAnalytics_${playerSlug}_${new Date().toISOString().split('T')[0]}.pdf`;
   doc.save(fileName);
 }
+
