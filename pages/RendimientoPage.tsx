@@ -1427,12 +1427,20 @@ const RendimientoPage: React.FC = () => {
                                             <button
                                                 onClick={async () => {
                                                     try {
+                                                        // El equipo real del jugador se obtiene de sus partidos (mismo team_id)
+                                                        const playerTeamMatch = matches.find(m => m.team_id === selectedPlayer?.team_id && m.nombre_equipo);
                                                         await exportPlayerAnalysisToPDF(aiAnalysis, {
-                                                            userName: profile?.nombre || 'Usuario',
-                                                            teamName: `Academia ${profile?.nombre || 'GolAnalytics'}`,
+                                                            userName: profile?.username || 'Usuario',
+                                                            teamName: playerTeamMatch?.nombre_equipo || 'Equipo',
                                                             playerName: selectedPlayer?.nombre,
                                                             playerNumber: selectedPlayer?.numero,
-                                                            playerPosition: selectedPlayer?.posicion
+                                                            playerPosition: selectedPlayer?.posicion,
+                                                            kpis: {
+                                                                totalAcciones: kpis.totalAcciones,
+                                                                efectividadGlobal: kpis.efectividadGlobal,
+                                                                mejorJornada: kpis.mejorJornada,
+                                                                peorJornada: kpis.peorJornada
+                                                            }
                                                         });
                                                     } catch (error) {
                                                         console.error('Error exporting PDF:', error);
@@ -1459,6 +1467,7 @@ const RendimientoPage: React.FC = () => {
 };
 
 export default RendimientoPage;
+
 
 
 
