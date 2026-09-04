@@ -152,21 +152,53 @@ const AnalisisRivalPage: React.FC = () => {
 
   const openSecondaryWindow = () => {
     if (!videoUrl) return;
-    const sw = window.open('', '_blank', 'width=960,height=560');
+    const sw = window.open('', '_blank', 'width=960,height=620');
     if (!sw) return;
-    sw.document.write(`<title>${videoFileName || 'Video del rival'}</title><body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh;"><video id="v" src="${videoUrl}" controls autoplay style="width:100%;height:100%;"></video><script>
-      window.addEventListener('message', function(e) {
+    const navButton = (label: string, delta: number) => `<button onclick="seek(${delta})" style="background:#374151;color:#fff;border:none;padding:8px 14px;border-radius:6px;font-size:13px;cursor:pointer;">${label}</button>`;
+    sw.document.write(`<title>${videoFileName || 'Video del rival'}</title><body style="margin:0;background:#000;display:flex;flex-direction:column;height:100vh;font-family:sans-serif;">
+      <video id="v" src="${videoUrl}" controls autoplay style="flex:1;width:100%;min-height:0;"></video>
+      <div style="background:#111827;padding:10px;display:flex;gap:8px;justify-content:center;">
+        ${navButton('-10s', -10)}${navButton('-5s', -5)}${navButton('+5s', 5)}${navButton('+10s', 10)}
+      </div>
+      <script>
         var v = document.getElementById('v');
-        if (!v || !e.data || e.data.type !== 'gol_videocontrol') return;
-        if (e.data.action === 'pause') v.pause();
-        else if (e.data.action === 'play') v.play();
-        else if (e.data.action === 'back') v.currentTime -= 5;
-        else if (e.data.action === 'forward') v.currentTime += 5;
-      });
-    </script>`);
+        function seek(d) {
+          v.currentTime = Math.max(0, v.currentTime + d);
+          if (window.opener) window.opener.postMessage({ type: 'gol_videocontrol_from_popup', action: 'seek', delta: d }, '*');
+        }
+        window.addEventListener('message', function(e) {
+          if (!e.data || e.data.type !== 'gol_videocontrol') return;
+          if (e.data.action === 'pause') v.pause();
+          else if (e.data.action === 'play') v.play();
+          else if (e.data.action === 'back') v.currentTime = Math.max(0, v.currentTime - 5);
+          else if (e.data.action === 'forward') v.currentTime += 5;
+          else if (e.data.action === 'seek') v.currentTime = Math.max(0, v.currentTime + e.data.delta);
+        });
+      </script>`);
     sw.document.close();
     secondaryWindowRef.current = sw;
   };
+
+  // Avanza/retrocede el video principal, y si la ventana secundaria está abierta, la mantiene sincronizada.
+  const stepVideo = (delta: number) => {
+    const v = videoRef.current;
+    if (v) v.currentTime = Math.max(0, Math.min(v.duration || Infinity, v.currentTime + delta));
+    const sw = secondaryWindowRef.current;
+    if (sw && !sw.closed) sw.postMessage({ type: 'gol_videocontrol', action: 'seek', delta }, '*');
+  };
+
+  // Recibe comandos de navegación que vienen DESDE la ventana secundaria (cuando usan sus
+  // propios botones ahí), para que el reproductor principal se mantenga al día también.
+  useEffect(() => {
+    const handler = (e: MessageEvent) => {
+      if (e.data?.type !== 'gol_videocontrol_from_popup') return;
+      const v = videoRef.current;
+      if (!v) return;
+      if (e.data.action === 'seek') v.currentTime = Math.max(0, Math.min(v.duration || Infinity, v.currentTime + e.data.delta));
+    };
+    window.addEventListener('message', handler);
+    return () => window.removeEventListener('message', handler);
+  }, []);
 
   // ─── Selección de Tipo/Zona/Atributos ───────────────────────────────────────
   const selectTipo = (t: RivalTipo) => { setSelTipo(t); setSelAttr1(null); setSelAttr2(null); setTagError(null); };
@@ -552,7 +584,16 @@ const AnalisisRivalPage: React.FC = () => {
               )}
             </div>
             {videoUrl ? (
-              <video ref={videoRef} src={videoUrl} className="w-full rounded-lg max-h-72" controls />
+              <>
+                <video ref={videoRef} src={videoUrl} className="w-full rounded-lg max-h-72" controls />
+                <div className="flex items-center justify-center gap-1.5">
+                  <span className="text-xs text-gray-500 mr-1">Navegar:</span>
+                  <button onClick={() => stepVideo(-10)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">-10s</button>
+                  <button onClick={() => stepVideo(-5)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">-5s</button>
+                  <button onClick={() => stepVideo(5)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">+5s</button>
+                  <button onClick={() => stepVideo(10)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">+10s</button>
+                </div>
+              </>
             ) : (
               <div className="bg-gray-900 rounded-lg h-32 flex items-center justify-center text-gray-600 text-sm">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-6 h-6 mr-2"><path d="M23 7l-7 5 7 5V7z" /><rect x="1" y="5" width="15" height="14" rx="2" /></svg>Sin video cargado
@@ -762,6 +803,7 @@ const AnalisisRivalPage: React.FC = () => {
 };
 
 export default AnalisisRivalPage;
+
 
 
 
