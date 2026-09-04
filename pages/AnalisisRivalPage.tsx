@@ -13,6 +13,13 @@ const ATTR_CONFIG: Record<RivalTipo, { lbl1: string; opts1: [string, string][]; 
   Transicion: { lbl1: 'Planteamiento', opts1: [['Contraataque', '1'], ['Ataque organizado', '2']], lbl2: 'Carril', opts2: [['Izquierda', '1'], ['Centro', '2'], ['Derecha', '3']] },
 };
 const TIPOS: RivalTipo[] = ['Ofensiva', 'Defensiva', 'Transicion'];
+// El reporte y la impresión solo muestran Ofensiva y Defensiva — Transición sigue
+// disponible para etiquetar (por si se usa con otro rival), pero no en el reporte.
+const REPORT_TIPOS: RivalTipo[] = ['Ofensiva', 'Defensiva'];
+const REPORT_QUESTION: Partial<Record<RivalTipo, string>> = {
+  Ofensiva: '¿Cómo ataca el rival cuando tiene el balón?',
+  Defensiva: '¿Cómo presiona el rival cuando no tiene el balón?',
+};
 const ZONAS: RivalZona[] = ['Inicio', 'Creacion', 'Finalizacion'];
 const ZONA_LABEL: Record<RivalZona, string> = { Inicio: 'Inicio', Creacion: 'Creación', Finalizacion: 'Finalización' };
 const EYEBROW: Record<RivalTipo, string> = { Ofensiva: 'FASE OFENSIVA', Defensiva: 'FASE DEFENSIVA', Transicion: 'TRANSICIÓN OFENSIVA' };
@@ -399,19 +406,31 @@ const AnalisisRivalPage: React.FC = () => {
     'Número de hombres': (l) => `con ${l.toLowerCase()} hombres`,
   };
 
+  // Traduce la Altura de presión (Alta/Media/Baja) a lenguaje táctico de entrenador,
+  // en vez de mostrar la etiqueta cruda que no dice nada por sí sola.
+  const ALTURA_PRESION_LABEL: Record<string, string> = {
+    Alta: 'bloque alto', Media: 'bloque medio', Baja: 'bloque bajo',
+  };
+
   // Redacta en una sola línea legible el resumen de una zona — para la tarjeta ejecutiva
   // que muestra las 3 zonas juntas, sin tener que picarle a cada una.
   const summarizeZone = (tipo: RivalTipo, zona: RivalZona): string => {
     const rep = reportFor(tipo, zona);
     if (rep.momentos === 0) return 'Sin momentos registrados todavía.';
-    const attr1Text = rep.attr1Stats.map(s => `${s.pct}% ${s.label.toLowerCase()}`).join(', ');
-    let text = attr1Text;
+    let text: string;
+    if (tipo === 'Defensiva') {
+      const parts = rep.attr1Stats.map(s => `${s.pct}% ${ALTURA_PRESION_LABEL[s.label] || s.label.toLowerCase()}`).join(', ');
+      text = `Presión en ${parts}`;
+      if (rep.attr1Stats.some(s => s.label === 'Baja')) text += ', replegados cerca de su área';
+    } else {
+      text = rep.attr1Stats.map(s => `${s.pct}% ${s.label.toLowerCase()}`).join(', ');
+    }
     if (rep.attr2Stats.length > 0) {
       const top = [...rep.attr2Stats].sort((a, b) => b.pct - a.pct)[0];
       const phrase = ATTR2_PHRASE[rep.cfg.lbl2];
       if (phrase) text += `, mayoritariamente ${phrase(top.label)}`;
     }
-    return `${text} (${rep.momentos} momento${rep.momentos !== 1 ? 's' : ''}).`;
+    return `${text}.`;
   };
 
   if (loading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
@@ -624,10 +643,11 @@ const AnalisisRivalPage: React.FC = () => {
         // ═══════════════ REPORTE (auxiliar siempre, admin en modo "Ver reporte") ═══════════════
         <div className="space-y-4">
           <div className="flex gap-2">
-            {TIPOS.map(t => (
-              <button key={t} onClick={() => setRepTipo(t)} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${repTipo === t ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>{t === 'Transicion' ? 'Transición' : t}</button>
+            {REPORT_TIPOS.map(t => (
+              <button key={t} onClick={() => setRepTipo(t)} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${repTipo === t ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>{t}</button>
             ))}
           </div>
+          {REPORT_QUESTION[repTipo] && <p className="text-sm text-gray-400 italic">{REPORT_QUESTION[repTipo]}</p>}
 
           <div className="flex gap-5 flex-wrap items-start">
             <div className="flex-1 min-w-[200px]" style={{ flexBasis: 220 }}>
@@ -716,5 +736,6 @@ const AnalisisRivalPage: React.FC = () => {
 };
 
 export default AnalisisRivalPage;
+
 
 
