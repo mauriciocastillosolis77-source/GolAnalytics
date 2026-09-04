@@ -375,14 +375,22 @@ const AnalisisRivalPage: React.FC = () => {
   }, [view, mode, isAdmin, registrarMomento, selTipo, selZona, selAttr1]);
 
   // ─── Datos para el reporte (calculados en vivo desde los momentos reales) ───
+  type AttrStat = { label: string; pct: number };
   const reportFor = (tipo: RivalTipo, zona: RivalZona) => {
     const momentos = allMomentos.filter(m => m.tipo === tipo && m.zona === zona);
     const notaVal = draftNotes[`${tipo}|${zona}`] ?? selected?.notas?.[`${tipo}|${zona}`] ?? '';
-    if (momentos.length === 0) return { momentos: 0, bullets: [] as string[], nota: notaVal };
+    const cfg = ATTR_CONFIG[tipo];
+    if (momentos.length === 0) return { momentos: 0, attr1Stats: [] as AttrStat[], attr2Stats: [] as AttrStat[], nota: notaVal, cfg };
     const attr1Counts: Record<string, number> = {};
-    momentos.forEach(m => { attr1Counts[m.attr1] = (attr1Counts[m.attr1] || 0) + 1; });
-    const bullets = Object.entries(attr1Counts).map(([v, n]) => `${Math.round((100 * n) / momentos.length)}% ${v}`);
-    return { momentos: momentos.length, bullets, nota: notaVal };
+    const attr2Counts: Record<string, number> = {};
+    let attr2Total = 0;
+    momentos.forEach(m => {
+      attr1Counts[m.attr1] = (attr1Counts[m.attr1] || 0) + 1;
+      if (m.attr2) { attr2Counts[m.attr2] = (attr2Counts[m.attr2] || 0) + 1; attr2Total++; }
+    });
+    const attr1Stats: AttrStat[] = Object.entries(attr1Counts).map(([label, n]) => ({ label, pct: Math.round((100 * n) / momentos.length) }));
+    const attr2Stats: AttrStat[] = attr2Total > 0 ? Object.entries(attr2Counts).map(([label, n]) => ({ label, pct: Math.round((100 * n) / attr2Total) })) : [];
+    return { momentos: momentos.length, attr1Stats, attr2Stats, nota: notaVal, cfg };
   };
 
   if (loading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
@@ -602,34 +610,59 @@ const AnalisisRivalPage: React.FC = () => {
 
           <div className="flex gap-5 flex-wrap items-start">
             <div className="flex-1 min-w-[200px]" style={{ flexBasis: 220 }}>
+              <p className="text-xs text-gray-500 mb-2 text-center">Toca una zona de la cancha para ver su detalle</p>
               <svg viewBox="0 0 300 190" className="w-full h-auto block">
                 <rect x="2" y="2" width="296" height="186" fill="none" stroke="#4B5563" strokeWidth="1.5" />
                 {ZONAS.map((z, i) => (
-                  <rect key={z} onClick={() => setRepZona(z)} x={2 + i * 98.7} y="2" width="98.7" height="186" fill={ZONA_COLOR[z]} opacity={repZona === z ? 0.85 : 0.4} style={{ cursor: 'pointer' }} />
+                  <rect key={z} onClick={() => setRepZona(z)} x={2 + i * 98.7} y="2" width="98.7" height="186"
+                    fill={ZONA_COLOR[z]} opacity={repZona === z ? 1 : 0.18}
+                    stroke={repZona === z ? '#FFFFFF' : 'none'} strokeWidth={repZona === z ? 3 : 0}
+                    style={{ cursor: 'pointer' }} />
                 ))}
-                <circle cx="150" cy="95" r="26" fill="none" stroke="#1F2937" strokeWidth="1.5" opacity="0.8" />
-                <line x1="150" y1="2" x2="150" y2="188" stroke="#1F2937" strokeWidth="1.5" opacity="0.8" />
-                <rect x="2" y="65" width="18" height="60" fill="none" stroke="#1F2937" strokeWidth="1.5" opacity="0.8" />
-                <rect x="280" y="65" width="18" height="60" fill="none" stroke="#1F2937" strokeWidth="1.5" opacity="0.8" />
+                {ZONAS.map((z, i) => (
+                  <text key={z + '_t'} x={2 + i * 98.7 + 49.35} y="98" textAnchor="middle" fill="#FFFFFF"
+                    fontSize={repZona === z ? 15 : 11} fontWeight={repZona === z ? 700 : 400}
+                    opacity={repZona === z ? 1 : 0.55} style={{ pointerEvents: 'none' }}>{ZONA_LABEL[z]}</text>
+                ))}
+                <circle cx="150" cy="95" r="26" fill="none" stroke="#1F2937" strokeWidth="1.5" opacity="0.8" style={{ pointerEvents: 'none' }} />
+                <line x1="150" y1="2" x2="150" y2="188" stroke="#1F2937" strokeWidth="1.5" opacity="0.8" style={{ pointerEvents: 'none' }} />
+                <rect x="2" y="65" width="18" height="60" fill="none" stroke="#1F2937" strokeWidth="1.5" opacity="0.8" style={{ pointerEvents: 'none' }} />
+                <rect x="280" y="65" width="18" height="60" fill="none" stroke="#1F2937" strokeWidth="1.5" opacity="0.8" style={{ pointerEvents: 'none' }} />
               </svg>
-              <div className="flex gap-3 justify-center mt-2 text-xs text-gray-500">
-                {ZONAS.map(z => (<span key={z} className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: ZONA_COLOR[z] }} />{ZONA_LABEL[z]}</span>))}
-              </div>
             </div>
+
 
             <div className="flex-[2] min-w-[240px] bg-gray-800 rounded-xl p-4 border border-gray-700">
               <p className="text-xs text-cyan-400 font-medium tracking-wide mb-1">{EYEBROW[repTipo]}</p>
-              <p className="text-base font-medium text-white mb-1">{ZONA_LABEL[repZona]}</p>
+              <p className="text-base font-medium text-white mb-3">{ZONA_LABEL[repZona]}</p>
               {(() => {
                 const rep = reportFor(repTipo, repZona);
+                if (rep.momentos === 0) {
+                  return <p className="text-sm text-gray-500 mb-3">Sin momentos registrados en esta zona todavía.</p>;
+                }
                 return (
                   <>
-                    {rep.bullets.length === 0 ? (
-                      <p className="text-sm text-gray-500 mb-3">Sin momentos registrados en esta zona todavía.</p>
-                    ) : (
-                      <ul className="list-disc pl-5 text-sm text-gray-300 space-y-1 mb-3">
-                        {rep.bullets.map((b, i) => <li key={i}>{b}</li>)}
-                      </ul>
+                    {rep.attr1Stats.length > 0 && (
+                      <div className="mb-4">
+                        <p className="text-xs text-gray-500 mb-1.5">{rep.cfg.lbl1}</p>
+                        {rep.attr1Stats.map(s => (
+                          <div key={s.label} className="mb-1.5">
+                            <div className="flex justify-between text-xs mb-0.5"><span className="text-gray-300">{s.label}</span><span className="text-gray-500">{s.pct}%</span></div>
+                            <div className="h-2 bg-gray-700 rounded-full overflow-hidden"><div className="h-full bg-cyan-500 rounded-full transition-all" style={{ width: `${s.pct}%` }} /></div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {rep.attr2Stats.length > 0 && (
+                      <div className="mb-4">
+                        <p className="text-xs text-gray-500 mb-1.5">{rep.cfg.lbl2}</p>
+                        {rep.attr2Stats.map(s => (
+                          <div key={s.label} className="mb-1.5">
+                            <div className="flex justify-between text-xs mb-0.5"><span className="text-gray-300">{s.label}</span><span className="text-gray-500">{s.pct}%</span></div>
+                            <div className="h-2 bg-gray-700 rounded-full overflow-hidden"><div className="h-full bg-purple-500 rounded-full transition-all" style={{ width: `${s.pct}%` }} /></div>
+                          </div>
+                        ))}
+                      </div>
                     )}
                     {rep.nota && (
                       <div className="border-t border-gray-700 pt-2 mb-3">
@@ -650,4 +683,5 @@ const AnalisisRivalPage: React.FC = () => {
 };
 
 export default AnalisisRivalPage;
+
 
