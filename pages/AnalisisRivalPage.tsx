@@ -5,6 +5,7 @@ import { ROLES } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
 import type { RivalAnalysis, RivalAnalysisInsert, RivalMomento, RivalNotas, RivalTipo, RivalZona } from '../types';
 import { fetchTeams, type Team } from '../services/teamsService';
+import { exportRivalAnalysisToPDF } from '../services/pdfExportService';
 
 // ─── Configuración de atributos por Tipo (contextual, igual que el mockup aprobado) ──
 const ATTR_CONFIG: Record<RivalTipo, { lbl1: string; opts1: [string, string][]; lbl2: string; opts2: [string, string][] }> = {
@@ -433,6 +434,27 @@ const AnalisisRivalPage: React.FC = () => {
     return `${text}.`;
   };
 
+  const handleExportPDF = async () => {
+    if (!selected) return;
+    try {
+      const buildFase = (tipo: RivalTipo, pregunta: string) => ({
+        pregunta,
+        zonas: ZONAS.map(z => ({ zona: z, resumen: summarizeZone(tipo, z) })),
+      });
+      await exportRivalAnalysisToPDF(
+        {
+          rivalName: selected.rival_name,
+          ofensiva: buildFase('Ofensiva', REPORT_QUESTION.Ofensiva || ''),
+          defensiva: buildFase('Defensiva', REPORT_QUESTION.Defensiva || ''),
+        },
+        { userName: profile?.username || 'Usuario', teamName: teamName(selected.team_id) }
+      );
+    } catch (err) {
+      console.error(err);
+      setError('No se pudo generar el PDF. Intenta de nuevo.');
+    }
+  };
+
   if (loading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
 
   // ═══════════════════════════ VISTA: LISTA ═══════════════════════════════
@@ -729,6 +751,10 @@ const AnalisisRivalPage: React.FC = () => {
               ))}
             </div>
           </div>
+
+          <button onClick={handleExportPDF} className="w-full flex items-center justify-center gap-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>Descargar PDF
+          </button>
         </div>
       )}
     </div>
