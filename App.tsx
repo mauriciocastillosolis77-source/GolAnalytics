@@ -8,6 +8,7 @@ import VideoTaggerPage from './pages/VideoTaggerPage';
 import AdminUsersPage from './pages/AdminUsersPage';
 import RendimientoPage from './pages/RendimientoPage';
 import AnalisisTacticoPage from './pages/AnalisisTacticoPage';
+import AnalisisRivalPage from './pages/AnalisisRivalPage';
 import NotFoundPage from './pages/NotFoundPage';
 import Layout from './components/layout/Layout';
 import { Spinner } from './components/ui/Spinner';
@@ -44,6 +45,7 @@ const App: React.FC = () => {
             <Route path="/dashboard" element={<ProtectedRoute><Layout><DashboardPage /></Layout></ProtectedRoute>} />
             <Route path="/rendimiento" element={<ProtectedRoute><Layout><RendimientoPage /></Layout></ProtectedRoute>} />
             <Route path="/analisis-tactico" element={<ProtectedRoute><Layout><AnalisisTacticoPage /></Layout></ProtectedRoute>} />
+            <Route path="/analisis-rival" element={<ProtectedRoute><Layout><AnalisisRivalPage /></Layout></ProtectedRoute>} />
             <Route 
               path="/tagger" 
               element={
@@ -67,3 +69,4 @@ const App: React.FC = () => {
 };
 
 export default App;
+

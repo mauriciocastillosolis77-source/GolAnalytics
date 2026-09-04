@@ -29,12 +29,42 @@ interface PlayerAnalysisData {
   resumenGeneral: string;
 }
 
+interface RivalZonaSummary {
+  zona: 'Inicio' | 'Creacion' | 'Finalizacion';
+  resumen: string;
+}
+
+interface RivalFaseData {
+  pregunta: string;
+  zonas: RivalZonaSummary[];
+}
+
+interface RivalReportData {
+  rivalName: string;
+  ofensiva: RivalFaseData;
+  defensiva: RivalFaseData;
+}
+
+const ZONA_COLOR_RGB: Record<string, [number, number, number]> = {
+  Inicio: [216, 90, 48],
+  Creacion: [239, 159, 39],
+  Finalizacion: [55, 138, 221],
+};
+const ZONA_LABEL_PDF: Record<string, string> = { Inicio: 'Inicio', Creacion: 'Creación', Finalizacion: 'Finalización' };
+
 interface ExportOptions {
   userName: string;
   teamName: string;
   playerName?: string;
   playerNumber?: number;
   playerPosition?: string;
+  // KPIs del jugador (opcional) — replica las tarjetas de la página de Rendimiento en el PDF
+  kpis?: {
+    totalAcciones: number;
+    efectividadGlobal: number;
+    mejorJornada: { jornada: number; efectividad: number } | null;
+    peorJornada: { jornada: number; efectividad: number } | null;
+  };
 }
 
 const COLORS = {
@@ -204,6 +234,42 @@ function addParagraph(doc: jsPDF, text: string, startY: number, maxWidth: number
   return startY + lines.length * 5 + 5;
 }
 
+// Dibuja las 4 tarjetas KPI del jugador (Total Acciones, Efectividad Global, Mejor y Peor Jornada),
+// replicando las tarjetas que se ven en la página de Rendimiento, con sus mismos colores.
+function addKpiCards(doc: jsPDF, kpis: NonNullable<ExportOptions['kpis']>, startY: number, pageWidth: number): number {
+  const cardColors: [number, number, number][] = [
+    [13, 148, 136],  // teal — Total Acciones
+    [37, 99, 235],   // azul — Efectividad Global
+    [22, 163, 74],   // verde — Mejor Jornada
+    [234, 88, 12],   // naranja — Peor Jornada
+  ];
+  const cards = [
+    { label: 'Total Acciones', value: `${kpis.totalAcciones}` },
+    { label: 'Efectividad Global', value: `${kpis.efectividadGlobal}%` },
+    { label: 'Mejor Jornada', value: kpis.mejorJornada ? `J${kpis.mejorJornada.jornada} (${kpis.mejorJornada.efectividad}%)` : '—' },
+    { label: 'Peor Jornada', value: kpis.peorJornada ? `J${kpis.peorJornada.jornada} (${kpis.peorJornada.efectividad}%)` : '—' },
+  ];
+
+  const gap = 4;
+  const cardWidth = (pageWidth - 30 - gap * 3) / 4;
+  const cardHeight = 20;
+
+  cards.forEach((card, i) => {
+    const x = 15 + i * (cardWidth + gap);
+    doc.setFillColor(...cardColors[i]);
+    doc.roundedRect(x, startY, cardWidth, cardHeight, 2, 2, 'F');
+    doc.setFontSize(7);
+    doc.setTextColor(255, 255, 255);
+    doc.setFont('helvetica', 'normal');
+    doc.text(card.label, x + 4, startY + 7);
+    doc.setFontSize(13);
+    doc.setFont('helvetica', 'bold');
+    doc.text(card.value, x + 4, startY + 16);
+  });
+
+  return startY + cardHeight + 8;
+}
+
 function addTendenciaBox(doc: jsPDF, tendencia: string, descripcion: string, startY: number, pageWidth: number): number {
   const boxWidth = pageWidth - 30;
   const tendenciaColor = getTendenciaColor(tendencia);
@@ -225,6 +291,71 @@ function addTendenciaBox(doc: jsPDF, tendencia: string, descripcion: string, sta
   doc.text(descLines, 85, startY + 10);
   
   return startY + 32;
+}
+
+// Dibuja una mini-cancha de 3 zonas (Inicio/Creación/Finalización) con los mismos
+// colores que se ven en pantalla — para que el reporte impreso se sienta como una
+// extensión visual de la app, no un documento de texto plano.
+function drawMiniPitch(doc: jsPDF, x: number, y: number, width: number, height: number) {
+  const zonas: Array<'Inicio' | 'Creacion' | 'Finalizacion'> = ['Inicio', 'Creacion', 'Finalizacion'];
+  const zoneWidth = width / 3;
+  zonas.forEach((z, i) => {
+    doc.setFillColor(...ZONA_COLOR_RGB[z]);
+    doc.rect(x + i * zoneWidth, y, zoneWidth, height, 'F');
+  });
+  doc.setDrawColor(60, 60, 60);
+  doc.setLineWidth(0.4);
+  doc.rect(x, y, width, height, 'S');
+  // Círculo central y línea divisoria, como referencia visual de cancha
+  doc.line(x + width / 2, y, x + width / 2, y + height);
+  doc.circle(x + width / 2, y + height / 2, height * 0.22, 'S');
+  // Nombre de cada zona escrito encima de su color
+  doc.setFontSize(8);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(255, 255, 255);
+  zonas.forEach((z, i) => {
+    doc.text(ZONA_LABEL_PDF[z], x + i * zoneWidth + zoneWidth / 2, y + height / 2, { align: 'center' });
+  });
+}
+
+// Dibuja una fase completa (Ofensiva o Defensiva): barra de título + pregunta guía,
+// la mini-cancha a la izquierda, y el resumen de cada zona a la derecha.
+function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: number, pageWidth: number): number {
+  let y = addSection(doc, title, startY, pageWidth);
+
+  doc.setFontSize(9);
+  doc.setTextColor(...COLORS.secondary);
+  doc.setFont('helvetica', 'italic');
+  const preguntaLines = doc.splitTextToSize(fase.pregunta, pageWidth - 30);
+  doc.text(preguntaLines, 15, y);
+  y += preguntaLines.length * 5 + 6;
+
+  const pitchWidth = 55;
+  const pitchHeight = 32;
+  drawMiniPitch(doc, 15, y, pitchWidth, pitchHeight);
+
+  const textX = 15 + pitchWidth + 8;
+  const textWidth = pageWidth - textX - 15;
+  let textY = y + 5;
+  const zonas: Array<'Inicio' | 'Creacion' | 'Finalizacion'> = ['Inicio', 'Creacion', 'Finalizacion'];
+  zonas.forEach(z => {
+    const zonaData = fase.zonas.find(f => f.zona === z);
+    doc.setFillColor(...ZONA_COLOR_RGB[z]);
+    doc.rect(textX, textY - 3, 3, 3, 'F');
+    doc.setFontSize(9.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...COLORS.dark);
+    doc.text(ZONA_LABEL_PDF[z], textX + 6, textY);
+    textY += 4.5;
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(...COLORS.text);
+    const lines = doc.splitTextToSize(zonaData?.resumen || 'Sin momentos registrados todavía.', textWidth);
+    doc.text(lines, textX + 6, textY);
+    textY += lines.length * 4.5 + 4;
+  });
+
+  return Math.max(y + pitchHeight, textY) + 8;
 }
 
 function addFooter(doc: jsPDF) {
@@ -370,6 +501,10 @@ export async function exportPlayerAnalysisToPDF(
   
   let y = addHeader(doc, options, 'ANALISIS DE RENDIMIENTO INDIVIDUAL', logoBase64);
   
+  if (options.kpis) {
+    y = addKpiCards(doc, options.kpis, y, pageWidth);
+  }
+  
   y = addTendenciaBox(doc, analysis.tendencia, analysis.tendenciaDescripcion, y, pageWidth);
   
   y = addSection(doc, 'FORTALEZAS DEL JUGADOR', y, pageWidth);
@@ -381,7 +516,21 @@ export async function exportPlayerAnalysisToPDF(
   
   if (analysis.comparativoProfesional) {
     y += 5;
+    // Si no queda espacio suficiente para el encabezado de la sección + las etiquetas + al menos
+    // un elemento de la lista, se pasa todo el bloque a la página siguiente — evita que el título
+    // "Metricas de referencia:" quede huérfano al final de una página con su contenido en la otra.
+    if (y > 225) {
+      doc.addPage();
+      y = 20;
+    }
     y = addSection(doc, 'COMPARATIVO PROFESIONAL', y, pageWidth);
+    
+    // Subtítulo aclaratorio: explica qué representa esta sección
+    doc.setFontSize(8);
+    doc.setTextColor(...COLORS.text);
+    doc.setFont('helvetica', 'italic');
+    doc.text('Cualidades de referencia de un jugador profesional en esta posicion, como guia de desarrollo.', 15, y);
+    y += 7;
     
     doc.setFontSize(10);
     doc.setTextColor(...COLORS.dark);
@@ -390,6 +539,11 @@ export async function exportPlayerAnalysisToPDF(
     y += 8;
     
     if (analysis.comparativoProfesional.metricasReferencia?.length > 0) {
+      // Mantiene la etiqueta junto con al menos el primer elemento de su lista
+      if (y > 255) {
+        doc.addPage();
+        y = 20;
+      }
       doc.setFont('helvetica', 'bold');
       doc.text('Metricas de referencia:', 15, y);
       y += 6;
@@ -422,5 +576,26 @@ export async function exportPlayerAnalysisToPDF(
   
   const playerSlug = options.playerName?.replace(/\s+/g, '_') || 'Jugador';
   const fileName = `GolAnalytics_${playerSlug}_${new Date().toISOString().split('T')[0]}.pdf`;
+  doc.save(fileName);
+}
+
+export async function exportRivalAnalysisToPDF(
+  data: RivalReportData,
+  options: ExportOptions
+): Promise<void> {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+
+  const logoBase64 = loadLogo();
+
+  let y = addHeader(doc, options, `ANALISIS DE RIVAL — ${data.rivalName.toUpperCase()}`, logoBase64);
+
+  y = addFaseSection(doc, 'FASE OFENSIVA', data.ofensiva, y, pageWidth);
+  y = addFaseSection(doc, 'FASE DEFENSIVA', data.defensiva, y, pageWidth);
+
+  addFooter(doc);
+
+  const rivalSlug = data.rivalName.replace(/\s+/g, '_');
+  const fileName = `GolAnalytics_Rival_${rivalSlug}_${new Date().toISOString().split('T')[0]}.pdf`;
   doc.save(fileName);
 }
