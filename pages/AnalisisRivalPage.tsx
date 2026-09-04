@@ -393,6 +393,27 @@ const AnalisisRivalPage: React.FC = () => {
     return { momentos: momentos.length, attr1Stats, attr2Stats, nota: notaVal, cfg };
   };
 
+  // Frase de conexión natural para el segundo atributo, según qué represente (Carril vs Número de hombres)
+  const ATTR2_PHRASE: Record<string, (label: string) => string> = {
+    'Carril': (l) => `por la ${l.toLowerCase()}`,
+    'Número de hombres': (l) => `con ${l.toLowerCase()} hombres`,
+  };
+
+  // Redacta en una sola línea legible el resumen de una zona — para la tarjeta ejecutiva
+  // que muestra las 3 zonas juntas, sin tener que picarle a cada una.
+  const summarizeZone = (tipo: RivalTipo, zona: RivalZona): string => {
+    const rep = reportFor(tipo, zona);
+    if (rep.momentos === 0) return 'Sin momentos registrados todavía.';
+    const attr1Text = rep.attr1Stats.map(s => `${s.pct}% ${s.label.toLowerCase()}`).join(', ');
+    let text = attr1Text;
+    if (rep.attr2Stats.length > 0) {
+      const top = [...rep.attr2Stats].sort((a, b) => b.pct - a.pct)[0];
+      const phrase = ATTR2_PHRASE[rep.cfg.lbl2];
+      if (phrase) text += `, mayoritariamente ${phrase(top.label)}`;
+    }
+    return `${text} (${rep.momentos} momento${rep.momentos !== 1 ? 's' : ''}).`;
+  };
+
   if (loading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
 
   // ═══════════════════════════ VISTA: LISTA ═══════════════════════════════
@@ -674,6 +695,18 @@ const AnalisisRivalPage: React.FC = () => {
                   </>
                 );
               })()}
+            </div>
+          </div>
+
+          <div className="bg-gray-800 rounded-xl p-4 border border-gray-700">
+            <p className="text-xs text-cyan-400 font-medium tracking-wide mb-3">RESUMEN EJECUTIVO — {EYEBROW[repTipo]}</p>
+            <div className="space-y-2.5">
+              {ZONAS.map(z => (
+                <div key={z} className="flex gap-2.5">
+                  <span className="w-2.5 h-2.5 rounded-sm mt-1 flex-shrink-0" style={{ background: ZONA_COLOR[z] }} />
+                  <p className="text-sm text-gray-300"><span className="font-medium text-white">{ZONA_LABEL[z]}:</span> {summarizeZone(repTipo, z)}</p>
+                </div>
+              ))}
             </div>
           </div>
         </div>
