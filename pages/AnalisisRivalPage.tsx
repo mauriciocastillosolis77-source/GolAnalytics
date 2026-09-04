@@ -18,17 +18,6 @@ const ZONA_LABEL: Record<RivalZona, string> = { Inicio: 'Inicio', Creacion: 'Cre
 const EYEBROW: Record<RivalTipo, string> = { Ofensiva: 'FASE OFENSIVA', Defensiva: 'FASE DEFENSIVA', Transicion: 'TRANSICIÓN OFENSIVA' };
 const ZONA_COLOR: Record<RivalZona, string> = { Inicio: '#D85A30', Creacion: '#EF9F27', Finalizacion: '#378ADD' };
 
-// Vocabulario reconocido por el comando de voz — mapea palabras habladas a selecciones
-const VOICE_MAP: Record<string, [string, string]> = {
-  'ofensiva': ['tipo', 'Ofensiva'], 'defensiva': ['tipo', 'Defensiva'], 'transición': ['tipo', 'Transicion'], 'transicion': ['tipo', 'Transicion'],
-  'inicio': ['zona', 'Inicio'], 'creación': ['zona', 'Creacion'], 'creacion': ['zona', 'Creacion'], 'finalización': ['zona', 'Finalizacion'], 'finalizacion': ['zona', 'Finalizacion'],
-  'combinativo': ['attr1', 'Combinativo'], 'directo': ['attr1', 'Directo'],
-  'presión alta': ['attr1', 'Alta'], 'presion alta': ['attr1', 'Alta'], 'presión media': ['attr1', 'Media'], 'presion media': ['attr1', 'Media'], 'presión baja': ['attr1', 'Baja'], 'presion baja': ['attr1', 'Baja'],
-  'contraataque': ['attr1', 'Contraataque'], 'ataque organizado': ['attr1', 'Ataque organizado'],
-  'izquierda': ['attr2', 'Izquierda'], 'centro': ['attr2', 'Centro'], 'derecha': ['attr2', 'Derecha'],
-  'muchos hombres': ['attr2', 'Muchos'], 'pocos hombres': ['attr2', 'Pocos'],
-};
-
 let idCounter = 0;
 const newLocalId = () => `m_${Date.now()}_${idCounter++}`;
 
@@ -69,11 +58,13 @@ const AnalisisRivalPage: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<{ text: string; ok: boolean } | null>(null);
 
-  // ── Comando de voz ──
+  // ── Comando de voz (Deepgram, igual que VideoTaggerPage) ──
   const [voiceActive, setVoiceActive] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState('');
-  const recognitionRef = useRef<any>(null);
+  const [voiceStatus, setVoiceStatus] = useState('');
+  const recognitionRef = useRef<any>(null); // guarda el MediaRecorder activo
   const voiceActiveRef = useRef(false);
+  const processVoiceCommandRef = useRef<(t: string) => void>(() => {});
 
   // ── Vista de reporte (auxiliar y preview de admin) ──
   const [repTipo, setRepTipo] = useState<RivalTipo>('Ofensiva');
@@ -155,7 +146,16 @@ const AnalisisRivalPage: React.FC = () => {
     if (!videoUrl) return;
     const sw = window.open('', '_blank', 'width=960,height=560');
     if (!sw) return;
-    sw.document.write(`<title>${videoFileName || 'Video del rival'}</title><body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh;"><video src="${videoUrl}" controls autoplay style="width:100%;height:100%;"></video></body>`);
+    sw.document.write(`<title>${videoFileName || 'Video del rival'}</title><body style="margin:0;background:#000;display:flex;align-items:center;justify-content:center;height:100vh;"><video id="v" src="${videoUrl}" controls autoplay style="width:100%;height:100%;"></video><script>
+      window.addEventListener('message', function(e) {
+        var v = document.getElementById('v');
+        if (!v || !e.data || e.data.type !== 'gol_videocontrol') return;
+        if (e.data.action === 'pause') v.pause();
+        else if (e.data.action === 'play') v.play();
+        else if (e.data.action === 'back') v.currentTime -= 5;
+        else if (e.data.action === 'forward') v.currentTime += 5;
+      });
+    </script>`);
     sw.document.close();
     secondaryWindowRef.current = sw;
   };
@@ -235,48 +235,112 @@ const AnalisisRivalPage: React.FC = () => {
     }
   }, [selected, draftMomentos, draftNotes, newTeamId, newRivalName, videoFileName, user]);
 
-  // ─── Comando de voz (Web Speech API estándar del navegador) ──────────────────
-  function stopVoice() {
-    voiceActiveRef.current = false;
-    try { recognitionRef.current?.stop(); } catch { /* noop */ }
-    setVoiceActive(false);
-    setVoiceTranscript('');
-  }
+  // ─── Comando de voz — Deepgram + MediaRecorder, misma implementación que ya
+  // usas en VideoTaggerPage (WebSocket estable, no depende del navegador). ──────
 
-  function processVoiceCommand(text: string) {
-    const lower = text.toLowerCase();
-    if (lower.includes('guardar')) { guardarAnalisis(); return; }
-    Object.keys(VOICE_MAP).forEach(phrase => {
-      if (lower.includes(phrase)) {
-        const [grp, val] = VOICE_MAP[phrase];
-        if (grp === 'tipo') selectTipo(val as RivalTipo);
-        else if (grp === 'zona') selectZona(val as RivalZona);
-        else if (grp === 'attr1') selectAttr1(val);
-        else if (grp === 'attr2') selectAttr2(val);
-      }
-    });
-  }
+  // Se reasigna en cada render para que siempre "vea" el estado más reciente
+  // (selTipo, selZona, etc.) y evitar el bug de closures obsoletos.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  processVoiceCommandRef.current = (transcript: string) => {
+    const text = transcript.toLowerCase().trim().replace(/[.,;:!?¿¡]/g, '');
+    const show = (msg: string) => { setVoiceStatus(msg); setTimeout(() => setVoiceStatus(''), 2500); };
 
-  const toggleVoice = () => {
-    if (voiceActive) { stopVoice(); return; }
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) { setError('Tu navegador no soporta comandos de voz. Prueba en Chrome o Edge.'); return; }
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'es-MX';
-    recognition.continuous = true;
-    recognition.interimResults = false;
-    recognition.onresult = (event: any) => {
-      const text = event.results[event.results.length - 1][0].transcript.trim();
-      setVoiceTranscript(text);
-      processVoiceCommand(text);
+    // Controles de video — igual que en el Etiquetador: si hay ventana
+    // secundaria abierta, el comando se le envía a ella; si no, al video principal.
+    const sendToSecondary = (action: string) => {
+      const sw = secondaryWindowRef.current;
+      if (sw && !sw.closed) { sw.postMessage({ type: 'gol_videocontrol', action }, '*'); return true; }
+      return false;
     };
-    recognition.onerror = () => { /* se ignoran errores transitorios, sigue escuchando */ };
-    recognition.onend = () => { if (voiceActiveRef.current) { try { recognition.start(); } catch { /* noop */ } } };
-    recognitionRef.current = recognition;
+    if (/pausar|pausa|para\b|detener/.test(text)) { if (!sendToSecondary('pause')) videoRef.current?.pause(); show('⏸ Video pausado'); return; }
+    if (/reproducir|play|continuar|reanudar/.test(text)) { if (!sendToSecondary('play')) videoRef.current?.play(); show('▶ Video reproduciendo'); return; }
+    if (/atrás|atras|regresar|retroceder/.test(text)) { if (!sendToSecondary('back')) { if (videoRef.current) videoRef.current.currentTime -= 5; } show('⏪ -5 segundos'); return; }
+    if (/adelante|avanzar|adelantar/.test(text)) { if (!sendToSecondary('forward')) { if (videoRef.current) videoRef.current.currentTime += 5; } show('⏩ +5 segundos'); return; }
+
+    if (/guardar/.test(text)) { guardarAnalisis(); show('💾 Guardando análisis...'); return; }
+    if (/registrar|registra\b|agregar momento/.test(text)) { registrarMomento(); show('✅ Momento registrado'); return; }
+
+    if (/ofensiva/.test(text)) { selectTipo('Ofensiva'); show('🎯 Tipo: Ofensiva'); return; }
+    if (/defensiva/.test(text)) { selectTipo('Defensiva'); show('🎯 Tipo: Defensiva'); return; }
+    if (/transici[oó]n/.test(text)) { selectTipo('Transicion'); show('🎯 Tipo: Transición'); return; }
+
+    if (/inicio/.test(text)) { selectZona('Inicio'); show('🎯 Zona: Inicio'); return; }
+    if (/creaci[oó]n/.test(text)) { selectZona('Creacion'); show('🎯 Zona: Creación'); return; }
+    if (/finalizaci[oó]n/.test(text)) { selectZona('Finalizacion'); show('🎯 Zona: Finalización'); return; }
+
+    // Los atributos dependen del Tipo seleccionado — se buscan solo entre las
+    // opciones vigentes para no confundir, por ejemplo, "media" de presión con otra cosa.
+    if (selTipo) {
+      const cfg = ATTR_CONFIG[selTipo];
+      const foundAttr1 = cfg.opts1.find(([v]) => text.includes(v.toLowerCase()));
+      if (foundAttr1) { selectAttr1(foundAttr1[0]); show(`🎯 ${cfg.lbl1}: ${foundAttr1[0]}`); return; }
+      const foundAttr2 = cfg.opts2.find(([v]) => text.includes(v.toLowerCase()));
+      if (foundAttr2) { selectAttr2(foundAttr2[0]); show(`🎯 ${cfg.lbl2}: ${foundAttr2[0]}`); return; }
+    }
+
+    show(`❓ No entendí: "${transcript}"`);
+  };
+
+  const startVoice = async () => {
+    const DEEPGRAM_API_KEY = (import.meta as any).env.VITE_DEEPGRAM_API_KEY as string;
+    if (!DEEPGRAM_API_KEY) { setError('Falta la API key de Deepgram (VITE_DEEPGRAM_API_KEY en Vercel).'); return; }
+
+    let stream: MediaStream;
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch { setError('Sin acceso al micrófono. Revisa los permisos del navegador.'); return; }
+
     voiceActiveRef.current = true;
     setVoiceActive(true);
-    recognition.start();
+    setVoiceTranscript('');
+
+    const url = `wss://api.deepgram.com/v1/listen?model=nova-2&language=es&punctuate=false&interim_results=false`;
+    const socket = new WebSocket(url, ['token', DEEPGRAM_API_KEY]);
+
+    socket.onopen = () => {
+      if (!voiceActiveRef.current) { socket.close(); return; }
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+      mediaRecorder.ondataavailable = (e) => { if (socket.readyState === WebSocket.OPEN && e.data.size > 0) socket.send(e.data); };
+      mediaRecorder.start(250);
+      recognitionRef.current = mediaRecorder;
+    };
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        const transcript = data?.channel?.alternatives?.[0]?.transcript;
+        if (transcript && transcript.trim().length > 0 && data?.is_final) {
+          setVoiceTranscript(transcript);
+          processVoiceCommandRef.current(transcript);
+        }
+      } catch { /* ignorar mensajes malformados */ }
+    };
+    socket.onerror = () => {
+      if (!voiceActiveRef.current) return;
+      setVoiceStatus('⚠ Error de conexión con Deepgram. Verifica tu conexión a internet.');
+      setTimeout(() => setVoiceStatus(''), 5000);
+    };
+    socket.onclose = () => {
+      stream.getTracks().forEach(track => track.stop());
+      if (recognitionRef.current) { try { (recognitionRef.current as MediaRecorder).stop(); } catch { /* noop */ } recognitionRef.current = null; }
+      if (voiceActiveRef.current) {
+        voiceActiveRef.current = false;
+        setVoiceActive(false);
+        setVoiceStatus('⚠ Conexión cerrada. Vuelve a activar la voz.');
+        setTimeout(() => setVoiceStatus(''), 4000);
+      }
+    };
+    (recognitionRef as any).socket = socket;
   };
+
+  function stopVoice() {
+    voiceActiveRef.current = false;
+    if (recognitionRef.current) { try { (recognitionRef.current as MediaRecorder).stop(); } catch { /* noop */ } recognitionRef.current = null; }
+    const socket = (recognitionRef as any).socket as WebSocket | undefined;
+    if (socket && socket.readyState === WebSocket.OPEN) socket.close();
+    (recognitionRef as any).socket = null;
+    setVoiceActive(false);
+    setVoiceTranscript('');
+    setVoiceStatus('');
+  }
 
   // ─── Atajos de teclado ────────────────────────────────────────────────────
   useEffect(() => {
@@ -427,12 +491,13 @@ const AnalisisRivalPage: React.FC = () => {
           </div>
 
           <div className="bg-gray-800 rounded-xl p-4 border border-gray-700 flex items-center gap-3 flex-wrap">
-            <button onClick={toggleVoice} className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${voiceActive ? 'bg-red-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`} aria-label="Activar comando de voz">
+            <button onClick={voiceActive ? stopVoice : startVoice} className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 transition-colors ${voiceActive ? 'bg-red-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`} aria-label={voiceActive ? 'Desactivar comando de voz' : 'Activar comando de voz'}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z" /><path d="M19 10v2a7 7 0 01-14 0v-2M12 19v4" /></svg>
             </button>
             <div className="flex-1 min-w-[160px]">
-              <p className="text-sm text-gray-400">{voiceActive ? 'Escuchando... di tipo, zona, atributos, o "guardar"' : 'Comando de voz apagado'}</p>
+              <p className="text-sm text-gray-400">{voiceActive ? 'Escuchando... di tipo, zona, atributos, "registrar" o "guardar"' : 'Comando de voz apagado'}</p>
               {voiceTranscript && <p className="text-xs text-gray-500 mt-0.5">"{voiceTranscript}"</p>}
+              {voiceStatus && <p className="text-xs text-cyan-400 mt-0.5">{voiceStatus}</p>}
             </div>
           </div>
 
@@ -585,3 +650,4 @@ const AnalisisRivalPage: React.FC = () => {
 };
 
 export default AnalisisRivalPage;
+
