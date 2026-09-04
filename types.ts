@@ -197,5 +197,44 @@ export interface TacticalAnalysisInsert {
   tipo_analisis?: string | null;
 }
 
+// ─── Análisis del Rival ───────────────────────────────────────────────────────
+
+export type RivalTipo = 'Ofensiva' | 'Defensiva' | 'Transicion';
+export type RivalZona = 'Inicio' | 'Creacion' | 'Finalizacion';
+
+export interface RivalMomento {
+  id: string;                   // identificador local (no es fila de BD, vive dentro del JSON)
+  tipo: RivalTipo;
+  zona: RivalZona;
+  // attr1: Estilo (Ofensiva) · Altura de presión (Defensiva) · Planteamiento (Transición)
+  attr1: string;
+  // attr2: Carril (Ofensiva/Transición) · Número de hombres (Defensiva) — opcional
+  attr2?: string;
+  timestamp_video?: number;     // segundo del video donde ocurrió, si se registró viendo el video
+}
+
+// Notas del analista por combinación Tipo+Zona. Clave: "Tipo|Zona", ej. "Ofensiva|Inicio"
+export type RivalNotas = Record<string, string>;
+
+export interface RivalAnalysis {
+  id: string;
+  team_id: string;
+  rival_name: string;
+  video_path?: string | null;
+  momentos: RivalMomento[];
+  notas: RivalNotas;
+  created_by?: string | null;
+  created_at: string;
+}
+
+export interface RivalAnalysisInsert {
+  team_id: string;
+  rival_name: string;
+  video_path?: string | null;
+  momentos?: RivalMomento[];
+  notas?: RivalNotas;
+  created_by?: string | null;
+
+
 
 
