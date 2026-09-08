@@ -1249,8 +1249,6 @@ const AnalisisTacticoPage: React.FC = () => {
           <div className="flex items-center gap-3 bg-gray-800 rounded-xl p-6 text-gray-400"><Spinner /><span className="text-sm">Cargando análisis...</span></div>
         ) : clipUrl ? (
           <div className="bg-gray-800 rounded-xl p-4 space-y-3">
-            <p className="text-sm font-medium text-gray-300">Contexto del partido</p>
-            <p className="text-xs text-gray-500">El video se detiene en el frame con las anotaciones</p>
             <div className="relative rounded-lg overflow-hidden bg-black">
               <video ref={reviewVideoRef} src={clipUrl} className="w-full block" controls playsInline />
             </div>
@@ -1791,3 +1789,4 @@ const AnalisisTacticoPage: React.FC = () => {
 };
 
 export default AnalisisTacticoPage;
+
