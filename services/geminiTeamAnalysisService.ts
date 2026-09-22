@@ -1,4 +1,5 @@
 import type { Tag, Match, Player, TeamAnalysis } from '../types';
+import { cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios, esTagDeJugadorFicticio } from '../utils/efectividad';
 
 const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
 
@@ -123,10 +124,15 @@ export const analyzeTeamPerformance = async (
 ): Promise<TeamAnalysis> => {
     const apiKey = getApiKey();
     
+    // Reglas de efectividad compartidas (utils/efectividad.ts): mismas que el Tablero y Rendimiento.
+    // Goles recibidos y el jugador ficticio "Perdida" no cuentan en efectividad.
+    const idsFicticios = obtenerIdsJugadoresFicticios(players);
+    const tagsEfectividad = tags.filter(t => cuentaEnEfectividad(t, idsFicticios));
+
     const jornadaStats: JornadaStats[] = [];
     const jornadaMap = new Map<number, { total: number; logradas: number; rival: string }>();
     
-    tags.forEach(tag => {
+    tagsEfectividad.forEach(tag => {
         const match = matches.find(m => m.id === tag.match_id);
         if (!match || !match.jornada) return;
         
@@ -135,7 +141,7 @@ export const analyzeTeamPerformance = async (
         }
         const stats = jornadaMap.get(match.jornada)!;
         stats.total++;
-        if (tag.resultado === 'logrado') stats.logradas++;
+        if (esAccionLograda(tag)) stats.logradas++;
     });
     
     jornadaMap.forEach((stats, jornada) => {
@@ -152,7 +158,7 @@ export const analyzeTeamPerformance = async (
     const lineaMap = new Map<string, { total: number; logradas: number }>();
     ['defensa', 'medio', 'ataque'].forEach(l => lineaMap.set(l, { total: 0, logradas: 0 }));
     
-    tags.forEach(tag => {
+    tagsEfectividad.forEach(tag => {
         const player = players.find(p => p.id === tag.player_id);
         if (!player) return;
         
@@ -161,7 +167,7 @@ export const analyzeTeamPerformance = async (
         
         const stats = lineaMap.get(linea)!;
         stats.total++;
-        if (tag.resultado === 'logrado') stats.logradas++;
+        if (esAccionLograda(tag)) stats.logradas++;
     });
     
     const lineaStats: LineaStats[] = [];
@@ -175,13 +181,13 @@ export const analyzeTeamPerformance = async (
     });
 
     const playerStats = new Map<string, { total: number; logradas: number }>();
-    tags.forEach(tag => {
+    tagsEfectividad.forEach(tag => {
         if (!playerStats.has(tag.player_id)) {
             playerStats.set(tag.player_id, { total: 0, logradas: 0 });
         }
         const stats = playerStats.get(tag.player_id)!;
         stats.total++;
-        if (tag.resultado === 'logrado') stats.logradas++;
+        if (esAccionLograda(tag)) stats.logradas++;
     });
     
     const topPlayers: TopPlayer[] = [];
@@ -198,9 +204,10 @@ export const analyzeTeamPerformance = async (
     topPlayers.sort((a, b) => b.acciones - a.acciones);
     const top10Players = topPlayers.slice(0, 10);
 
-    const totalAcciones = tags.length;
-    const totalLogradas = tags.filter(t => t.resultado === 'logrado').length;
-    const efectividadGlobal = totalAcciones > 0 ? Math.round((totalLogradas / totalAcciones) * 100) : 0;
+    // Mismos números que las tarjetas "Acciones Totales" y "Efectividad General" del Tablero.
+    const totalAcciones = tags.filter(t => !esTagDeJugadorFicticio(t, idsFicticios)).length;
+    const totalLogradas = tagsEfectividad.filter(esAccionLograda).length;
+    const efectividadGlobal = tagsEfectividad.length > 0 ? Math.round((totalLogradas / tagsEfectividad.length) * 100) : 0;
     
     const prompt = buildTeamPrompt(
         teamName,
