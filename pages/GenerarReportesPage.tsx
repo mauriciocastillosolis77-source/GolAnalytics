@@ -3,12 +3,10 @@ import { supabase } from '../services/supabaseClient';
 import type { Match } from '../types';
 import { Spinner } from '../components/ui/Spinner';
 import { generateMatchReportPptx } from '../services/reportExportService';
-import { useAuth } from '../contexts/AuthContext';
 
 declare var XLSX: any;
 
 const GenerarReportesPage: React.FC = () => {
-  const { profile } = useAuth();
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -21,9 +19,9 @@ const GenerarReportesPage: React.FC = () => {
   const [isGenerating, setIsGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
 
-  // Nombre/puesto para el crédito de la portada — editable a mano porque
-  // profile.username puede venir vacío en Supabase; así no depende de eso.
-  const [authorName, setAuthorName] = useState('');
+  // Nombre/puesto para el crédito de la portada — fijo por default (siempre el
+  // mismo), pero editable por si algún día cambia.
+  const [authorName, setAuthorName] = useState('Mauricio Castillo — Analista Táctico y de Rendimiento');
 
   // Excel opcional con posiciones detalladas (Lateral Izquierdo, Extremo
   // Derecho, etc.) — mismo formato que el Excel de jugadores del Etiquetador
@@ -34,14 +32,26 @@ const GenerarReportesPage: React.FC = () => {
   const [positionsError, setPositionsError] = useState<string | null>(null);
 
   // Modelo de Juego — Plan vs. Ejecución. Esto NO se calcula de los tags: es
-  // contenido que el cuerpo técnico define a mano cada vez, igual que el
-  // Excel — solo vive en memoria de esta página mientras generas el reporte.
-  const [pilaresTexto, setPilaresTexto] = useState('');
+  // contenido que el cuerpo técnico define — pero son siempre los mismos 8
+  // pilares, así que vienen precargados por default; solo hay que elegir el
+  // semáforo y escribir la nota de cada uno. Una fila sin nota no sale en el
+  // reporte (se entiende que no se revisó esta vez).
+  const PILARES_DEFAULT = [
+    '4-4-2 / 4-3-3',
+    'Presión bloque alto',
+    'Amplitud priorizada',
+    'Salida combinativa',
+    'Creación por 3er hombre',
+    'Definición según la jugada',
+    'ABP ofensivo prefabricado',
+    'ABP defensivo: decisión del equipo',
+  ];
+  const [pilaresTexto, setPilaresTexto] = useState(PILARES_DEFAULT.join('\n'));
   type Semaforo = 'verde' | 'ambar' | 'rojo';
   type ChecklistRow = { label: string; signal: Semaforo; nota: string };
-  const [checklist, setChecklist] = useState<ChecklistRow[]>([
-    { label: '', signal: 'verde', nota: '' },
-  ]);
+  const [checklist, setChecklist] = useState<ChecklistRow[]>(
+    PILARES_DEFAULT.map((label) => ({ label, signal: 'verde' as Semaforo, nota: '' }))
+  );
   const addChecklistRow = () => setChecklist((rows) => [...rows, { label: '', signal: 'verde', nota: '' }]);
   const removeChecklistRow = (i: number) => setChecklist((rows) => rows.filter((_, idx) => idx !== i));
   const updateChecklistRow = (i: number, patch: Partial<ChecklistRow>) =>
@@ -67,10 +77,6 @@ const GenerarReportesPage: React.FC = () => {
     };
     loadMatches();
   }, []);
-
-  useEffect(() => {
-    if (profile?.username) setAuthorName(profile.username);
-  }, [profile]);
 
   const availableTorneos = useMemo(
     () => Array.from(new Set(matches.map((m) => m.torneo))).filter(Boolean).sort(),
@@ -171,7 +177,7 @@ const GenerarReportesPage: React.FC = () => {
       const pilares = pilaresTexto.split('\n').map((s) => s.trim()).filter(Boolean);
       const checklistLimpio = checklist
         .map((r) => ({ ...r, label: r.label.trim(), nota: r.nota.trim() }))
-        .filter((r) => r.label);
+        .filter((r) => r.label && r.nota);
       const modeloDeJuego = (pilares.length > 0 || checklistLimpio.length > 0)
         ? { pilares, checklist: checklistLimpio }
         : undefined;
@@ -306,7 +312,9 @@ const GenerarReportesPage: React.FC = () => {
             className="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500 mb-4"
           />
 
-          <label className="block text-xs text-gray-400 mb-2">¿Se ejecutó en este partido?</label>
+          <label className="block text-xs text-gray-400 mb-2">
+            ¿Se ejecutó en este partido? <span className="text-gray-500">— deja la nota vacía en las que no revisaste esta vez, esas no salen en el reporte.</span>
+          </label>
           <div className="space-y-2">
             {checklist.map((row, i) => (
               <div key={i} className="flex flex-col md:flex-row gap-2 items-start md:items-center bg-gray-700/50 p-2 rounded">
