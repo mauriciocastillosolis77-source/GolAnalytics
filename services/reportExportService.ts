@@ -25,6 +25,31 @@ const COLOR = {
   white: 'FFFFFF',
 };
 
+// Desglose completo de acciones logradas/falladas por categoría, para dar a la
+// IA algo más rico que solo las 4 tarjetas del resumen ejecutivo.
+const PARES_OFENSIVO_DEFENSIVO: Array<[string, string, string]> = [
+  ['Pase corto ofensivo', 'Pase corto defensivo', 'Pases cortos'],
+  ['Pase largo ofensivo', 'Pase largo defensivo', 'Pases largos'],
+  ['1 vs 1 ofensivo', '1 vs 1 defensivo', 'Duelos 1 vs 1'],
+  ['Aéreo ofensivo', 'Aéreo defensivo', 'Duelos aéreos'],
+];
+function buildEstadisticasCompletas(tags: Tag[]): string {
+  const lineas: string[] = [];
+  PARES_OFENSIVO_DEFENSIVO.forEach(([of, def, label]) => {
+    [of, def].forEach((accion) => {
+      const del = tags.filter((t) => t.accion === accion);
+      if (del.length === 0) return;
+      const logrados = del.filter((t) => t.resultado === 'logrado').length;
+      lineas.push(`- ${accion}: ${logrados}/${del.length} logrados (${Math.round((logrados / del.length) * 100)}%)`);
+    });
+  });
+  const atajadas = tags.filter((t) => t.accion === 'Atajadas').length;
+  if (atajadas > 0) lineas.push(`- Atajadas: ${atajadas}`);
+  const perdidas = tags.filter((t) => t.accion === 'Pérdida de balón').length;
+  if (perdidas > 0) lineas.push(`- Pérdidas de balón: ${perdidas}`);
+  return lineas.join('\n');
+}
+
 const FONT_HEAD = 'Cambria';
 const FONT_BODY = 'Calibri';
 
@@ -49,6 +74,7 @@ async function generarLecturaDePartido(p: {
   goalsFor: number; goalsAgainst: number;
   recuperaciones: number; tirosAPorteria: number; conversion: number;
   transicionesLogradas: number;
+  estadisticasCompletas: string;
 }): Promise<string> {
   const comparativo = p.promedioTorneo !== null
     ? `Para contexto, el promedio de efectividad del equipo en lo que va del torneo es ${p.promedioTorneo}% — compara este partido contra ese promedio si es relevante (mejor, peor, o en línea).`
@@ -56,7 +82,7 @@ async function generarLecturaDePartido(p: {
 
   const prompt = `Eres un analista de rendimiento de fútbol juvenil. Escribe la "Lectura del partido" de UN SOLO partido específico — NO una racha ni un resumen de temporada. No uses frases como "ha iniciado" o "empezando el torneo"; escribe sobre lo que pasó en ESTE partido puntual.
 
-Datos reales de este partido (${p.equipo} vs ${p.rival}, jornada ${p.jornada}, ${p.torneo}):
+Datos generales de este partido (${p.equipo} vs ${p.rival}, jornada ${p.jornada}, ${p.torneo}):
 - Marcador: ${p.goalsFor} - ${p.goalsAgainst}
 - Efectividad general del partido: ${p.efectividadGeneral}%
 - ${comparativo}
@@ -64,7 +90,10 @@ Datos reales de este partido (${p.equipo} vs ${p.rival}, jornada ${p.jornada}, $
 - Tiros a portería: ${p.tirosAPorteria} (${p.conversion}% de conversión a gol)
 - Transiciones ofensivas logradas: ${p.transicionesLogradas}
 
-Escribe 3 a 4 oraciones en español, tono formativo y constructivo (equipo juvenil en desarrollo, evita palabras como "pobre" o "deficiente"), en un solo párrafo, sin Markdown ni asteriscos. Responde ÚNICAMENTE con el texto del párrafo, nada más.`;
+Desglose completo por tipo de acción (usa esto para encontrar patrones reales — qué funcionó y qué no, no solo repitas los números de arriba):
+${p.estadisticasCompletas || '(sin desglose adicional disponible)'}
+
+Escribe 4 a 6 oraciones en español, tono formativo y constructivo (equipo juvenil en desarrollo, evita palabras como "pobre" o "deficiente"), en un solo párrafo, sin Markdown ni asteriscos. Menciona al menos un patrón concreto del desglose (ej. una categoría con efectividad notablemente alta o baja), no solo las 4 cifras generales. Responde ÚNICAMENTE con el texto del párrafo, nada más.`;
 
   const apiKey = getGeminiApiKey();
   const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
@@ -207,18 +236,55 @@ function summarizeZone(rival: RivalAnalysis, tipo: RivalTipo, zona: RivalZona): 
   return `${text}.`;
 }
 
-function phaseSection(slide: pptxgen.Slide, pres: pptxgen, x: number, y: number, w: number, title: string, rows: Array<{ label: string; text: string }>) {
+// Cancha esquemática de 3 franjas (Inicio/Creación/Finalización), con marcas
+// de portería a los lados — el mismo diseño aprobado en el v5. Se usa donde
+// SÍ hay un dato real por cada una de las 3 zonas (Análisis del Rival).
+function pitchBand3(pres: pptxgen, slide: pptxgen.Slide, x: number, y: number, w: number, title: string, phases: Array<{ label: string; text: string }>) {
   slide.addShape(pres.ShapeType.roundRect, { x, y, w, h: 0.4, rectRadius: 0.06, fill: { color: COLOR.indigoDark }, line: { type: 'none' } });
   slide.addText(title.toUpperCase(), { x: x + 0.2, y, w: w - 0.4, h: 0.4, fontFace: FONT_BODY, fontSize: 11.5, bold: true, color: COLOR.white, valign: 'middle', charSpacing: 1, isTextBox: true, margin: 0 });
-  const rowY = y + 0.52, rowH = 0.42;
-  rows.forEach((r, i) => {
-    const ry = rowY + i * rowH;
-    slide.addText([
-      { text: r.label + ':  ', options: { bold: true, color: COLOR.ink } },
-      { text: r.text, options: { color: COLOR.ink } },
-    ] as any, { x, y: ry, w, h: rowH, fontFace: FONT_BODY, fontSize: 10.5, valign: 'top', isTextBox: true, margin: 0 });
+
+  const gy = y + 0.55, gw = 2.6, gh = 1.3;
+  const bandColors = [COLOR.orange, COLOR.gold, COLOR.blue];
+  const bandW = gw / 3;
+  const goalW = 0.07, goalH = gh * 0.45;
+  slide.addShape(pres.ShapeType.rect, { x: x - goalW, y: gy + (gh - goalH) / 2, w: goalW, h: goalH, fill: { color: COLOR.white }, line: { color: COLOR.ink, width: 1 } });
+  slide.addShape(pres.ShapeType.rect, { x: x + gw, y: gy + (gh - goalH) / 2, w: goalW, h: goalH, fill: { color: COLOR.white }, line: { color: COLOR.ink, width: 1 } });
+  phases.forEach((_p, i) => {
+    slide.addShape(pres.ShapeType.rect, { x: x + i * bandW, y: gy, w: bandW, h: gh, fill: { color: bandColors[i] }, line: { color: COLOR.white, width: 1.5 } });
   });
-  return rowY + rows.length * rowH;
+  slide.addShape(pres.ShapeType.ellipse, { x: x + gw * 0.5 - 0.35, y: gy + gh / 2 - 0.35, w: 0.7, h: 0.7, fill: { type: 'none' }, line: { color: COLOR.white, width: 1.25 } });
+
+  const legendX = x + gw + 0.35, legendW = w - gw - 0.35;
+  const rowH = gh / 3;
+  phases.forEach((p, i) => {
+    const ry = gy + i * rowH;
+    slide.addShape(pres.ShapeType.rect, { x: legendX, y: ry + 0.06, w: 0.14, h: 0.14, fill: { color: bandColors[i] }, line: { type: 'none' } });
+    slide.addText([
+      { text: p.label + ':  ', options: { bold: true, color: COLOR.ink } },
+      { text: p.text, options: { color: COLOR.ink } },
+    ] as any, { x: legendX + 0.24, y: ry - 0.04, w: legendW - 0.24, h: rowH, fontFace: FONT_BODY, fontSize: 10.5, valign: 'top', isTextBox: true, margin: 0 });
+  });
+  return gy + gh;
+}
+
+// Versión de UNA sola franja — para cuando solo hay un dato agregado del
+// partido completo (no 3 zonas reales medidas). Misma cancha con marcas de
+// portería a los lados, pero sin fingir 3 mediciones que no existen.
+function pitchBandSingle(pres: pptxgen, slide: pptxgen.Slide, x: number, y: number, w: number, title: string, valueLabel: string, valueText: string) {
+  slide.addShape(pres.ShapeType.roundRect, { x, y, w, h: 0.4, rectRadius: 0.06, fill: { color: COLOR.indigoDark }, line: { type: 'none' } });
+  slide.addText(title.toUpperCase(), { x: x + 0.2, y, w: w - 0.4, h: 0.4, fontFace: FONT_BODY, fontSize: 11.5, bold: true, color: COLOR.white, valign: 'middle', charSpacing: 1, isTextBox: true, margin: 0 });
+
+  const gy = y + 0.55, gw = 2.6, gh = 1.3;
+  const goalW = 0.07, goalH = gh * 0.45;
+  slide.addShape(pres.ShapeType.rect, { x: x - goalW, y: gy + (gh - goalH) / 2, w: goalW, h: goalH, fill: { color: COLOR.white }, line: { color: COLOR.ink, width: 1 } });
+  slide.addShape(pres.ShapeType.rect, { x: x + gw, y: gy + (gh - goalH) / 2, w: goalW, h: goalH, fill: { color: COLOR.white }, line: { color: COLOR.ink, width: 1 } });
+  slide.addShape(pres.ShapeType.rect, { x, y: gy, w: gw, h: gh, fill: { color: COLOR.indigo }, line: { color: COLOR.white, width: 1.5 } });
+  slide.addShape(pres.ShapeType.ellipse, { x: x + gw * 0.5 - 0.35, y: gy + gh / 2 - 0.35, w: 0.7, h: 0.7, fill: { type: 'none' }, line: { color: COLOR.white, width: 1.25 } });
+
+  const legendX = x + gw + 0.35, legendW = w - gw - 0.35;
+  slide.addText(valueLabel, { x: legendX, y: gy + 0.1, w: legendW, h: 0.3, fontFace: FONT_BODY, fontSize: 10.5, bold: true, color: COLOR.indigo, isTextBox: true, margin: 0 });
+  slide.addText(valueText, { x: legendX, y: gy + 0.42, w: legendW, h: gh - 0.5, fontFace: FONT_BODY, fontSize: 11, color: COLOR.ink, valign: 'top', isTextBox: true, margin: 0 });
+  return gy + gh;
 }
 
 // ── Estilo de juego propio: directo / combinativo / mixto, carril, bloque de presión ──
@@ -297,15 +363,43 @@ function calcularEstiloDeJuego(tags: Tag[], players: Player[], positionsMap?: Ma
   return { estilo, carril, bloque };
 }
 
+// Empareja el nombre que devuelve la IA con la fila real de `players` — no
+// siempre coinciden letra por letra (la IA a veces acorta "Kevin Reyes" a
+// solo "Kevin"), así que primero intenta exacto y si no, por contención /
+// primer nombre, antes de rendirse.
+function findPlayerByName(players: Player[], nombre: string): Player | undefined {
+  const norm = (s: string) => s.trim().toLowerCase();
+  const target = norm(nombre);
+  let found = players.find((p) => norm(p.nombre) === target);
+  if (found) return found;
+  found = players.find((p) => norm(p.nombre).includes(target) || target.includes(norm(p.nombre)));
+  if (found) return found;
+  const targetFirst = target.split(/\s+/)[0];
+  return players.find((p) => norm(p.nombre).split(/\s+/).some((tok) => tok.replace('.', '') === targetFirst));
+}
+
+export interface ModeloDeJuegoChecklistRow {
+  label: string;
+  signal: 'verde' | 'ambar' | 'rojo';
+  nota: string;
+}
+export interface ModeloDeJuego {
+  pilares: string[];
+  checklist: ModeloDeJuegoChecklistRow[];
+}
+
 /**
  * Arma el reporte de PowerPoint de UN partido específico y dispara la descarga.
  * `positionsMap`: opcional, nombre (lowercase) → posición detallada, sacado de
  * un Excel que el usuario sube en el momento — nunca se persiste en Supabase.
+ * `modeloDeJuego`: opcional, contenido que escribe el cuerpo técnico a mano
+ * (no se calcula de los tags) — si no se manda, ese slide no se genera.
  */
 export async function generateMatchReportPptx(
   match: Match,
   authorName?: string,
-  positionsMap?: Map<string, string>
+  positionsMap?: Map<string, string>,
+  modeloDeJuego?: ModeloDeJuego
 ): Promise<void> {
   const { data: tagsData, error: tagsError } = await supabase.from('tags').select('*').eq('match_id', match.id);
   if (tagsError) throw tagsError;
@@ -351,7 +445,7 @@ export async function generateMatchReportPptx(
   }
 
   const destacadosConDatos = analysis.jugadoresDestacados.slice(0, 4).map((jd) => {
-    const player = players.find((p) => p.nombre.trim().toLowerCase() === jd.nombre.trim().toLowerCase());
+    const player = findPlayerByName(players, jd.nombre);
     const playerTags = player ? tags.filter((t) => t.player_id === player.id) : [];
     const acciones = playerTags.length;
     const efectividad = acciones > 0 ? calcularEfectividad(playerTags) : null;
@@ -379,6 +473,7 @@ export async function generateMatchReportPptx(
   const lecturaDelPartido = await generarLecturaDePartido({
     equipo: match.nombre_equipo, rival: match.rival, jornada: match.jornada, torneo: match.torneo,
     efectividadGeneral, promedioTorneo, goalsFor, goalsAgainst, recuperaciones, tirosAPorteria, conversion, transicionesLogradas,
+    estadisticasCompletas: buildEstadisticasCompletas(tags),
   });
 
   // ── Construcción del .pptx ────────────────────────────────────────────
@@ -401,6 +496,7 @@ export async function generateMatchReportPptx(
     if (goalsFor > 0 || goalsAgainst > 0) {
       slide.addShape(pres.ShapeType.roundRect, { x: 0.9, y: 3.8, w: 2.2, h: 1.05, rectRadius: 0.1, fill: { color: COLOR.indigo }, line: { type: 'none' } });
       slide.addText(`${goalsFor} — ${goalsAgainst}`, { x: 0.9, y: 3.88, w: 2.2, h: 0.6, fontFace: FONT_HEAD, fontSize: 26, bold: true, color: COLOR.white, align: 'center', isTextBox: true, margin: 0 });
+      slide.addText('Marcador Final', { x: 0.9, y: 4.45, w: 2.2, h: 0.3, fontFace: FONT_BODY, fontSize: 9, color: COLOR.lavender, align: 'center', isTextBox: true, margin: 0 });
     }
     slide.addText(`Preparado por GolAnalytics${authorName ? `  ·  ${authorName}` : ''}`, { x: 0.9, y: 6.5, w: 10, h: 0.35, fontFace: FONT_BODY, fontSize: 11, italic: true, color: COLOR.lavender, isTextBox: true, margin: 0 });
     footer(pres, slide, match.nombre_equipo, true, nextNum(), teamLogoBase64);
@@ -436,10 +532,7 @@ export async function generateMatchReportPptx(
       slide.addText(s.l, { x: x + 0.15, y: y + 1.1, w: cardW - 0.3, h: 0.55, fontFace: FONT_BODY, fontSize: 11, color: COLOR.ink, align: 'center', isTextBox: true, margin: 0 });
     });
 
-    slide.addText([
-      { text: 'Lectura del partido  ', options: { bold: true, fontSize: 15, color: COLOR.ink } },
-      { text: '· generado por IA', options: { italic: true, fontSize: 10.5, color: COLOR.gray } },
-    ] as any, { x: 0.6, y: 3.75, w: 8, h: 0.35, fontFace: FONT_HEAD, isTextBox: true, margin: 0 });
+    slide.addText('Lectura del partido', { x: 0.6, y: 3.75, w: 8, h: 0.35, fontFace: FONT_HEAD, fontSize: 15, bold: true, color: COLOR.ink, isTextBox: true, margin: 0 });
     slide.addText(lecturaDelPartido, { x: 0.6, y: 4.15, w: 11.8, h: 2.3, fontFace: FONT_BODY, fontSize: 13, color: COLOR.ink, isTextBox: true, margin: 0 });
     footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
@@ -470,21 +563,52 @@ export async function generateMatchReportPptx(
     slide.background = { color: COLOR.white };
     sectionHeader(slide, 'Rendimiento táctico', 'Cómo jugamos — estilo de este partido');
 
-    const rows = [
-      { label: 'Estilo de construcción', value: estiloDeJuego.estilo },
-      { label: 'Carril dominante', value: estiloDeJuego.carril },
-      { label: 'Bloque de presión', value: estiloDeJuego.bloque },
-    ];
-    let ry = 1.6;
-    rows.forEach((r) => {
-      slide.addShape(pres.ShapeType.roundRect, { x: 0.6, y: ry, w: 11.8, h: 1.15, rectRadius: 0.08, fill: { color: COLOR.indigoLight }, line: { type: 'none' } });
-      slide.addText(r.label, { x: 0.85, y: ry + 0.12, w: 11.3, h: 0.3, fontFace: FONT_BODY, fontSize: 11, bold: true, color: COLOR.indigo, charSpacing: 0.5, isTextBox: true, margin: 0 });
-      slide.addText(r.value, { x: 0.85, y: ry + 0.44, w: 11.3, h: 0.65, fontFace: FONT_BODY, fontSize: 12.5, color: COLOR.ink, isTextBox: true, margin: 0 });
-      ry += 1.32;
+    const bottom1 = pitchBandSingle(pres, slide, 0.6, 1.6, 11.8, 'Fase ofensiva · ¿Cómo atacamos cuando tenemos el balón?',
+      'Estilo de construcción y carril', `${estiloDeJuego.estilo}. ${estiloDeJuego.carril}`);
+    pitchBandSingle(pres, slide, 0.6, bottom1 + 0.25, 11.8, 'Fase defensiva · ¿Cómo presionamos cuando no tenemos el balón?',
+      'Bloque de presión', estiloDeJuego.bloque);
+
+    slide.addText('Es un resumen del partido completo, no dividido en Inicio/Creación/Finalización — el etiquetado actual no registra en qué momento del partido ocurrió cada acción.', {
+      x: 0.6, y: 6.55, w: 11.8, h: 0.4, fontFace: FONT_BODY, fontSize: 9.5, italic: true, color: COLOR.gray, isTextBox: true, margin: 0,
     });
-    slide.addText('No se divide por fase (Inicio/Creación/Finalización) porque el etiquetado actual no registra en qué fase ocurrió cada acción — es un resumen del partido completo.', {
-      x: 0.6, y: ry + 0.1, w: 11.8, h: 0.5, fontFace: FONT_BODY, fontSize: 10, italic: true, color: COLOR.gray, isTextBox: true, margin: 0,
-    });
+    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+  }
+
+  // Slide — Modelo de juego: plan vs. ejecución (contenido del cuerpo técnico, no calculado)
+  if (modeloDeJuego && (modeloDeJuego.pilares.length > 0 || modeloDeJuego.checklist.length > 0)) {
+    const slide = pres.addSlide();
+    slide.background = { color: COLOR.white };
+    sectionHeader(slide, 'Análisis táctico', 'Modelo de juego — plan vs. ejecución');
+
+    let py = 1.55;
+    if (modeloDeJuego.pilares.length > 0) {
+      slide.addText('Lo que el cuerpo técnico pide siempre', { x: 0.6, y: py, w: 8, h: 0.28, fontFace: FONT_BODY, fontSize: 11.5, bold: true, color: COLOR.gray, isTextBox: true, margin: 0 });
+      let px = 0.6; py += 0.32;
+      const pillH = 0.38;
+      modeloDeJuego.pilares.forEach((label) => {
+        const w = 0.28 + label.length * 0.095;
+        if (px + w > 12.8) { px = 0.6; py += pillH + 0.1; }
+        slide.addShape(pres.ShapeType.roundRect, { x: px, y: py, w, h: pillH, rectRadius: 0.2, fill: { type: 'none' }, line: { color: COLOR.indigo, width: 1.25 } });
+        slide.addText(label, { x: px, y: py, w, h: pillH, fontFace: FONT_BODY, fontSize: 10.5, bold: true, color: COLOR.indigo, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
+        px += w + 0.16;
+      });
+      py += pillH + 0.3;
+    }
+
+    if (modeloDeJuego.checklist.length > 0) {
+      slide.addText('¿Se ejecutó en este partido?', { x: 0.6, y: py, w: 8, h: 0.28, fontFace: FONT_BODY, fontSize: 11.5, bold: true, color: COLOR.gray, isTextBox: true, margin: 0 });
+      py += 0.36;
+      const signalColor: Record<string, string> = { verde: COLOR.green, ambar: COLOR.gold, rojo: COLOR.red };
+      const rowH = 0.6, rowGap = 0.1;
+      modeloDeJuego.checklist.forEach((row) => {
+        slide.addShape(pres.ShapeType.roundRect, { x: 0.6, y: py, w: 11.8, h: rowH, rectRadius: 0.07, fill: { color: 'F7F7FA' }, line: { type: 'none' } });
+        slide.addShape(pres.ShapeType.ellipse, { x: 0.85, y: py + rowH / 2 - 0.11, w: 0.22, h: 0.22, fill: { color: signalColor[row.signal] }, line: { type: 'none' } });
+        slide.addText(row.label, { x: 1.25, y: py, w: 4.2, h: rowH, fontFace: FONT_HEAD, fontSize: 11.5, bold: true, color: COLOR.ink, valign: 'middle', isTextBox: true, margin: 0 });
+        slide.addText(row.nota, { x: 5.55, y: py, w: 6.65, h: rowH, fontFace: FONT_BODY, fontSize: 10.5, color: COLOR.ink, valign: 'middle', isTextBox: true, margin: 0 });
+        py += rowH + rowGap;
+      });
+    }
+
     footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
 
@@ -513,9 +637,9 @@ export async function generateMatchReportPptx(
     slide.background = { color: COLOR.white };
     sectionHeader(slide, 'Próximo partido', `Análisis del rival — ${match.rival}`);
 
-    const bottom1 = phaseSection(slide, pres, 0.6, 1.6, 11.8, 'Fase ofensiva · ¿Cómo ataca el rival cuando tiene el balón?',
+    const bottom1 = pitchBand3(pres, slide, 0.6, 1.6, 11.8, 'Fase ofensiva · ¿Cómo ataca el rival cuando tiene el balón?',
       ZONAS.map((z) => ({ label: ZONA_LABEL[z], text: summarizeZone(rivalAnalysis!, 'Ofensiva', z) })));
-    phaseSection(slide, pres, 0.6, bottom1 + 0.25, 11.8, 'Fase defensiva · ¿Cómo presiona el rival cuando no tiene el balón?',
+    pitchBand3(pres, slide, 0.6, bottom1 + 0.25, 11.8, 'Fase defensiva · ¿Cómo presiona el rival cuando no tiene el balón?',
       ZONAS.map((z) => ({ label: ZONA_LABEL[z], text: summarizeZone(rivalAnalysis!, 'Defensiva', z) })));
     footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
