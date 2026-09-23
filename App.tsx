@@ -6,6 +6,7 @@ import AuthPage from './pages/AuthPage';
 import DashboardPage from './pages/DashboardPage';
 import VideoTaggerPage from './pages/VideoTaggerPage';
 import AdminUsersPage from './pages/AdminUsersPage';
+import GenerarReportesPage from './pages/GenerarReportesPage';
 import RendimientoPage from './pages/RendimientoPage';
 import AnalisisTacticoPage from './pages/AnalisisTacticoPage';
 import AnalisisRivalPage from './pages/AnalisisRivalPage';
@@ -59,6 +60,14 @@ const App: React.FC = () => {
               element={
                 <ProtectedRoute allowedRoles={[ROLES.ADMIN]}>
                   <Layout><AdminUsersPage /></Layout>
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
+              path="/generar-reportes" 
+              element={
+                <ProtectedRoute allowedRoles={[ROLES.ADMIN]}>
+                  <Layout><GenerarReportesPage /></Layout>
                 </ProtectedRoute>
               } 
             />
