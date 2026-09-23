@@ -28,6 +28,86 @@ const COLOR = {
 const FONT_HEAD = 'Cambria';
 const FONT_BODY = 'Calibri';
 
+// Mismo patrón que los demás services/gemini*Service.ts del repo (cada uno
+// redefine su propia constante/función, no se comparten).
+const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+function getGeminiApiKey(): string {
+  const env = (import.meta as any).env;
+  const apiKey = env.VITE_API_KEY || env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY || '';
+  if (!apiKey) throw new Error('Gemini API key not configured. Check VITE_API_KEY.');
+  return apiKey;
+}
+
+// "Lectura del partido" — a propósito es un llamado a Gemini SEPARADO del de
+// analyzeTeamPerformance: ese servicio está pensado para narrar una racha de
+// varias jornadas ("el equipo ha iniciado..."), y aunque se le pase un solo
+// partido, el tono de la redacción sigue sonando a resumen de temporada. Este
+// prompt es específico de UN partido, con sus números reales.
+async function generarLecturaDePartido(p: {
+  equipo: string; rival: string; jornada: number; torneo: string;
+  efectividadGeneral: number; promedioTorneo: number | null;
+  goalsFor: number; goalsAgainst: number;
+  recuperaciones: number; tirosAPorteria: number; conversion: number;
+  transicionesLogradas: number;
+}): Promise<string> {
+  const comparativo = p.promedioTorneo !== null
+    ? `Para contexto, el promedio de efectividad del equipo en lo que va del torneo es ${p.promedioTorneo}% — compara este partido contra ese promedio si es relevante (mejor, peor, o en línea).`
+    : `No hay promedio de otras jornadas todavía disponible para comparar.`;
+
+  const prompt = `Eres un analista de rendimiento de fútbol juvenil. Escribe la "Lectura del partido" de UN SOLO partido específico — NO una racha ni un resumen de temporada. No uses frases como "ha iniciado" o "empezando el torneo"; escribe sobre lo que pasó en ESTE partido puntual.
+
+Datos reales de este partido (${p.equipo} vs ${p.rival}, jornada ${p.jornada}, ${p.torneo}):
+- Marcador: ${p.goalsFor} - ${p.goalsAgainst}
+- Efectividad general del partido: ${p.efectividadGeneral}%
+- ${comparativo}
+- Recuperaciones de balón: ${p.recuperaciones}
+- Tiros a portería: ${p.tirosAPorteria} (${p.conversion}% de conversión a gol)
+- Transiciones ofensivas logradas: ${p.transicionesLogradas}
+
+Escribe 3 a 4 oraciones en español, tono formativo y constructivo (equipo juvenil en desarrollo, evita palabras como "pobre" o "deficiente"), en un solo párrafo, sin Markdown ni asteriscos. Responde ÚNICAMENTE con el texto del párrafo, nada más.`;
+
+  const apiKey = getGeminiApiKey();
+  const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+  });
+  if (!response.ok) {
+    console.error('Gemini API error (lectura del partido):', await response.text());
+    throw new Error(`Gemini API error: ${response.status}`);
+  }
+  const data = await response.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  return stripMd(text.trim());
+}
+
+// Logo real del equipo: teams.logo_path (Storage bucket "team-logos"), el
+// mismo mecanismo que ya usa AnalisisTacticoPage.tsx para las marcas de agua
+// de los clips. Si el equipo no tiene logo cargado ahí, se usa el círculo con
+// iniciales como respaldo (no se inventa una imagen).
+async function loadTeamLogoBase64(teamId: string | undefined | null): Promise<string | null> {
+  if (!teamId) return null;
+  try {
+    const { data: teamRow } = await supabase.from('teams').select('logo_path').eq('id', teamId).single();
+    const logoPath = (teamRow as any)?.logo_path;
+    if (!logoPath) return null;
+    const { data: signed } = await supabase.storage.from('team-logos').createSignedUrl(logoPath, 3600);
+    if (!signed?.signedUrl) return null;
+    const res = await fetch(signed.signedUrl);
+    if (!res.ok) return null;
+    const blob = await res.blob();
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  } catch (err) {
+    console.warn('No se pudo cargar el logo del equipo:', err);
+    return null;
+  }
+}
+
 function stripMd(text: string): string {
   if (!text) return text;
   return text.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1');
@@ -70,14 +150,18 @@ function sectionHeader(slide: pptxgen.Slide, kicker: string, title: string) {
 // por equipo en la tabla `teams` (solo `id`, `nombre`), así que del lado del
 // equipo se usa un círculo con sus iniciales — en cuanto haya un campo real
 // de logo por equipo, aquí se cambia por la imagen real.
-function footer(pres: pptxgen, slide: pptxgen.Slide, teamName: string, dark: boolean, pageLabel: string) {
+function footer(pres: pptxgen, slide: pptxgen.Slide, teamName: string, dark: boolean, pageLabel: string, teamLogoBase64?: string | null) {
   const barY = 7.0;
   const textColor = dark ? COLOR.lavender : COLOR.gray;
-  const initials = teamName.trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 3).toUpperCase();
 
-  slide.addShape(pres.ShapeType.ellipse, { x: 0.6, y: barY, w: 0.36, h: 0.36, fill: { color: dark ? COLOR.indigo : COLOR.indigoLight }, line: { color: COLOR.indigo, width: 1 } });
-  slide.addText(initials, { x: 0.6, y: barY, w: 0.36, h: 0.36, fontFace: FONT_BODY, fontSize: 6.5, bold: true, color: dark ? COLOR.white : COLOR.indigo, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
-  slide.addText(teamName, { x: 1.05, y: barY, w: 2.2, h: 0.36, fontFace: FONT_BODY, fontSize: 9, color: textColor, valign: 'middle', isTextBox: true, margin: 0 });
+  if (teamLogoBase64) {
+    slide.addImage({ data: teamLogoBase64, x: 0.6, y: barY - 0.04, w: 0.42, h: 0.44 });
+  } else {
+    const initials = teamName.trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 3).toUpperCase();
+    slide.addShape(pres.ShapeType.ellipse, { x: 0.6, y: barY, w: 0.36, h: 0.36, fill: { color: dark ? COLOR.indigo : COLOR.indigoLight }, line: { color: COLOR.indigo, width: 1 } });
+    slide.addText(initials, { x: 0.6, y: barY, w: 0.36, h: 0.36, fontFace: FONT_BODY, fontSize: 6.5, bold: true, color: dark ? COLOR.white : COLOR.indigo, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
+  }
+  slide.addText(teamName, { x: 1.1, y: barY, w: 2.2, h: 0.36, fontFace: FONT_BODY, fontSize: 9, color: textColor, valign: 'middle', isTextBox: true, margin: 0 });
   slide.addText(pageLabel, { x: 6.16, y: barY, w: 1, h: 0.36, fontFace: FONT_BODY, fontSize: 9, color: textColor, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
   slide.addImage({ data: LOGO_BASE64, x: 12.38, y: barY - 0.06, w: 0.4, h: 0.47 });
 }
@@ -290,6 +374,13 @@ export async function generateMatchReportPptx(
     if (rivalData && rivalData.length > 0) rivalAnalysis = rivalData[0] as RivalAnalysis;
   }
 
+  const teamLogoBase64 = await loadTeamLogoBase64(match.team_id);
+
+  const lecturaDelPartido = await generarLecturaDePartido({
+    equipo: match.nombre_equipo, rival: match.rival, jornada: match.jornada, torneo: match.torneo,
+    efectividadGeneral, promedioTorneo, goalsFor, goalsAgainst, recuperaciones, tirosAPorteria, conversion, transicionesLogradas,
+  });
+
   // ── Construcción del .pptx ────────────────────────────────────────────
   const pres = new pptxgen();
   pres.layout = 'LAYOUT_WIDE';
@@ -310,10 +401,9 @@ export async function generateMatchReportPptx(
     if (goalsFor > 0 || goalsAgainst > 0) {
       slide.addShape(pres.ShapeType.roundRect, { x: 0.9, y: 3.8, w: 2.2, h: 1.05, rectRadius: 0.1, fill: { color: COLOR.indigo }, line: { type: 'none' } });
       slide.addText(`${goalsFor} — ${goalsAgainst}`, { x: 0.9, y: 3.88, w: 2.2, h: 0.6, fontFace: FONT_HEAD, fontSize: 26, bold: true, color: COLOR.white, align: 'center', isTextBox: true, margin: 0 });
-      slide.addText('Marcador (por tags de goles)', { x: 0.9, y: 4.45, w: 2.2, h: 0.3, fontFace: FONT_BODY, fontSize: 8.5, color: COLOR.lavender, align: 'center', isTextBox: true, margin: 0 });
     }
     slide.addText(`Preparado por GolAnalytics${authorName ? `  ·  ${authorName}` : ''}`, { x: 0.9, y: 6.5, w: 10, h: 0.35, fontFace: FONT_BODY, fontSize: 11, italic: true, color: COLOR.lavender, isTextBox: true, margin: 0 });
-    footer(pres, slide, match.nombre_equipo, true, nextNum());
+    footer(pres, slide, match.nombre_equipo, true, nextNum(), teamLogoBase64);
   }
 
   // Slide — Resumen ejecutivo
@@ -350,8 +440,8 @@ export async function generateMatchReportPptx(
       { text: 'Lectura del partido  ', options: { bold: true, fontSize: 15, color: COLOR.ink } },
       { text: '· generado por IA', options: { italic: true, fontSize: 10.5, color: COLOR.gray } },
     ] as any, { x: 0.6, y: 3.75, w: 8, h: 0.35, fontFace: FONT_HEAD, isTextBox: true, margin: 0 });
-    slide.addText(stripMd(analysis.resumenEjecutivo), { x: 0.6, y: 4.15, w: 11.8, h: 2.3, fontFace: FONT_BODY, fontSize: 13, color: COLOR.ink, isTextBox: true, margin: 0 });
-    footer(pres, slide, match.nombre_equipo, false, nextNum());
+    slide.addText(lecturaDelPartido, { x: 0.6, y: 4.15, w: 11.8, h: 2.3, fontFace: FONT_BODY, fontSize: 13, color: COLOR.ink, isTextBox: true, margin: 0 });
+    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
 
   // Slide — Efectividad por línea
@@ -371,7 +461,7 @@ export async function generateMatchReportPptx(
       slide.addText(`${data.efectividad}%`, { x, y: y + 0.6, w: cardW, h: 0.85, fontFace: FONT_HEAD, fontSize: 38, bold: true, color: COLOR.indigo, align: 'center', isTextBox: true, margin: 0 });
       slide.addText(stripMd(data.observacion), { x: x + 0.3, y: y + 1.55, w: cardW - 0.6, h: 1.95, fontFace: FONT_BODY, fontSize: 11.5, color: COLOR.ink, align: 'center', isTextBox: true, margin: 0 });
     });
-    footer(pres, slide, match.nombre_equipo, false, nextNum());
+    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
 
   // Slide — Estilo de juego (propio) — directo/combinativo/mixto, carril, bloque de presión
@@ -395,7 +485,7 @@ export async function generateMatchReportPptx(
     slide.addText('No se divide por fase (Inicio/Creación/Finalización) porque el etiquetado actual no registra en qué fase ocurrió cada acción — es un resumen del partido completo.', {
       x: 0.6, y: ry + 0.1, w: 11.8, h: 0.5, fontFace: FONT_BODY, fontSize: 10, italic: true, color: COLOR.gray, isTextBox: true, margin: 0,
     });
-    footer(pres, slide, match.nombre_equipo, false, nextNum());
+    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
 
   // Slide — Jugadores destacados
@@ -414,7 +504,7 @@ export async function generateMatchReportPptx(
       }
       slide.addText(p.razon, { x: x + 0.2, y: 2.8, w: cardW - 0.4, h: 2.3, fontFace: FONT_BODY, fontSize: 10.5, color: COLOR.ink, align: 'center', isTextBox: true, margin: 0 });
     });
-    footer(pres, slide, match.nombre_equipo, false, nextNum());
+    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
 
   // Slide — Análisis del Rival (solo si existe un análisis cargado para este rival)
@@ -427,7 +517,7 @@ export async function generateMatchReportPptx(
       ZONAS.map((z) => ({ label: ZONA_LABEL[z], text: summarizeZone(rivalAnalysis!, 'Ofensiva', z) })));
     phaseSection(slide, pres, 0.6, bottom1 + 0.25, 11.8, 'Fase defensiva · ¿Cómo presiona el rival cuando no tiene el balón?',
       ZONAS.map((z) => ({ label: ZONA_LABEL[z], text: summarizeZone(rivalAnalysis!, 'Defensiva', z) })));
-    footer(pres, slide, match.nombre_equipo, false, nextNum());
+    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
 
   // Slide — Recomendaciones de entrenamiento
@@ -443,7 +533,7 @@ export async function generateMatchReportPptx(
       slide.addText(String(i + 1), { x: 0.85, y: y + (rowH - 0.5) / 2, w: 0.5, h: 0.5, fontFace: FONT_HEAD, fontSize: 15, bold: true, color: COLOR.white, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
       slide.addText(stripMd(text), { x: 1.55, y: y + 0.06, w: 10.65, h: rowH - 0.12, fontFace: FONT_BODY, fontSize: 10.5, color: COLOR.ink, valign: 'middle', isTextBox: true, margin: 0 });
     });
-    footer(pres, slide, match.nombre_equipo, false, nextNum());
+    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
 
   // Slide — DAFO, 4 cuadrantes.
@@ -469,24 +559,27 @@ export async function generateMatchReportPptx(
       if (amenazas.length === 0) amenazas = ['El rival no tiene momentos ofensivos etiquetados todavía.'];
     }
 
-    const quads: Array<{ title: string; items: string[]; fill: string; color: string }> = [
-      { title: 'FORTALEZAS', items: analysis.fortalezasColectivas.map(stripMd), fill: COLOR.greenLight, color: COLOR.green },
-      { title: 'OPORTUNIDADES', items: oportunidades, fill: COLOR.blueLight, color: COLOR.blue },
-      { title: 'DEBILIDADES', items: analysis.areasDeMejoraColectivas.map(stripMd), fill: COLOR.orangeLight, color: COLOR.orange },
-      { title: 'AMENAZAS', items: amenazas, fill: COLOR.redLight, color: COLOR.red },
+    const quads: Array<{ title: string; sub: string; items: string[]; fill: string; color: string }> = [
+      { title: 'FORTALEZAS', sub: match.nombre_equipo, items: analysis.fortalezasColectivas.map(stripMd), fill: COLOR.greenLight, color: COLOR.green },
+      { title: 'OPORTUNIDADES', sub: `por atacar en ${match.rival}`, items: oportunidades, fill: COLOR.blueLight, color: COLOR.blue },
+      { title: 'DEBILIDADES', sub: match.nombre_equipo, items: analysis.areasDeMejoraColectivas.map(stripMd), fill: COLOR.orangeLight, color: COLOR.orange },
+      { title: 'AMENAZAS', sub: `de ${match.rival}`, items: amenazas, fill: COLOR.redLight, color: COLOR.red },
     ];
     const qw = 5.75, qh = 2.3, gapX = 0.3, gapY = 0.2, startX = 0.6, startY = 1.55;
     quads.forEach((q, i) => {
       const col = i % 2, row = Math.floor(i / 2);
       const x = startX + col * (qw + gapX), y = startY + row * (qh + gapY);
       slide.addShape(pres.ShapeType.roundRect, { x, y, w: qw, h: qh, rectRadius: 0.08, fill: { color: q.fill }, line: { type: 'none' } });
-      slide.addText(q.title, { x: x + 0.3, y: y + 0.16, w: qw - 0.6, h: 0.32, fontFace: FONT_BODY, fontSize: 12, bold: true, color: q.color, charSpacing: 0.5, isTextBox: true, margin: 0 });
+      slide.addText([
+        { text: q.title, options: { bold: true, color: q.color } },
+        { text: '   ' + q.sub, options: { color: COLOR.gray, italic: true } },
+      ] as any, { x: x + 0.3, y: y + 0.16, w: qw - 0.6, h: 0.32, fontFace: FONT_BODY, fontSize: 12, charSpacing: 0.5, isTextBox: true, margin: 0 });
       slide.addText(
         q.items.slice(0, 3).map((t, j) => ({ text: t, options: { bullet: { code: '2022' }, breakLine: j < Math.min(q.items.length, 3) - 1, paraSpaceAfter: 6 } })) as any,
         { x: x + 0.3, y: y + 0.54, w: qw - 0.6, h: qh - 0.68, fontFace: FONT_BODY, fontSize: 9.5, color: COLOR.ink, isTextBox: true, margin: 0 }
       );
     });
-    footer(pres, slide, match.nombre_equipo, false, nextNum());
+    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
 
   const fileName = `Reporte_${match.nombre_equipo}_J${match.jornada}`.replace(/\s+/g, '_');
