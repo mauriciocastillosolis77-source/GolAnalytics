@@ -8,7 +8,7 @@ import { useAuth } from '../contexts/AuthContext';
 declare var XLSX: any;
 
 const GenerarReportesPage: React.FC = () => {
-  const { user, profile } = useAuth();
+  const { profile } = useAuth();
   const [matches, setMatches] = useState<Match[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -20,6 +20,10 @@ const GenerarReportesPage: React.FC = () => {
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
+
+  // Nombre/puesto para el crédito de la portada — editable a mano porque
+  // profile.username puede venir vacío en Supabase; así no depende de eso.
+  const [authorName, setAuthorName] = useState('');
 
   // Excel opcional con posiciones detalladas (Lateral Izquierdo, Extremo
   // Derecho, etc.) — mismo formato que el Excel de jugadores del Etiquetador
@@ -49,6 +53,10 @@ const GenerarReportesPage: React.FC = () => {
     };
     loadMatches();
   }, []);
+
+  useEffect(() => {
+    if (profile?.username) setAuthorName(profile.username);
+  }, [profile]);
 
   const availableTorneos = useMemo(
     () => Array.from(new Set(matches.map((m) => m.torneo))).filter(Boolean).sort(),
@@ -146,8 +154,7 @@ const GenerarReportesPage: React.FC = () => {
     setIsGenerating(true);
     setGenError(null);
     try {
-      const authorName = profile?.username || user?.email || undefined;
-      await generateMatchReportPptx(selectedMatch, authorName, positionsMap || undefined);
+      await generateMatchReportPptx(selectedMatch, authorName.trim() || undefined, positionsMap || undefined);
     } catch (err: any) {
       console.error('Error generating report:', err);
       setGenError(err?.message || 'Error al generar el reporte. Intenta de nuevo.');
@@ -225,6 +232,19 @@ const GenerarReportesPage: React.FC = () => {
               {availableJornadas.map((j) => <option key={j} value={j}>Jornada {j}</option>)}
             </select>
           </div>
+        </div>
+
+        <div className="mt-6 pt-6 border-t border-gray-700">
+          <label className="block text-sm font-medium mb-2 text-gray-300">
+            Nombre para el crédito de la portada <span className="text-gray-500 font-normal">— opcional</span>
+          </label>
+          <input
+            type="text"
+            value={authorName}
+            onChange={(e) => setAuthorName(e.target.value)}
+            placeholder="Ej: Mauricio Castillo — Analista Táctico y de Rendimiento"
+            className="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+          />
         </div>
 
         <div className="mt-6 pt-6 border-t border-gray-700">
