@@ -65,6 +65,23 @@ function sectionHeader(slide: pptxgen.Slide, kicker: string, title: string) {
   });
 }
 
+// Pie de página en TODOS los slides: escudo del equipo (abajo-izquierda) y
+// logo de GolAnalytics (abajo-derecha). No existe todavía un campo de logo
+// por equipo en la tabla `teams` (solo `id`, `nombre`), así que del lado del
+// equipo se usa un círculo con sus iniciales — en cuanto haya un campo real
+// de logo por equipo, aquí se cambia por la imagen real.
+function footer(pres: pptxgen, slide: pptxgen.Slide, teamName: string, dark: boolean, pageLabel: string) {
+  const barY = 7.0;
+  const textColor = dark ? COLOR.lavender : COLOR.gray;
+  const initials = teamName.trim().split(/\s+/).map((w) => w[0]).join('').slice(0, 3).toUpperCase();
+
+  slide.addShape(pres.ShapeType.ellipse, { x: 0.6, y: barY, w: 0.36, h: 0.36, fill: { color: dark ? COLOR.indigo : COLOR.indigoLight }, line: { color: COLOR.indigo, width: 1 } });
+  slide.addText(initials, { x: 0.6, y: barY, w: 0.36, h: 0.36, fontFace: FONT_BODY, fontSize: 6.5, bold: true, color: dark ? COLOR.white : COLOR.indigo, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
+  slide.addText(teamName, { x: 1.05, y: barY, w: 2.2, h: 0.36, fontFace: FONT_BODY, fontSize: 9, color: textColor, valign: 'middle', isTextBox: true, margin: 0 });
+  slide.addText(pageLabel, { x: 6.16, y: barY, w: 1, h: 0.36, fontFace: FONT_BODY, fontSize: 9, color: textColor, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
+  slide.addImage({ data: LOGO_BASE64, x: 12.38, y: barY - 0.06, w: 0.4, h: 0.47 });
+}
+
 // ── Análisis del Rival: misma lógica de redacción que pages/AnalisisRivalPage.tsx (summarizeZone) ──
 const ATTR2_PHRASE: Record<string, (label: string) => string> = {
   'Carril': (l) => `por la ${l.toLowerCase()}`,
@@ -265,7 +282,9 @@ export async function generateMatchReportPptx(
   // rival, esta sección viene null y el slide se omite (no se inventa).
   let rivalAnalysis: RivalAnalysis | null = null;
   {
-    let query = supabase.from('rival_analysis').select('*').eq('rival_name', match.rival).order('created_at', { ascending: false }).limit(1);
+    // ilike en vez de eq: "Tigres Xochimilco" vs "tigres xochimilco " (mayúsculas,
+    // espacios) antes fallaba con comparación exacta y el slide se saltaba sin avisar.
+    let query = supabase.from('rival_analysis').select('*').ilike('rival_name', match.rival.trim()).order('created_at', { ascending: false }).limit(1);
     if (match.team_id) query = query.eq('team_id', match.team_id);
     const { data: rivalData } = await query;
     if (rivalData && rivalData.length > 0) rivalAnalysis = rivalData[0] as RivalAnalysis;
@@ -283,7 +302,6 @@ export async function generateMatchReportPptx(
     const slide = pres.addSlide();
     slide.background = { color: COLOR.navy };
     slide.addImage({ data: LOGO_BASE64, x: 0.9, y: 0.5, w: 0.95, h: 1.1 });
-    nextNum();
 
     slide.addText('REPORTE DE PARTIDO', { x: 0.9, y: 1.85, w: 9, h: 0.4, fontFace: FONT_BODY, fontSize: 14, bold: true, color: COLOR.gold, charSpacing: 3, isTextBox: true, margin: 0 });
     slide.addText(`${match.nombre_equipo}  vs  ${match.rival}`, { x: 0.9, y: 2.25, w: 11.5, h: 1.0, fontFace: FONT_HEAD, fontSize: 40, bold: true, color: COLOR.white, isTextBox: true, margin: 0 });
@@ -295,6 +313,7 @@ export async function generateMatchReportPptx(
       slide.addText('Marcador (por tags de goles)', { x: 0.9, y: 4.45, w: 2.2, h: 0.3, fontFace: FONT_BODY, fontSize: 8.5, color: COLOR.lavender, align: 'center', isTextBox: true, margin: 0 });
     }
     slide.addText(`Preparado por GolAnalytics${authorName ? `  ·  ${authorName}` : ''}`, { x: 0.9, y: 6.5, w: 10, h: 0.35, fontFace: FONT_BODY, fontSize: 11, italic: true, color: COLOR.lavender, isTextBox: true, margin: 0 });
+    footer(pres, slide, match.nombre_equipo, true, nextNum());
   }
 
   // Slide — Resumen ejecutivo
@@ -332,7 +351,7 @@ export async function generateMatchReportPptx(
       { text: '· generado por IA', options: { italic: true, fontSize: 10.5, color: COLOR.gray } },
     ] as any, { x: 0.6, y: 3.75, w: 8, h: 0.35, fontFace: FONT_HEAD, isTextBox: true, margin: 0 });
     slide.addText(stripMd(analysis.resumenEjecutivo), { x: 0.6, y: 4.15, w: 11.8, h: 2.3, fontFace: FONT_BODY, fontSize: 13, color: COLOR.ink, isTextBox: true, margin: 0 });
-    nextNum();
+    footer(pres, slide, match.nombre_equipo, false, nextNum());
   }
 
   // Slide — Efectividad por línea
@@ -352,7 +371,7 @@ export async function generateMatchReportPptx(
       slide.addText(`${data.efectividad}%`, { x, y: y + 0.6, w: cardW, h: 0.85, fontFace: FONT_HEAD, fontSize: 38, bold: true, color: COLOR.indigo, align: 'center', isTextBox: true, margin: 0 });
       slide.addText(stripMd(data.observacion), { x: x + 0.3, y: y + 1.55, w: cardW - 0.6, h: 1.95, fontFace: FONT_BODY, fontSize: 11.5, color: COLOR.ink, align: 'center', isTextBox: true, margin: 0 });
     });
-    nextNum();
+    footer(pres, slide, match.nombre_equipo, false, nextNum());
   }
 
   // Slide — Estilo de juego (propio) — directo/combinativo/mixto, carril, bloque de presión
@@ -376,7 +395,7 @@ export async function generateMatchReportPptx(
     slide.addText('No se divide por fase (Inicio/Creación/Finalización) porque el etiquetado actual no registra en qué fase ocurrió cada acción — es un resumen del partido completo.', {
       x: 0.6, y: ry + 0.1, w: 11.8, h: 0.5, fontFace: FONT_BODY, fontSize: 10, italic: true, color: COLOR.gray, isTextBox: true, margin: 0,
     });
-    nextNum();
+    footer(pres, slide, match.nombre_equipo, false, nextNum());
   }
 
   // Slide — Jugadores destacados
@@ -395,7 +414,7 @@ export async function generateMatchReportPptx(
       }
       slide.addText(p.razon, { x: x + 0.2, y: 2.8, w: cardW - 0.4, h: 2.3, fontFace: FONT_BODY, fontSize: 10.5, color: COLOR.ink, align: 'center', isTextBox: true, margin: 0 });
     });
-    nextNum();
+    footer(pres, slide, match.nombre_equipo, false, nextNum());
   }
 
   // Slide — Análisis del Rival (solo si existe un análisis cargado para este rival)
@@ -408,7 +427,7 @@ export async function generateMatchReportPptx(
       ZONAS.map((z) => ({ label: ZONA_LABEL[z], text: summarizeZone(rivalAnalysis!, 'Ofensiva', z) })));
     phaseSection(slide, pres, 0.6, bottom1 + 0.25, 11.8, 'Fase defensiva · ¿Cómo presiona el rival cuando no tiene el balón?',
       ZONAS.map((z) => ({ label: ZONA_LABEL[z], text: summarizeZone(rivalAnalysis!, 'Defensiva', z) })));
-    nextNum();
+    footer(pres, slide, match.nombre_equipo, false, nextNum());
   }
 
   // Slide — Recomendaciones de entrenamiento
@@ -424,7 +443,7 @@ export async function generateMatchReportPptx(
       slide.addText(String(i + 1), { x: 0.85, y: y + (rowH - 0.5) / 2, w: 0.5, h: 0.5, fontFace: FONT_HEAD, fontSize: 15, bold: true, color: COLOR.white, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
       slide.addText(stripMd(text), { x: 1.55, y: y + 0.06, w: 10.65, h: rowH - 0.12, fontFace: FONT_BODY, fontSize: 10.5, color: COLOR.ink, valign: 'middle', isTextBox: true, margin: 0 });
     });
-    nextNum();
+    footer(pres, slide, match.nombre_equipo, false, nextNum());
   }
 
   // Slide — DAFO, 4 cuadrantes.
@@ -467,8 +486,7 @@ export async function generateMatchReportPptx(
         { x: x + 0.3, y: y + 0.54, w: qw - 0.6, h: qh - 0.68, fontFace: FONT_BODY, fontSize: 9.5, color: COLOR.ink, isTextBox: true, margin: 0 }
       );
     });
-    slide.addImage({ data: LOGO_BASE64, x: 12.35, y: 6.85, w: 0.42, h: 0.49 });
-    nextNum();
+    footer(pres, slide, match.nombre_equipo, false, nextNum());
   }
 
   const fileName = `Reporte_${match.nombre_equipo}_J${match.jornada}`.replace(/\s+/g, '_');
