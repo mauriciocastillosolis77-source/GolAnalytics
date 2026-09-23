@@ -33,6 +33,20 @@ const GenerarReportesPage: React.FC = () => {
   const [positionsFileName, setPositionsFileName] = useState('');
   const [positionsError, setPositionsError] = useState<string | null>(null);
 
+  // Modelo de Juego — Plan vs. Ejecución. Esto NO se calcula de los tags: es
+  // contenido que el cuerpo técnico define a mano cada vez, igual que el
+  // Excel — solo vive en memoria de esta página mientras generas el reporte.
+  const [pilaresTexto, setPilaresTexto] = useState('');
+  type Semaforo = 'verde' | 'ambar' | 'rojo';
+  type ChecklistRow = { label: string; signal: Semaforo; nota: string };
+  const [checklist, setChecklist] = useState<ChecklistRow[]>([
+    { label: '', signal: 'verde', nota: '' },
+  ]);
+  const addChecklistRow = () => setChecklist((rows) => [...rows, { label: '', signal: 'verde', nota: '' }]);
+  const removeChecklistRow = (i: number) => setChecklist((rows) => rows.filter((_, idx) => idx !== i));
+  const updateChecklistRow = (i: number, patch: Partial<ChecklistRow>) =>
+    setChecklist((rows) => rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+
   useEffect(() => {
     const loadMatches = async () => {
       setLoading(true);
@@ -154,7 +168,15 @@ const GenerarReportesPage: React.FC = () => {
     setIsGenerating(true);
     setGenError(null);
     try {
-      await generateMatchReportPptx(selectedMatch, authorName.trim() || undefined, positionsMap || undefined);
+      const pilares = pilaresTexto.split('\n').map((s) => s.trim()).filter(Boolean);
+      const checklistLimpio = checklist
+        .map((r) => ({ ...r, label: r.label.trim(), nota: r.nota.trim() }))
+        .filter((r) => r.label);
+      const modeloDeJuego = (pilares.length > 0 || checklistLimpio.length > 0)
+        ? { pilares, checklist: checklistLimpio }
+        : undefined;
+
+      await generateMatchReportPptx(selectedMatch, authorName.trim() || undefined, positionsMap || undefined, modeloDeJuego);
     } catch (err: any) {
       console.error('Error generating report:', err);
       setGenError(err?.message || 'Error al generar el reporte. Intenta de nuevo.');
@@ -265,6 +287,69 @@ const GenerarReportesPage: React.FC = () => {
             <p className="text-xs text-green-400 mt-2">✅ {positionsFileName} — {positionsMap?.size} jugadores con posición cargados en memoria.</p>
           )}
           {positionsError && <p className="text-xs text-red-400 mt-2">{positionsError}</p>}
+        </div>
+
+        <div className="mt-6 pt-6 border-t border-gray-700">
+          <label className="block text-sm font-medium mb-1 text-gray-300">
+            Modelo de Juego — Plan vs. Ejecución <span className="text-gray-500 font-normal">— opcional</span>
+          </label>
+          <p className="text-xs text-gray-500 mb-3">
+            Esto lo define el cuerpo técnico, no se calcula de los tags. Si lo dejas vacío, ese slide no aparece en el reporte.
+          </p>
+
+          <label className="block text-xs text-gray-400 mb-1">Pilares de identidad (uno por línea)</label>
+          <textarea
+            value={pilaresTexto}
+            onChange={(e) => setPilaresTexto(e.target.value)}
+            placeholder={'4-4-2 / 4-3-3\nPresión bloque alto\nAmplitud priorizada\nSalida combinativa'}
+            rows={4}
+            className="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500 mb-4"
+          />
+
+          <label className="block text-xs text-gray-400 mb-2">¿Se ejecutó en este partido?</label>
+          <div className="space-y-2">
+            {checklist.map((row, i) => (
+              <div key={i} className="flex flex-col md:flex-row gap-2 items-start md:items-center bg-gray-700/50 p-2 rounded">
+                <input
+                  type="text"
+                  value={row.label}
+                  onChange={(e) => updateChecklistRow(i, { label: e.target.value })}
+                  placeholder="Ej: Presión bloque alto"
+                  className="flex-1 w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                />
+                <select
+                  value={row.signal}
+                  onChange={(e) => updateChecklistRow(i, { signal: e.target.value as Semaforo })}
+                  className="bg-gray-700 text-white p-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                >
+                  <option value="verde">🟢 Verde</option>
+                  <option value="ambar">🟡 Ámbar</option>
+                  <option value="rojo">🔴 Rojo</option>
+                </select>
+                <input
+                  type="text"
+                  value={row.nota}
+                  onChange={(e) => updateChecklistRow(i, { nota: e.target.value })}
+                  placeholder="Nota (ej: efectiva en el primer tiempo, bajó tras el min 30)"
+                  className="flex-[2] w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                />
+                <button
+                  type="button"
+                  onClick={() => removeChecklistRow(i)}
+                  className="text-red-400 hover:text-red-300 text-sm px-2"
+                >
+                  Quitar
+                </button>
+              </div>
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={addChecklistRow}
+            className="mt-2 text-sm text-cyan-400 hover:text-cyan-300"
+          >
+            + Agregar fila
+          </button>
         </div>
 
         <div className="mt-6 flex items-center gap-3">
