@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../services/supabaseClient';
 import type { Match } from '../types';
 import { Spinner } from '../components/ui/Spinner';
-import { generateMatchReportPptx } from '../services/reportExportService';
+import { generateMatchReportPptx, mejorarRedaccionChecklist } from '../services/reportExportService';
 
 declare var XLSX: any;
 
@@ -36,6 +36,16 @@ const GenerarReportesPage: React.FC = () => {
   // pilares, así que vienen precargados por default; solo hay que elegir el
   // semáforo y escribir la nota de cada uno. Una fila sin nota no sale en el
   // reporte (se entiende que no se revisó esta vez).
+  //
+  // PENDIENTE A FUTURO (documentado, no construido — hoy solo hay un equipo):
+  // estos 8 pilares son fijos porque hoy solo existe ML7. En cuanto haya más
+  // de un equipo, cada uno va a querer sus propios pilares de identidad, y
+  // eso sí necesita una tabla nueva en Supabase — algo como:
+  //   team_identity_pillars (id, team_id, pilar, orden)
+  // Al elegir `equipo` en el filtro de arriba, se haría un
+  // `supabase.from('team_identity_pillars').select('*').eq('team_id', ...)`
+  // para precargar los pilares de ESE equipo en vez de PILARES_DEFAULT. No se
+  // construye ahora para no tocar el esquema de Supabase sin que lo pidas.
   const PILARES_DEFAULT = [
     '4-4-2 / 4-3-3',
     'Presión bloque alto',
@@ -56,6 +66,22 @@ const GenerarReportesPage: React.FC = () => {
   const removeChecklistRow = (i: number) => setChecklist((rows) => rows.filter((_, idx) => idx !== i));
   const updateChecklistRow = (i: number, patch: Partial<ChecklistRow>) =>
     setChecklist((rows) => rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+
+  const [mejorandoIdx, setMejorandoIdx] = useState<number | null>(null);
+  const handleMejorarNota = async (i: number) => {
+    const row = checklist[i];
+    if (!row.nota.trim()) return;
+    setMejorandoIdx(i);
+    try {
+      const mejorado = await mejorarRedaccionChecklist(row.label || 'este punto del modelo de juego', row.nota.trim());
+      updateChecklistRow(i, { nota: mejorado });
+    } catch (err: any) {
+      console.error('Error mejorando redacción:', err);
+      setGenError(err?.message || 'No se pudo mejorar el texto. Intenta de nuevo.');
+    } finally {
+      setMejorandoIdx(null);
+    }
+  };
 
   useEffect(() => {
     const loadMatches = async () => {
@@ -341,6 +367,15 @@ const GenerarReportesPage: React.FC = () => {
                   placeholder="Nota (ej: efectiva en el primer tiempo, bajó tras el min 30)"
                   className="flex-[2] w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500"
                 />
+                <button
+                  type="button"
+                  onClick={() => handleMejorarNota(i)}
+                  disabled={!row.nota.trim() || mejorandoIdx === i}
+                  className="text-cyan-400 hover:text-cyan-300 disabled:text-gray-500 disabled:cursor-not-allowed text-sm px-2 whitespace-nowrap"
+                  title="Reescribe la nota en tono de director técnico"
+                >
+                  {mejorandoIdx === i ? 'Mejorando…' : '✨ Mejorar'}
+                </button>
                 <button
                   type="button"
                   onClick={() => removeChecklistRow(i)}
