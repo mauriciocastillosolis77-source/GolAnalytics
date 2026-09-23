@@ -378,6 +378,32 @@ function findPlayerByName(players: Player[], nombre: string): Player | undefined
   return players.find((p) => norm(p.nombre).split(/\s+/).some((tok) => tok.replace('.', '') === targetFirst));
 }
 
+// Reescribe UNA nota del checklist de Modelo de Juego a tono de director
+// técnico / lenguaje de fútbol, cotidiano pero profesional — el cuerpo
+// técnico escribe como sea y esto la pule antes de meterla al reporte.
+export async function mejorarRedaccionChecklist(pilar: string, textoOriginal: string): Promise<string> {
+  const prompt = `Eres un director técnico de fútbol juvenil redactando una nota corta para un reporte de partido.
+
+Pilar del modelo de juego: "${pilar}"
+Nota original (escrita por el entrenador, en borrador): "${textoOriginal}"
+
+Reescribe esta nota en 1 a 2 oraciones, en español, con vocabulario de fútbol cotidiano y profesional — ni muy informal ni rebuscado, como hablaría un director técnico explicándole esto a otro entrenador. Mantén el contenido y el sentido exactos de la nota original, no inventes datos que no estén ahí. Responde ÚNICAMENTE con la nota reescrita, sin comillas ni texto adicional.`;
+
+  const apiKey = getGeminiApiKey();
+  const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
+  });
+  if (!response.ok) {
+    console.error('Gemini API error (mejorar redacción):', await response.text());
+    throw new Error(`Gemini API error: ${response.status}`);
+  }
+  const data = await response.json();
+  const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  return stripMd(text.trim());
+}
+
 export interface ModeloDeJuegoChecklistRow {
   label: string;
   signal: 'verde' | 'ambar' | 'rojo';
