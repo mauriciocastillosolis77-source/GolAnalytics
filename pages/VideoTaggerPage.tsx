@@ -10,6 +10,8 @@ import { blobToBase64 } from '../utils/blob';
 import AISuggestionsModal from '../components/ai/AISuggestionsModal';
 import { fetchVideosForMatch, createVideoForMatch, Video as VideoMeta } from '../services/videosService';
 import { fetchTeams, getOrCreateTeam, type Team } from '../services/teamsService';
+import { ACCIONES_CON_ZONA, TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona, etiquetaZona, zonaDesdeVoz } from '../utils/zonas';
+import { esJugadorFicticio } from '../utils/efectividad';
 
 declare var XLSX: any;
 
@@ -88,6 +90,12 @@ const VideoTaggerPage: React.FC = () => {
     const [gestionAbierta, setGestionAbierta] = useState(false);
     const [cargaAbierta, setCargaAbierta] = useState(false);
     const [iaAbierta, setIaAbierta] = useState(false);
+
+    // Mejora 1 — zona de la jugada. Después de etiquetar una recuperación o una pérdida,
+    // el panel "Detalle de la jugada" pregunta dónde fue. No bloquea: si sigues etiquetando,
+    // la jugada queda "sin zona". Guardamos datos para ubicar la etiqueta aunque ya se haya
+    // guardado en la base (el guardado cambia su id temporal por el real).
+    const [detallePendiente, setDetallePendiente] = useState<{ id: string | number; match_id: string; player_id: string; accion: string; timestamp: number } | null>(null);
 
     // Voice Commands State
     const [isVoiceActive, setIsVoiceActive] = useState(false);
@@ -469,6 +477,14 @@ const VideoTaggerPage: React.FC = () => {
             ai_suggested: pendingAiSuggestion !== null
         };
         setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
+
+        // Mejora 1: si es recuperación o pérdida de un jugador real, pedir la zona en el panel de detalle.
+        const jugadorDelTag = players.find(p => p.id === selectedPlayerId);
+        if (ACCIONES_CON_ZONA.has(accion) && !esJugadorFicticio(jugadorDelTag?.nombre)) {
+            setDetallePendiente({ id: newTag.id, match_id: newTag.match_id, player_id: newTag.player_id, accion: newTag.accion, timestamp: newTag.timestamp });
+        } else {
+            setDetallePendiente(null);
+        }
         
         // Si había una sugerencia de IA pendiente, removerla
         if (pendingAiSuggestion) {
@@ -494,6 +510,29 @@ const VideoTaggerPage: React.FC = () => {
         } else {
             setTags(prev => prev.filter(t => t.id !== tagToDelete.id));
         }
+    };
+
+    // Mejora 1: pone (o quita, con null) la zona de la jugada pendiente.
+    // Si la jugada aún no se guarda, solo cambia en pantalla y se guarda con "Guardar".
+    // Si ya estaba guardada, actualiza solo la columna `zona` de esa etiqueta.
+    const aplicarZona = async (zona: string | null): Promise<string> => {
+        const pend = detallePendiente;
+        if (!pend) return '⚠ No hay jugada esperando zona';
+        const tag = tags.find(t => t.id === pend.id)
+            || tags.find(t => t.match_id === pend.match_id && t.player_id === pend.player_id && t.accion === pend.accion && t.timestamp === pend.timestamp);
+        setDetallePendiente(null);
+        if (!tag) return '⚠ No encontré la jugada';
+        if (zona === null) return 'Jugada sin zona';
+        const esTemporal = String(tag.id).startsWith('temp-');
+        if (!esTemporal) {
+            const { error } = await supabase.from('tags').update({ zona }).eq('id', tag.id);
+            if (error) {
+                console.error('Error al guardar la zona', error);
+                return '⚠ No se pudo guardar la zona';
+            }
+        }
+        setTags(prev => prev.map(t => (t.id === tag.id ? { ...t, zona } : t)));
+        return `📍 Zona: ${etiquetaZona(zona)}`;
     };
 
     // Handler for saving all tags (jugadas) to DB
@@ -1193,6 +1232,20 @@ const VideoTaggerPage: React.FC = () => {
             return;
         }
 
+        // ── Mejora 1: zona de la jugada ("creación centro", "zona inicio izquierda") y "saltar" ──
+        // Solo actúa si hay una recuperación o pérdida esperando zona; si no, sigue con los demás comandos.
+        if (detallePendiente) {
+            if (/\bsaltar\b|\bsin zona\b/.test(text)) {
+                aplicarZona(null).then(show);
+                return;
+            }
+            const zonaDicha = zonaDesdeVoz(text);
+            if (zonaDicha) {
+                aplicarZona(zonaDicha).then(show);
+                return;
+            }
+        }
+
         // ── Player selection ──────────────────────────────────────────────
         // Acepta: "jugador 11", "jugador once", "jugador noventa y cinco"
         // También acepta: "jugador Jesus", "jugador Diego"
@@ -1751,6 +1804,15 @@ const VideoTaggerPage: React.FC = () => {
                                         <span className="font-semibold">{players.find(p => p.id === tag.player_id)?.nombre || "Jugador"}</span>
                                         <span className="text-xs text-gray-300 ml-2">{formatTime(tag.timestamp)}</span>
                                         <div className="text-xs text-gray-300">{tag.accion} {tag.resultado && <span className={isSuccess ? 'text-green-300' : 'text-red-300'}>{tag.resultado}</span>}</div>
+                                        {ACCIONES_CON_ZONA.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (
+                                            <button
+                                                onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
+                                                className={`text-xs mt-1 underline ${tag.zona ? 'text-cyan-300' : 'text-gray-400'}`}
+                                                title="Marcar o cambiar la zona de esta jugada"
+                                            >
+                                                {tag.zona ? `Zona: ${etiquetaZona(tag.zona)}` : '+ zona'}
+                                            </button>
+                                        )}
                                         {tag.video_file && <div className="text-xs text-gray-400 mt-1">Video: {tag.video_file} — ts_abs: {tag.timestamp_absolute ?? 'N/A'}</div>}
                                     </div>
                                     <div className="flex items-center gap-2">
@@ -1898,7 +1960,50 @@ const VideoTaggerPage: React.FC = () => {
                     </div>
                 </div>
 
-                {/* "3. Etiquetar Jugada" se quitó: repetía lo que ya está en el panel central (jugador, acción, Etiquetar y Guardar). Aquí irá "Detalle de la jugada". */}
+                {/* "3. Etiquetar Jugada" se quitó en la entrega 2: repetía lo que ya está en el panel central. */}
+                {/* Detalle de la jugada (mejora 1: zona de recuperaciones y pérdidas) */}
+                <div className={`bg-gray-800 rounded-lg p-4 ${detallePendiente ? 'border-2 border-cyan-500' : ''}`}>
+                    <h3 className="text-lg font-semibold mb-2 text-white">Detalle de la jugada</h3>
+                    {detallePendiente ? (() => {
+                        const jug = players.find(p => p.id === detallePendiente.player_id);
+                        return (
+                            <div className="space-y-2">
+                                <p className="text-sm text-gray-200">
+                                    {detallePendiente.accion} · {jug ? `#${jug.numero} ${jug.nombre.trim().split(/\s+/)[0]}` : 'Jugador'} · <span className="text-gray-400">¿dónde fue?</span>
+                                </p>
+                                <div className="grid grid-cols-3 gap-1 text-xs text-gray-400 text-center">
+                                    {TERCIOS.map(t => <span key={t}>{TERCIO_LABEL[t]}</span>)}
+                                </div>
+                                <div className="grid grid-cols-3 gap-1 border-2 border-gray-600 rounded p-1">
+                                    {CARRILES.map(c => TERCIOS.map(t => (
+                                        <button
+                                            key={`${t}-${c}`}
+                                            onClick={() => { aplicarZona(codigoZona(t, c)).then(msg => { setVoiceStatus(msg); setTimeout(() => setVoiceStatus(''), 2500); }); }}
+                                            className="min-h-[44px] rounded bg-gray-700 hover:bg-cyan-700 text-sm text-gray-100 font-semibold"
+                                            title={`${TERCIO_LABEL[t]} · ${CARRIL_LABEL[c].toLowerCase()}`}
+                                        >
+                                            {CARRIL_LABEL[c] === 'Izquierda' ? 'Izq' : CARRIL_LABEL[c] === 'Derecha' ? 'Der' : 'Centro'}
+                                        </button>
+                                    )))}
+                                </div>
+                                <p className="text-xs text-gray-400">Tu equipo ataca hacia la derecha →</p>
+                                <div className="flex items-center gap-2">
+                                    <p className="flex-1 text-sm bg-gray-900 rounded px-2 py-1.5 text-gray-200">
+                                        Di: <span className="text-cyan-300">"creación centro"</span> · o toca la zona · <span className="text-cyan-300">"saltar"</span> la deja sin zona
+                                    </p>
+                                    <button
+                                        onClick={() => { aplicarZona(null).then(msg => { setVoiceStatus(msg); setTimeout(() => setVoiceStatus(''), 2500); }); }}
+                                        className="px-3 py-2 rounded bg-gray-600 hover:bg-gray-500 text-sm whitespace-nowrap"
+                                    >
+                                        Saltar
+                                    </button>
+                                </div>
+                            </div>
+                        );
+                    })() : (
+                        <p className="text-sm text-gray-400">Aparece al etiquetar una recuperación o una pérdida, para marcar en qué zona fue.</p>
+                    )}
+                </div>
 
                 {/* 4. Analisis Asistido por IA */}
                 <div className="bg-gray-800 rounded-lg p-4">
