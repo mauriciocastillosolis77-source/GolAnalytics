@@ -40,7 +40,7 @@ interface ActionStats {
     accion: string;
     total: number;
     logradas: number;
-    efectividad: number;
+    efectividad: number | null; // null = acción que solo se cuenta (ej. Goles recibidos), sin efectividad
 }
 
 function buildPrompt(
@@ -55,7 +55,9 @@ function buildPrompt(
     ).join('\n');
 
     const actionsStr = actionStats.map(a => 
-        `${a.accion}: ${a.total} total, ${a.logradas} logradas, ${a.efectividad}% efectividad`
+        a.efectividad === null
+            ? `${a.accion}: ${a.total} total (solo conteo, no se mide efectividad)`
+            : `${a.accion}: ${a.total} total, ${a.logradas} logradas, ${a.efectividad}% efectividad`
     ).join('\n');
 
     return `Eres un formador de talento en una academia de futbol amateur, especializado en el desarrollo integral de jovenes jugadores. Tu enfoque es constructivo, motivacional y orientado al crecimiento.

@@ -8,6 +8,7 @@ import { ACTION_GROUPS } from '../constants/actionGroups';
 import { analyzePlayerPerformance, type PerformanceAnalysis } from '../services/geminiPerformanceService';
 import { getCachedAnalysis, saveAnalysis, getPlayerAnalysisHistory, formatHistoryDate } from '../services/analysisHistoryService';
 import { exportPlayerAnalysisToPDF } from '../services/pdfExportService';
+import { cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios, esJugadorFicticio, calcularPorcentajeAtajadas, ACCIONES_FUERA_DE_EFECTIVIDAD } from '../utils/efectividad';
 
 const RendimientoPage: React.FC = () => {
     const { profile } = useAuth();
@@ -170,40 +171,13 @@ const RendimientoPage: React.FC = () => {
         setFilters({});
     };
 
-    // Acciones que no tienen un resultado binario 'logrado'/'fallado' en el tag (ver ACTION_GROUPS
-    // y el comentario original en getActionCountByJornada: "solo cuenta total, no hay logrado/fallado").
-    // Para las métricas GLOBALES (KPIs, Efectividad por Jornada, Volumen por Jornada, Tabla por Jornada,
-    // stats por acción para IA), estas acciones se consideran siempre positivas o siempre negativas:
-    // - Atajadas, Goles a favor, Recuperación de balón: siempre cuentan como logradas
-    // - Tiros a portería: siempre cuenta como logrado (acción ofensiva positiva). NOTA: esto es
-    //   distinto al criterio de DashboardPage.tsx, donde "Tiros a portería" se EXCLUYE de la
-    //   Efectividad Global porque ahí ya tiene su propia tasa de conversión dedicada. Aquí en
-    //   RendimientoPage se decidió contarlo como logrado en vez de excluirlo (decisión específica
-    //   de esta vista, confirmada explícitamente).
-    // - Goles recibidos: siempre cuenta como fallada
-    // - "Transición ofensiva lograda" / "Transición ofensiva no lograda": son dos valores de `accion`
-    //   distintos (no usan el campo `resultado`), así que se mapean directamente por nombre.
-    // - Pérdida de balón: siempre cuenta como fallada
-    const SIEMPRE_LOGRADA = new Set<string>([
-        ...ACTION_GROUPS.ATAJADAS,
-        ...ACTION_GROUPS.GOLES,
-        ...ACTION_GROUPS.RECUPERACIONES,
-        ...ACTION_GROUPS.TIROS_GOL,
-        'Transición ofensiva lograda'
-    ]);
-    const SIEMPRE_FALLADA = new Set<string>([
-        ...ACTION_GROUPS.GOLES_RECIBIDOS,
-        'Transición ofensiva no lograda',
-        'Pérdida de balón'
-    ]);
-
-    // Determina si un tag cuenta como "logrado" para las métricas globales de efectividad.
-    // No modifica el dato guardado en la base de datos, solo cómo se interpreta al agregar.
-    const isAccionLograda = useCallback((tag: Tag): boolean => {
-        if (SIEMPRE_LOGRADA.has(tag.accion)) return true;
-        if (SIEMPRE_FALLADA.has(tag.accion)) return false;
-        return tag.resultado === 'logrado';
-    }, []);
+    // Reglas de efectividad: utils/efectividad.ts (compartidas con el Tablero y el reporte de IA).
+    // Goles recibidos y el jugador ficticio "Perdida" no cuentan en efectividad.
+    const idsJugadoresFicticios = useMemo(() => obtenerIdsJugadoresFicticios(players), [players]);
+    const efectividadTags = useMemo(
+        () => playerTags.filter(t => cuentaEnEfectividad(t, idsJugadoresFicticios)),
+        [playerTags, idsJugadoresFicticios]
+    );
 
     // Calculate KPIs
     const kpis = useMemo(() => {
@@ -217,11 +191,11 @@ const RendimientoPage: React.FC = () => {
         }
 
         const totalAcciones = playerTags.length;
-        const accionesLogradas = playerTags.filter(isAccionLograda).length;
-        const efectividadGlobal = Math.round((accionesLogradas / totalAcciones) * 100);
+        const accionesLogradas = efectividadTags.filter(esAccionLograda).length;
+        const efectividadGlobal = efectividadTags.length > 0 ? Math.round((accionesLogradas / efectividadTags.length) * 100) : 0;
 
         // Group by jornada
-        const byJornada = playerTags.reduce((acc, tag) => {
+        const byJornada = efectividadTags.reduce((acc, tag) => {
             const match = matchLookup.get(tag.match_id);
             if (!match) return acc;
 
@@ -230,7 +204,7 @@ const RendimientoPage: React.FC = () => {
                 acc[jornada] = { logradas: 0, total: 0 };
             }
             acc[jornada].total++;
-            if (isAccionLograda(tag)) {
+            if (esAccionLograda(tag)) {
                 acc[jornada].logradas++;
             }
             return acc;
@@ -256,14 +230,14 @@ const RendimientoPage: React.FC = () => {
             mejorJornada,
             peorJornada
         };
-    }, [playerTags, matchLookup]);
+    }, [playerTags, efectividadTags, matchLookup]);
 
     // Calculate data for effectiveness chart (by jornada)
     const efectividadPorJornadaData = useMemo(() => {
-        if (playerTags.length === 0) return [];
+        if (efectividadTags.length === 0) return [];
 
         // Group by jornada
-        const byJornada = playerTags.reduce((acc, tag) => {
+        const byJornada = efectividadTags.reduce((acc, tag) => {
             const match = matchLookup.get(tag.match_id);
             if (!match) return acc;
 
@@ -272,7 +246,7 @@ const RendimientoPage: React.FC = () => {
                 acc[jornada] = { jornada, logradas: 0, falladas: 0, total: 0 };
             }
             acc[jornada].total++;
-            if (isAccionLograda(tag)) {
+            if (esAccionLograda(tag)) {
                 acc[jornada].logradas++;
             } else {
                 acc[jornada].falladas++;
@@ -288,13 +262,13 @@ const RendimientoPage: React.FC = () => {
                 falladas: stats.falladas
             }))
             .sort((a, b) => parseInt(a.jornada.slice(1)) - parseInt(b.jornada.slice(1)));
-    }, [playerTags, matchLookup]);
+    }, [efectividadTags, matchLookup]);
 
     // Calculate data for volume chart (stacked bar)
     const volumenPorJornadaData = useMemo(() => {
-        if (playerTags.length === 0) return [];
+        if (efectividadTags.length === 0) return [];
 
-        const byJornada = playerTags.reduce((acc, tag) => {
+        const byJornada = efectividadTags.reduce((acc, tag) => {
             const match = matchLookup.get(tag.match_id);
             if (!match) return acc;
 
@@ -302,7 +276,7 @@ const RendimientoPage: React.FC = () => {
             if (!acc[jornada]) {
                 acc[jornada] = { jornada, logradas: 0, falladas: 0 };
             }
-            if (isAccionLograda(tag)) {
+            if (esAccionLograda(tag)) {
                 acc[jornada].logradas++;
             } else {
                 acc[jornada].falladas++;
@@ -317,7 +291,7 @@ const RendimientoPage: React.FC = () => {
                 falladas: stats.falladas
             }))
             .sort((a, b) => parseInt(a.jornada.slice(1)) - parseInt(b.jornada.slice(1)));
-    }, [playerTags, matchLookup]);
+    }, [efectividadTags, matchLookup]);
 
     // Helper function to aggregate tags by jornada for specific action types (using exact action names)
     const getActionDataByJornada = (actionNames: readonly string[]) => {
@@ -482,9 +456,9 @@ const RendimientoPage: React.FC = () => {
 
     // Table data
     const tablaRendimiento = useMemo(() => {
-        if (playerTags.length === 0) return [];
+        if (efectividadTags.length === 0) return [];
 
-        const byJornada = playerTags.reduce((acc, tag) => {
+        const byJornada = efectividadTags.reduce((acc, tag) => {
             const match = matchLookup.get(tag.match_id);
             if (!match) return acc;
 
@@ -499,7 +473,7 @@ const RendimientoPage: React.FC = () => {
                 };
             }
             acc[jornada].total++;
-            if (isAccionLograda(tag)) {
+            if (esAccionLograda(tag)) {
                 acc[jornada].logradas++;
             } else {
                 acc[jornada].falladas++;
@@ -513,16 +487,18 @@ const RendimientoPage: React.FC = () => {
                 efectividad: Math.round((stats.logradas / stats.total) * 100)
             }))
             .sort((a, b) => a.jornada - b.jornada);
-    }, [playerTags, matchLookup]);
+    }, [efectividadTags, matchLookup]);
 
     // Filter players by selected equipo filter
+    // El jugador ficticio "Perdida" no aparece en la lista de jugadores.
     const filteredPlayers = useMemo(() => {
-        if (!filters.equipo) return players;
+        const jugadoresReales = players.filter(p => !esJugadorFicticio(p.nombre));
+        if (!filters.equipo) return jugadoresReales;
         // Find matches for this equipo to get team_id
         const equipoMatches = matches.filter(m => m.nombre_equipo === filters.equipo);
-        if (equipoMatches.length === 0) return players;
+        if (equipoMatches.length === 0) return jugadoresReales;
         const teamIds = new Set(equipoMatches.map(m => m.team_id));
-        return players.filter(p => teamIds.has(p.team_id));
+        return jugadoresReales.filter(p => teamIds.has(p.team_id));
     }, [players, matches, filters.equipo]);
 
     // Reset selected player when equipo filter changes
@@ -535,20 +511,36 @@ const RendimientoPage: React.FC = () => {
     const selectedPlayer = players.find(p => p.id === selectedPlayerId);
 
     // Calculate action stats for AI analysis
+    // Goles recibidos se manda a la IA solo como conteo (efectividad null), para que no lo lea como "0% de efectividad".
     const actionStats = useMemo(() => {
         const stats = new Map<string, { total: number; logradas: number }>();
         playerTags.forEach(tag => {
             const current = stats.get(tag.accion) || { total: 0, logradas: 0 };
             current.total++;
-            if (isAccionLograda(tag)) current.logradas++;
+            if (esAccionLograda(tag)) current.logradas++;
             stats.set(tag.accion, current);
         });
-        return Array.from(stats.entries()).map(([accion, data]) => ({
-            accion,
-            total: data.total,
-            logradas: data.logradas,
-            efectividad: data.total > 0 ? Math.round((data.logradas / data.total) * 100) : 0
-        })).sort((a, b) => b.total - a.total);
+        return Array.from(stats.entries()).map(([accion, data]) => {
+            const soloConteo = ACCIONES_FUERA_DE_EFECTIVIDAD.has(accion);
+            return {
+                accion,
+                total: data.total,
+                logradas: soloConteo ? 0 : data.logradas,
+                efectividad: soloConteo ? null : (data.total > 0 ? Math.round((data.logradas / data.total) * 100) : 0)
+            };
+        }).sort((a, b) => b.total - a.total);
+    }, [playerTags]);
+
+    // % de atajadas del jugador seleccionado (solo aplica a porteros).
+    const porteriaJugador = useMemo(() => {
+        const atajadas = playerTags.filter(t => t.accion === 'Atajadas').length;
+        const golesRecibidos = playerTags.filter(t => t.accion === 'Goles recibidos').length;
+        return {
+            atajadas,
+            golesRecibidos,
+            tirosRecibidos: atajadas + golesRecibidos,
+            porcentajeAtajadas: calcularPorcentajeAtajadas(atajadas, golesRecibidos)
+        };
     }, [playerTags]);
 
     // Jornada stats for AI analysis
@@ -1106,6 +1098,30 @@ const RendimientoPage: React.FC = () => {
                         <h2 className="text-2xl font-bold mb-6 text-white border-b border-gray-700 pb-3">
                             🛡️ DEFENSA Y PORTERÍA
                         </h2>
+                        {porteriaJugador.tirosRecibidos > 0 && (
+                            <div className="bg-gray-800 rounded-lg p-6 mb-6">
+                                <div className="grid grid-cols-3 items-center text-center">
+                                    <div>
+                                        <p className="text-4xl font-bold text-yellow-500">{porteriaJugador.atajadas}</p>
+                                        <p className="text-gray-400 mt-2">Atajadas</p>
+                                    </div>
+                                    <div className="border-l border-r border-gray-700">
+                                        <p className="text-4xl font-bold text-red-500">{porteriaJugador.golesRecibidos}</p>
+                                        <p className="text-gray-400 mt-2">Goles Recibidos</p>
+                                    </div>
+                                    <div>
+                                        <p className="text-4xl font-bold text-cyan-400">
+                                            {porteriaJugador.porcentajeAtajadas === null ? '—' : `${porteriaJugador.porcentajeAtajadas.toFixed(1)}%`}
+                                        </p>
+                                        <p className="text-gray-400 mt-2">% de Atajadas ({porteriaJugador.atajadas} de {porteriaJugador.tirosRecibidos})</p>
+                                    </div>
+                                </div>
+                                <div className="flex h-2 rounded-full overflow-hidden bg-gray-700 mt-4">
+                                    <div className="bg-yellow-500" style={{ width: `${porteriaJugador.porcentajeAtajadas ?? 0}%` }}></div>
+                                    <div className="bg-red-500 flex-1"></div>
+                                </div>
+                            </div>
+                        )}
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                             {/* Atajadas */}
                             <div className="bg-gray-800 rounded-lg p-6">
