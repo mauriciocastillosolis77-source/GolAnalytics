@@ -2,7 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useAuth } from '../../contexts/AuthContext';
 import { ROLES } from '../../constants';
-import { DashboardIcon, Logo, TaggerIcon, UsersIcon, RendimientoIcon, TacticalIcon, ScoutIcon } from '../ui/Icons';
+import { DashboardIcon, Logo, TaggerIcon, UsersIcon, RendimientoIcon, TacticalIcon, ScoutIcon, ReportIcon } from '../ui/Icons';
 
 const _forceTailwindClasses = ["translate-x-0", "-translate-x-64"];
 
@@ -126,6 +126,16 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
               >
                 <UsersIcon />
                 <span className="ml-3">Usuarios</span>
+              </NavLink>
+              <NavLink
+                to="/generar-reportes"
+                className={({ isActive }) =>
+                  `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
+                }
+                onClick={() => setSidebarOpen(false)}
+              >
+                <ReportIcon />
+                <span className="ml-3">Generar Reportes</span>
               </NavLink>
             </>
           )}

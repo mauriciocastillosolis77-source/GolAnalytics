@@ -106,3 +106,11 @@ export const ScoutIcon: React.FC<IconProps> = ({ className }) => (
     </svg>
 );
 
+// Ícono de documento con esquina doblada — para "Generar Reportes"
+export const ReportIcon: React.FC<IconProps> = ({ className }) => (
+    <svg className={className || "w-6 h-6"} fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M14 3v5h5M6 3h8l5 5v13H6z"></path>
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 13h6M9 17h6"></path>
+    </svg>
+);
+
