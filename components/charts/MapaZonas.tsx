@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import type { Tag, Match } from '../../types';
 import { TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona } from '../../utils/zonas';
+import { PITCH_BASE64 } from '../../constants/pitchBase64';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mapa de 9 zonas (mejora 1). Cuenta en qué zona de la cancha ocurrieron las
@@ -21,7 +22,8 @@ interface MapaZonasProps {
     nombreAccion: string;
 }
 
-const RGB = { verde: '22,163,74', rojo: '220,38,38' };
+// Sobre la cancha verde, las recuperaciones se pintan en cian (en verde no se distinguirían) y las pérdidas en rojo.
+const RGB = { verde: '34,211,238', rojo: '239,68,68' };
 
 const MapaZonas: React.FC<MapaZonasProps> = ({ titulo, tags, color, matches, nombreAccion }) => {
     const [jornadaSel, setJornadaSel] = useState<number | 'todas'>('todas');
@@ -87,30 +89,44 @@ const MapaZonas: React.FC<MapaZonasProps> = ({ titulo, tags, color, matches, nom
                 </div>
             )}
 
-            <div className="grid gap-1 text-xs text-gray-400" style={{ gridTemplateColumns: '70px repeat(3, minmax(0, 1fr))' }}>
+            <div className="grid gap-1 text-xs text-gray-400" style={{ gridTemplateColumns: '64px repeat(3, minmax(0, 1fr))' }}>
                 <span></span>
                 {TERCIOS.map(t => <span key={t} className="text-center">{TERCIO_LABEL[t]}</span>)}
             </div>
-            <div className="grid gap-1" style={{ gridTemplateColumns: '70px minmax(0, 1fr)' }}>
-                <div className="grid gap-1 text-xs text-gray-400" style={{ gridTemplateRows: 'repeat(3, 56px)' }}>
+            <div className="grid gap-1" style={{ gridTemplateColumns: '64px minmax(0, 1fr)' }}>
+                <div className="grid text-xs text-gray-400" style={{ gridTemplateRows: 'repeat(3, minmax(0, 1fr))' }}>
                     {CARRILES.map(c => <span key={c} className="flex items-center">{CARRIL_LABEL[c]}</span>)}
                 </div>
-                <div className="grid grid-cols-3 gap-1 border-2 border-gray-600 rounded p-1" style={{ gridTemplateRows: 'repeat(3, 56px)' }}>
-                    {CARRILES.map(c => TERCIOS.map(t => {
-                        const k = codigoZona(t, c);
-                        const v = conteo[k] || 0;
-                        const alpha = max > 0 ? (v === 0 ? 0.06 : 0.18 + 0.82 * (v / max)) : 0.06;
-                        return (
-                            <div
-                                key={k}
-                                className="rounded flex items-center justify-center text-lg font-bold text-white"
-                                style={{ backgroundColor: `rgba(${RGB[color]}, ${alpha.toFixed(2)})` }}
-                                title={`${TERCIO_LABEL[t]} · ${CARRIL_LABEL[c].toLowerCase()}: ${v}`}
-                            >
-                                {v > 0 ? v : ''}
-                            </div>
-                        );
-                    }))}
+                {/* Cancha (la misma imagen del reporte) con las 9 zonas encima */}
+                <div
+                    className="relative w-full rounded overflow-hidden"
+                    style={{ aspectRatio: '326 / 207', backgroundImage: `url(${PITCH_BASE64})`, backgroundSize: '100% 100%' }}
+                >
+                    <div className="absolute inset-0 grid grid-cols-3" style={{ gridTemplateRows: 'repeat(3, minmax(0, 1fr))' }}>
+                        {CARRILES.map((c, r) => TERCIOS.map((t, i) => {
+                            const k = codigoZona(t, c);
+                            const v = conteo[k] || 0;
+                            const alpha = max > 0 && v > 0 ? 0.25 + 0.6 * (v / max) : 0;
+                            return (
+                                <div
+                                    key={k}
+                                    className="flex items-center justify-center"
+                                    style={{
+                                        backgroundColor: `rgba(${RGB[color]}, ${alpha.toFixed(2)})`,
+                                        borderRight: i < 2 ? '1px dashed rgba(255,255,255,0.55)' : undefined,
+                                        borderBottom: r < 2 ? '1px dashed rgba(255,255,255,0.55)' : undefined,
+                                    }}
+                                    title={`${TERCIO_LABEL[t]} · ${CARRIL_LABEL[c].toLowerCase()}: ${v}`}
+                                >
+                                    {v > 0 && (
+                                        <span className="min-w-[32px] h-8 px-2 rounded-full bg-gray-900/80 text-white text-base font-bold flex items-center justify-center">
+                                            {v}
+                                        </span>
+                                    )}
+                                </div>
+                            );
+                        }))}
+                    </div>
                 </div>
             </div>
             <p className="text-xs text-gray-400">Tu equipo ataca hacia la derecha →</p>
