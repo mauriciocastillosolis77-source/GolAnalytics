@@ -8,6 +8,7 @@ import { saveTeamAnalysis, getCachedTeamAnalysis, getTeamAnalysisHistory } from 
 import { exportTeamAnalysisToPDF } from '../services/pdfExportService';
 import { useAuth } from '../contexts/AuthContext';
 import { cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios, esTagDeJugadorFicticio, calcularPorcentajeAtajadas } from '../utils/efectividad';
+import MapaZonas from '../components/charts/MapaZonas';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, Cell, Treemap, ScatterChart, Scatter } from 'recharts';
 
 type Filters = {
@@ -248,6 +249,16 @@ const DashboardPage: React.FC = () => {
 
     // Ids del jugador ficticio "Perdida" (no cuenta en efectividad ni en acciones totales).
     const idsJugadoresFicticios = useMemo(() => obtenerIdsJugadoresFicticios(players), [players]);
+
+    // Mejora 1: recuperaciones y pérdidas de jugadores reales (sin el ficticio "Perdida") para los mapas de zonas.
+    const tagsRecuperacionConJugadorReal = useMemo(
+        () => filteredTags.filter(t => t.accion === 'Recuperación de balón' && !esTagDeJugadorFicticio(t, idsJugadoresFicticios)),
+        [filteredTags, idsJugadoresFicticios]
+    );
+    const tagsPerdidaConJugadorReal = useMemo(
+        () => filteredTags.filter(t => t.accion === 'Pérdida de balón' && !esTagDeJugadorFicticio(t, idsJugadoresFicticios)),
+        [filteredTags, idsJugadoresFicticios]
+    );
 
     const filterOptions = useMemo(() => {
         const torneo = [...new Set(matches.map(m => m.torneo).filter(Boolean))];
@@ -940,7 +951,7 @@ const DashboardPage: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* TRANSICIONES Y RECUPERACION BALON */}
+                    {/* TRANSICIONES: cantidad y tiempo, juntas */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <div className="bg-gray-800 p-6 rounded-lg h-80">
                             <h3 className="text-lg font-semibold text-white mb-4">Transiciones Ofensivas (Logradas vs No Logradas)</h3>
@@ -961,22 +972,6 @@ const DashboardPage: React.FC = () => {
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
-                        <div className="bg-gray-800 p-6 rounded-lg h-80">
-                            <h3 className="text-lg font-semibold text-white mb-4">Recuperación de Balón por Jornada</h3>
-                            <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={recuperacionBalonPorJornada} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                    <XAxis dataKey="name" stroke="#9CA3AF" />
-                                    <YAxis stroke="#9CA3AF" allowDecimals={false} />
-                                    <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    <Bar dataKey="value" fill="#16A34A" />
-                                </BarChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </div>
-
-                    {/* SCATTER PLOTS */}
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <div className="bg-gray-800 p-6 rounded-lg h-80">
                             <h3 className="text-lg font-semibold text-white mb-4">Tiempo de Transiciones Ofensivas Logradas</h3>
                             <ResponsiveContainer width="100%" height="100%">
@@ -1024,6 +1019,27 @@ const DashboardPage: React.FC = () => {
                               {`Puntos encontrados: ${scatterTransicionesData.length}`}
                             </div>
                         </div>
+                    </div>
+
+                    {/* RECUPERACIONES: por jornada y dónde (mejora 1) */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div className="bg-gray-800 p-6 rounded-lg h-80">
+                            <h3 className="text-lg font-semibold text-white mb-4">Recuperación de Balón por Jornada</h3>
+                            <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={recuperacionBalonPorJornada} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                    <XAxis dataKey="name" stroke="#9CA3AF" />
+                                    <YAxis stroke="#9CA3AF" allowDecimals={false} />
+                                    <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
+                                    <Bar dataKey="value" fill="#16A34A" />
+                                </BarChart>
+                            </ResponsiveContainer>
+                        </div>
+                        <MapaZonas titulo="Dónde recuperamos" tags={tagsRecuperacionConJugadorReal} color="verde" nombreAccion="recuperaciones" />
+                    </div>
+
+                    {/* PÉRDIDAS: tiempo de recuperación y dónde perdemos (mejora 1) */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <div className="bg-gray-800 p-6 rounded-lg h-80">
                             <h3 className="text-lg font-semibold text-white mb-4">Tiempo de Recuperación de Balón</h3>
                             <ResponsiveContainer width="100%" height="100%">
@@ -1072,6 +1088,7 @@ const DashboardPage: React.FC = () => {
                               {`Puntos encontrados: ${scatterRecuperacionesData.length}`}
                             </div>
                         </div>
+                        <MapaZonas titulo="Dónde perdemos" tags={tagsPerdidaConJugadorReal} color="rojo" nombreAccion="pérdidas" />
                     </div>
                 </div>
             )}

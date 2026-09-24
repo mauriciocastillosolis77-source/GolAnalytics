@@ -9,6 +9,7 @@ import { analyzePlayerPerformance, type PerformanceAnalysis } from '../services/
 import { getCachedAnalysis, saveAnalysis, getPlayerAnalysisHistory, formatHistoryDate } from '../services/analysisHistoryService';
 import { exportPlayerAnalysisToPDF } from '../services/pdfExportService';
 import { cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios, esJugadorFicticio, calcularPorcentajeAtajadas, ACCIONES_FUERA_DE_EFECTIVIDAD } from '../utils/efectividad';
+import MapaZonas from '../components/charts/MapaZonas';
 
 const RendimientoPage: React.FC = () => {
     const { profile } = useAuth();
@@ -1024,28 +1025,6 @@ const RendimientoPage: React.FC = () => {
                                 )}
                             </div>
 
-                            {/* Recuperaciones de Balón */}
-                            <div className="bg-gray-800 rounded-lg p-6">
-                                <h3 className="text-lg font-semibold mb-4 text-white">Recuperaciones de Balón</h3>
-                                {recuperacionesData.length === 0 ? (
-                                    <p className="text-gray-400 text-center py-8">Sin datos de recuperaciones</p>
-                                ) : (
-                                    <ResponsiveContainer width="100%" height={300}>
-                                        <BarChart data={recuperacionesData}>
-                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
-                                            <YAxis stroke="#9CA3AF" />
-                                            <Tooltip
-                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
-                                                labelStyle={{ color: '#F3F4F6' }}
-                                            />
-                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
-                                            <Bar dataKey="total" fill="#10B981" name="Recuperaciones" />
-                                        </BarChart>
-                                    </ResponsiveContainer>
-                                )}
-                            </div>
-
                             {/* Transiciones Ofensivas */}
                             <div className="bg-gray-800 rounded-lg p-6">
                                 <h3 className="text-lg font-semibold mb-4 text-white">Transiciones Ofensivas</h3>
@@ -1069,6 +1048,31 @@ const RendimientoPage: React.FC = () => {
                                 )}
                             </div>
 
+                            {/* Recuperaciones de Balón */}
+                            <div className="bg-gray-800 rounded-lg p-6">
+                                <h3 className="text-lg font-semibold mb-4 text-white">Recuperaciones de Balón</h3>
+                                {recuperacionesData.length === 0 ? (
+                                    <p className="text-gray-400 text-center py-8">Sin datos de recuperaciones</p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height={300}>
+                                        <BarChart data={recuperacionesData}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
+                                            <YAxis stroke="#9CA3AF" />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
+                                                labelStyle={{ color: '#F3F4F6' }}
+                                            />
+                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
+                                            <Bar dataKey="total" fill="#10B981" name="Recuperaciones" />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </div>
+
+                            {/* Dónde recupera (mejora 1) */}
+                            <MapaZonas titulo="Dónde recupera" tags={playerTags.filter(t => t.accion === 'Recuperación de balón')} color="verde" matches={matches} nombreAccion="recuperaciones" />
+
                             {/* Pérdida de Balón */}
                             <div className="bg-gray-800 rounded-lg p-6">
                                 <h3 className="text-lg font-semibold mb-4 text-white">Pérdida de Balón</h3>
@@ -1090,6 +1094,8 @@ const RendimientoPage: React.FC = () => {
                                     </ResponsiveContainer>
                                 )}
                             </div>
+                            {/* Dónde pierde (mejora 1) */}
+                            <MapaZonas titulo="Dónde pierde" tags={playerTags.filter(t => t.accion === 'Pérdida de balón')} color="rojo" matches={matches} nombreAccion="pérdidas" />
                         </div>
                     </div>
 
