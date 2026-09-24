@@ -35,6 +35,10 @@ export interface Tag {
   created_at?: string;
   // Campo para tracking de sugerencias de IA (entrenamiento de modelo)
   ai_suggested?: boolean;
+  // Zona de la cancha donde ocurrió la acción (ej. "creacion-centro"). Ver utils/zonas.ts.
+  zona?: string | null;
+  // Datos extra de la jugada (tipo de gol, balón parado, penal). Se usará en entregas siguientes.
+  detalle?: Record<string, any> | null;
 }
 
 export interface AISuggestion {
