@@ -237,6 +237,21 @@ function summarizeZone(rival: RivalAnalysis, tipo: RivalTipo, zona: RivalZona): 
   return `${text}.`;
 }
 
+// Dibuja la cancha real con las 3 etiquetas de zona encima (Inicio/Creación/
+// Finalización) — la base compartida por las 4 canchas del reporte (rival
+// ofensiva/defensiva, propia ofensiva/defensiva). Devuelve las coordenadas
+// del campo de juego para que cada llamador dibuje su propio overlay encima.
+function drawZonedPitch(pres: pptxgen, slide: pptxgen.Slide, x: number, y: number) {
+  const gw = 2.9, gh = 1.84;
+  slide.addImage({ data: PITCH_BASE64, x, y, w: gw, h: gh });
+  const zoneW = gw / 3;
+  ['Inicio', 'Creación', 'Finalización'].forEach((label, i) => {
+    slide.addShape(pres.ShapeType.roundRect, { x: x + i * zoneW + zoneW / 2 - 0.5, y: y + 0.06, w: 1, h: 0.24, rectRadius: 0.1, fill: { color: COLOR.navy }, line: { type: 'none' } });
+    slide.addText(label, { x: x + i * zoneW + zoneW / 2 - 0.5, y: y + 0.06, w: 1, h: 0.24, fontFace: FONT_BODY, fontSize: 8, bold: true, color: COLOR.white, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
+  });
+  return { gw, gh, zoneW };
+}
+
 // Cancha real (imagen que subió el usuario) con las 3 zonas etiquetadas
 // encima — Inicio / Creación / Finalización. Se usa donde SÍ hay un dato real
 // por cada una de las 3 zonas (Análisis del Rival).
@@ -244,14 +259,8 @@ function pitchBand3(pres: pptxgen, slide: pptxgen.Slide, x: number, y: number, w
   slide.addShape(pres.ShapeType.roundRect, { x, y, w, h: 0.4, rectRadius: 0.06, fill: { color: COLOR.indigoDark }, line: { type: 'none' } });
   slide.addText(title.toUpperCase(), { x: x + 0.2, y, w: w - 0.4, h: 0.4, fontFace: FONT_BODY, fontSize: 11.5, bold: true, color: COLOR.white, valign: 'middle', charSpacing: 1, isTextBox: true, margin: 0 });
 
-  const gy = y + 0.55, gw = 2.9, gh = 1.84;
-  slide.addImage({ data: PITCH_BASE64, x, y: gy, w: gw, h: gh });
-
-  const zoneW = gw / 3;
-  phases.forEach((p, i) => {
-    slide.addShape(pres.ShapeType.roundRect, { x: x + i * zoneW + zoneW / 2 - 0.5, y: gy + 0.06, w: 1, h: 0.24, rectRadius: 0.1, fill: { color: COLOR.navy }, line: { type: 'none' } });
-    slide.addText(p.label, { x: x + i * zoneW + zoneW / 2 - 0.5, y: gy + 0.06, w: 1, h: 0.24, fontFace: FONT_BODY, fontSize: 8, bold: true, color: COLOR.white, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
-  });
+  const gy = y + 0.55;
+  const { gw, gh } = drawZonedPitch(pres, slide, x, gy);
 
   const legendX = x + gw + 0.35, legendW = w - gw - 0.35;
   const rowH = gh / 3;
@@ -267,19 +276,51 @@ function pitchBand3(pres: pptxgen, slide: pptxgen.Slide, x: number, y: number, w
   return gy + gh;
 }
 
-// Versión de UNA sola franja — para cuando solo hay un dato agregado del
-// partido completo (no 3 zonas reales medidas). Misma cancha real, sin
-// dividir en 3 — no se finge una medición por zona que no existe.
-function pitchBandSingle(pres: pptxgen, slide: pptxgen.Slide, x: number, y: number, w: number, title: string, valueLabel: string, valueText: string) {
+// Fase ofensiva propia: cancha con zonas + una flecha que corre de Inicio a
+// Finalización por el carril detectado (izquierda/centro/derecha).
+function pitchOfensivaPropia(pres: pptxgen, slide: pptxgen.Slide, x: number, y: number, w: number, title: string, estiloLabel: string, carrilLabel: string, carrilSide: 'izquierda' | 'derecha' | 'centro' | null) {
   slide.addShape(pres.ShapeType.roundRect, { x, y, w, h: 0.4, rectRadius: 0.06, fill: { color: COLOR.indigoDark }, line: { type: 'none' } });
   slide.addText(title.toUpperCase(), { x: x + 0.2, y, w: w - 0.4, h: 0.4, fontFace: FONT_BODY, fontSize: 11.5, bold: true, color: COLOR.white, valign: 'middle', charSpacing: 1, isTextBox: true, margin: 0 });
 
-  const gy = y + 0.55, gw = 2.9, gh = 1.84;
-  slide.addImage({ data: PITCH_BASE64, x, y: gy, w: gw, h: gh });
+  const gy = y + 0.55;
+  const { gw, gh } = drawZonedPitch(pres, slide, x, gy);
+
+  if (carrilSide) {
+    const arrowY = carrilSide === 'izquierda' ? gy + gh * 0.22 : carrilSide === 'derecha' ? gy + gh * 0.78 : gy + gh * 0.5;
+    slide.addShape(pres.ShapeType.line, {
+      x: x + 0.18, y: arrowY, w: gw - 0.36, h: 0,
+      line: { color: COLOR.gold, width: 3, endArrowType: 'triangle' },
+    });
+  }
 
   const legendX = x + gw + 0.35, legendW = w - gw - 0.35;
-  slide.addText(valueLabel, { x: legendX, y: gy + 0.1, w: legendW, h: 0.3, fontFace: FONT_BODY, fontSize: 10.5, bold: true, color: COLOR.indigo, isTextBox: true, margin: 0 });
-  slide.addText(valueText, { x: legendX, y: gy + 0.42, w: legendW, h: gh - 0.5, fontFace: FONT_BODY, fontSize: 11, color: COLOR.ink, valign: 'top', isTextBox: true, margin: 0 });
+  slide.addText('Estilo de construcción', { x: legendX, y: gy + 0.05, w: legendW, h: 0.28, fontFace: FONT_BODY, fontSize: 10.5, bold: true, color: COLOR.indigo, isTextBox: true, margin: 0 });
+  slide.addText(estiloLabel, { x: legendX, y: gy + 0.34, w: legendW, h: 0.5, fontFace: FONT_BODY, fontSize: 10.5, color: COLOR.ink, isTextBox: true, margin: 0 });
+  slide.addText('Carril dominante', { x: legendX, y: gy + 0.92, w: legendW, h: 0.28, fontFace: FONT_BODY, fontSize: 10.5, bold: true, color: COLOR.indigo, isTextBox: true, margin: 0 });
+  slide.addText(carrilLabel, { x: legendX, y: gy + 1.21, w: legendW, h: 0.6, fontFace: FONT_BODY, fontSize: 10.5, color: COLOR.ink, isTextBox: true, margin: 0 });
+  return gy + gh;
+}
+
+// Fase defensiva propia: cancha con zonas + la zona correspondiente al bloque
+// detectado remarcada con borde punteado (bajo→Inicio, medio→Creación, alto→Finalización).
+function pitchDefensivaPropia(pres: pptxgen, slide: pptxgen.Slide, x: number, y: number, w: number, title: string, bloqueLabel: string, bloqueAltura: 'alto' | 'medio' | 'bajo' | null) {
+  slide.addShape(pres.ShapeType.roundRect, { x, y, w, h: 0.4, rectRadius: 0.06, fill: { color: COLOR.indigoDark }, line: { type: 'none' } });
+  slide.addText(title.toUpperCase(), { x: x + 0.2, y, w: w - 0.4, h: 0.4, fontFace: FONT_BODY, fontSize: 11.5, bold: true, color: COLOR.white, valign: 'middle', charSpacing: 1, isTextBox: true, margin: 0 });
+
+  const gy = y + 0.55;
+  const { gw, gh, zoneW } = drawZonedPitch(pres, slide, x, gy);
+
+  if (bloqueAltura) {
+    const zoneIndex = bloqueAltura === 'bajo' ? 0 : bloqueAltura === 'medio' ? 1 : 2;
+    slide.addShape(pres.ShapeType.rect, {
+      x: x + zoneIndex * zoneW + 0.04, y: gy + 0.04, w: zoneW - 0.08, h: gh - 0.08,
+      fill: { type: 'none' }, line: { color: COLOR.gold, width: 2.5, dashType: 'dash' },
+    });
+  }
+
+  const legendX = x + gw + 0.35, legendW = w - gw - 0.35;
+  slide.addText('Bloque de presión', { x: legendX, y: gy + 0.05, w: legendW, h: 0.28, fontFace: FONT_BODY, fontSize: 10.5, bold: true, color: COLOR.indigo, isTextBox: true, margin: 0 });
+  slide.addText(bloqueLabel, { x: legendX, y: gy + 0.34, w: legendW, h: gh - 0.4, fontFace: FONT_BODY, fontSize: 10.5, color: COLOR.ink, valign: 'top', isTextBox: true, margin: 0 });
   return gy + gh;
 }
 
@@ -308,6 +349,7 @@ function calcularEstiloDeJuego(tags: Tag[], players: Player[], positionsMap?: Ma
   // Lateral Derecho / Extremo Derecho, etc.); sin eso, `players.posicion` solo
   // trae Defensa/Medio/Delantero/Portero y no dice de qué lado.
   let carril = 'No disponible — sube el Excel con posiciones detalladas (lateral izquierdo/derecho) para calcularlo.';
+  let carrilSide: 'izquierda' | 'derecha' | 'centro' | null = null;
   if (positionsMap) {
     const izq = { count: 0 };
     const der = { count: 0 };
@@ -324,11 +366,16 @@ function calcularEstiloDeJuego(tags: Tag[], players: Player[], positionsMap?: Ma
     const totalLateral = izq.count + der.count;
     if (totalLateral > 0) {
       const pctIzq = Math.round((izq.count / totalLateral) * 100);
-      carril = izq.count === der.count
-        ? `Repartido por igual entre ambos costados (${pctIzq}% izquierda / ${100 - pctIzq}% derecha).`
-        : izq.count > der.count
-          ? `Predominantemente por la izquierda (${pctIzq}% de los pases de jugadores de banda).`
-          : `Predominantemente por la derecha (${100 - pctIzq}% de los pases de jugadores de banda).`;
+      if (izq.count === der.count) {
+        carril = `Repartido por igual entre ambos costados (${pctIzq}% izquierda / ${100 - pctIzq}% derecha).`;
+        carrilSide = 'centro';
+      } else if (izq.count > der.count) {
+        carril = `Predominantemente por la izquierda (${pctIzq}% de los pases de jugadores de banda).`;
+        carrilSide = 'izquierda';
+      } else {
+        carril = `Predominantemente por la derecha (${100 - pctIzq}% de los pases de jugadores de banda).`;
+        carrilSide = 'derecha';
+      }
     } else {
       carril = 'El Excel no trae jugadores con posición lateral (izquierda/derecha) que hayan participado en pases.';
     }
@@ -358,29 +405,34 @@ function calcularEstiloDeJuego(tags: Tag[], players: Player[], positionsMap?: Ma
   });
   const totalDuelos = duelosGanadosPorGrupo.Delantero + duelosGanadosPorGrupo.Medio + duelosGanadosPorGrupo.Defensa;
   let bloque = 'Sin suficientes 1 vs 1 defensivos ganados con posición registrada.';
+  let bloqueAltura: 'alto' | 'medio' | 'bajo' | null = null;
   if (totalDuelos > 0) {
     const top = (Object.entries(duelosGanadosPorGrupo) as Array<[string, number]>).sort((a, b) => b[1] - a[1])[0];
     const pct = Math.round((top[1] / totalDuelos) * 100);
-    const alturaPorGrupo: Record<string, string> = { Delantero: 'alto', Medio: 'medio', Defensa: 'bajo' };
-    bloque = `Bloque ${alturaPorGrupo[top[0]]} (${pct}% de los 1 vs 1 defensivos ganados fueron de jugadores de ${top[0].toLowerCase()}).`;
+    const alturaPorGrupo: Record<string, 'alto' | 'medio' | 'bajo'> = { Delantero: 'alto', Medio: 'medio', Defensa: 'bajo' };
+    bloqueAltura = alturaPorGrupo[top[0]];
+    bloque = `Bloque ${bloqueAltura} (${pct}% de los 1 vs 1 defensivos ganados fueron de jugadores de ${top[0].toLowerCase()}).`;
   }
 
-  return { estilo, carril, bloque };
+  return { estilo, carril, carrilSide, bloque, bloqueAltura };
 }
 
-// Empareja el nombre que devuelve la IA con la fila real de `players` — no
-// siempre coinciden letra por letra (la IA a veces acorta "Kevin Reyes" a
-// solo "Kevin"), así que primero intenta exacto y si no, por contención /
-// primer nombre, antes de rendirse.
-function findPlayerByName(players: Player[], nombre: string): Player | undefined {
+// Empareja el nombre que devuelve la IA con la(s) fila(s) reales de `players`
+// — no siempre coinciden letra por letra (la IA a veces acorta "Kevin Reyes"
+// a solo "Kevin"), así que prueba exacto, luego contención, luego primer
+// nombre. Devuelve TODOS los candidatos (no solo el primero): si hay dos
+// jugadores cuyo nombre contiene "Kevin", quedarse con el primero que
+// aparezca en la lista puede ser el jugador equivocado — el llamador decide
+// cuál de los candidatos tiene tags reales en este partido.
+function findPlayerCandidates(players: Player[], nombre: string): Player[] {
   const norm = (s: string) => s.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   const target = norm(nombre);
-  let found = players.find((p) => norm(p.nombre) === target);
-  if (found) return found;
-  found = players.find((p) => norm(p.nombre).includes(target) || target.includes(norm(p.nombre)));
-  if (found) return found;
+  let found = players.filter((p) => norm(p.nombre) === target);
+  if (found.length > 0) return found;
+  found = players.filter((p) => norm(p.nombre).includes(target) || target.includes(norm(p.nombre)));
+  if (found.length > 0) return found;
   const targetFirst = target.split(/\s+/)[0];
-  return players.find((p) => norm(p.nombre).split(/\s+/).some((tok) => tok.replace('.', '') === targetFirst));
+  return players.filter((p) => norm(p.nombre).split(/\s+/).some((tok) => tok.replace('.', '') === targetFirst));
 }
 
 // Reescribe UNA nota del checklist de Modelo de Juego a tono de director
@@ -476,7 +528,17 @@ export async function generateMatchReportPptx(
   }
 
   const destacadosConDatos = analysis.jugadoresDestacados.slice(0, 4).map((jd) => {
-    const player = findPlayerByName(players, jd.nombre);
+    const candidatos = findPlayerCandidates(players, jd.nombre);
+    // Si hay varios candidatos (ej. dos "Kevin"), se queda con el que
+    // realmente tiene acciones en este partido — no con el primero de la lista.
+    let player: Player | undefined;
+    if (candidatos.length <= 1) {
+      player = candidatos[0];
+    } else {
+      player = candidatos
+        .map((p) => ({ p, n: tags.filter((t) => t.player_id === p.id).length }))
+        .sort((a, b) => b.n - a.n)[0].p;
+    }
     const playerTags = player ? tags.filter((t) => t.player_id === player.id) : [];
     const acciones = playerTags.length;
     const efectividad = acciones > 0 ? calcularEfectividad(playerTags) : null;
@@ -594,14 +656,11 @@ export async function generateMatchReportPptx(
     slide.background = { color: COLOR.white };
     sectionHeader(slide, 'Rendimiento táctico', 'Cómo jugamos — estilo de este partido');
 
-    const bottom1 = pitchBandSingle(pres, slide, 0.6, 1.6, 11.8, 'Fase ofensiva · ¿Cómo atacamos cuando tenemos el balón?',
-      'Estilo de construcción y carril', `${estiloDeJuego.estilo}. ${estiloDeJuego.carril}`);
-    pitchBandSingle(pres, slide, 0.6, bottom1 + 0.25, 11.8, 'Fase defensiva · ¿Cómo presionamos cuando no tenemos el balón?',
-      'Bloque de presión', estiloDeJuego.bloque);
+    const bottom1 = pitchOfensivaPropia(pres, slide, 0.6, 1.6, 11.8, 'Fase ofensiva · ¿Cómo atacamos cuando tenemos el balón?',
+      estiloDeJuego.estilo, estiloDeJuego.carril, estiloDeJuego.carrilSide);
+    pitchDefensivaPropia(pres, slide, 0.6, bottom1 + 0.25, 11.8, 'Fase defensiva · ¿Cómo presionamos cuando no tenemos el balón?',
+      estiloDeJuego.bloque, estiloDeJuego.bloqueAltura);
 
-    slide.addText('Es un resumen del partido completo, no dividido en Inicio/Creación/Finalización — el etiquetado actual no registra en qué momento del partido ocurrió cada acción.', {
-      x: 0.6, y: 6.55, w: 11.8, h: 0.4, fontFace: FONT_BODY, fontSize: 9.5, italic: true, color: COLOR.gray, isTextBox: true, margin: 0,
-    });
     footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
 
@@ -735,6 +794,26 @@ export async function generateMatchReportPptx(
       );
     });
     footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+  }
+
+  // Slide — Cierre / CTA (el mismo diseño aprobado en el v5)
+  {
+    const slide = pres.addSlide();
+    slide.background = { color: COLOR.navy };
+    slide.addImage({ data: LOGO_BASE64, x: 9.8, y: 0.55, w: 1.05, h: 1.23 });
+
+    slide.addText('¿Quieres profundizar?', { x: 0.9, y: 1.6, w: 10, h: 0.7, fontFace: FONT_HEAD, fontSize: 32, bold: true, color: COLOR.white, isTextBox: true, margin: 0 });
+    slide.addText('Este resumen es un extracto. El análisis completo — video por jugada, comparativo histórico y reporte de rendimiento con IA — está siempre disponible en la plataforma.', {
+      x: 0.9, y: 2.35, w: 8.8, h: 1.0, fontFace: FONT_BODY, fontSize: 15, color: COLOR.lavender, isTextBox: true, margin: 0,
+    });
+    const links = ['app.golanalytics.com → Rendimiento', 'app.golanalytics.com → Análisis Táctico', 'app.golanalytics.com → Análisis del Rival'];
+    slide.addText(
+      links.map((l, i) => ({ text: l, options: { bullet: { code: '2022' }, breakLine: i < links.length - 1, paraSpaceAfter: 10 } })) as any,
+      { x: 0.9, y: 3.55, w: 8, h: 1.4, fontFace: FONT_BODY, fontSize: 14, color: COLOR.white, isTextBox: true, margin: 0 }
+    );
+    slide.addShape(pres.ShapeType.roundRect, { x: 0.9, y: 5.5, w: 4.2, h: 0.75, rectRadius: 0.1, fill: { color: COLOR.gold }, line: { type: 'none' } });
+    slide.addText('Cualquier duda, escríbeme por WhatsApp', { x: 0.9, y: 5.5, w: 4.2, h: 0.75, fontFace: FONT_BODY, fontSize: 13, bold: true, color: COLOR.navy, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
+    footer(pres, slide, match.nombre_equipo, true, nextNum(), teamLogoBase64);
   }
 
   const fileName = `Reporte_${match.nombre_equipo}_J${match.jornada}`.replace(/\s+/g, '_');
