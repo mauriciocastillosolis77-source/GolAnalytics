@@ -2,6 +2,7 @@ import pptxgen from 'pptxgenjs';
 import { supabase } from './supabaseClient';
 import { analyzeTeamPerformance } from './geminiTeamAnalysisService';
 import { LOGO_BASE64 } from '../constants/logoBase64';
+import { PITCH_BASE64 } from '../constants/pitchBase64';
 import type { Match, Tag, Player, RivalAnalysis, RivalTipo, RivalZona } from '../types';
 
 // ── Marca GolAnalytics ──────────────────────────────────────────────────
@@ -236,26 +237,25 @@ function summarizeZone(rival: RivalAnalysis, tipo: RivalTipo, zona: RivalZona): 
   return `${text}.`;
 }
 
-// Cancha esquemática de 3 franjas (Inicio/Creación/Finalización), con marcas
-// de portería a los lados — el mismo diseño aprobado en el v5. Se usa donde
-// SÍ hay un dato real por cada una de las 3 zonas (Análisis del Rival).
+// Cancha real (imagen que subió el usuario) con las 3 zonas etiquetadas
+// encima — Inicio / Creación / Finalización. Se usa donde SÍ hay un dato real
+// por cada una de las 3 zonas (Análisis del Rival).
 function pitchBand3(pres: pptxgen, slide: pptxgen.Slide, x: number, y: number, w: number, title: string, phases: Array<{ label: string; text: string }>) {
   slide.addShape(pres.ShapeType.roundRect, { x, y, w, h: 0.4, rectRadius: 0.06, fill: { color: COLOR.indigoDark }, line: { type: 'none' } });
   slide.addText(title.toUpperCase(), { x: x + 0.2, y, w: w - 0.4, h: 0.4, fontFace: FONT_BODY, fontSize: 11.5, bold: true, color: COLOR.white, valign: 'middle', charSpacing: 1, isTextBox: true, margin: 0 });
 
-  const gy = y + 0.55, gw = 2.6, gh = 1.3;
-  const bandColors = [COLOR.orange, COLOR.gold, COLOR.blue];
-  const bandW = gw / 3;
-  const goalW = 0.07, goalH = gh * 0.45;
-  slide.addShape(pres.ShapeType.rect, { x: x - goalW, y: gy + (gh - goalH) / 2, w: goalW, h: goalH, fill: { color: COLOR.white }, line: { color: COLOR.ink, width: 1 } });
-  slide.addShape(pres.ShapeType.rect, { x: x + gw, y: gy + (gh - goalH) / 2, w: goalW, h: goalH, fill: { color: COLOR.white }, line: { color: COLOR.ink, width: 1 } });
-  phases.forEach((_p, i) => {
-    slide.addShape(pres.ShapeType.rect, { x: x + i * bandW, y: gy, w: bandW, h: gh, fill: { color: bandColors[i] }, line: { color: COLOR.white, width: 1.5 } });
+  const gy = y + 0.55, gw = 2.9, gh = 1.84;
+  slide.addImage({ data: PITCH_BASE64, x, y: gy, w: gw, h: gh });
+
+  const zoneW = gw / 3;
+  phases.forEach((p, i) => {
+    slide.addShape(pres.ShapeType.roundRect, { x: x + i * zoneW + zoneW / 2 - 0.5, y: gy + 0.06, w: 1, h: 0.24, rectRadius: 0.1, fill: { color: COLOR.navy }, line: { type: 'none' } });
+    slide.addText(p.label, { x: x + i * zoneW + zoneW / 2 - 0.5, y: gy + 0.06, w: 1, h: 0.24, fontFace: FONT_BODY, fontSize: 8, bold: true, color: COLOR.white, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
   });
-  slide.addShape(pres.ShapeType.ellipse, { x: x + gw * 0.5 - 0.35, y: gy + gh / 2 - 0.35, w: 0.7, h: 0.7, fill: { type: 'none' }, line: { color: COLOR.white, width: 1.25 } });
 
   const legendX = x + gw + 0.35, legendW = w - gw - 0.35;
   const rowH = gh / 3;
+  const bandColors = [COLOR.orange, COLOR.gold, COLOR.blue];
   phases.forEach((p, i) => {
     const ry = gy + i * rowH;
     slide.addShape(pres.ShapeType.rect, { x: legendX, y: ry + 0.06, w: 0.14, h: 0.14, fill: { color: bandColors[i] }, line: { type: 'none' } });
@@ -268,18 +268,14 @@ function pitchBand3(pres: pptxgen, slide: pptxgen.Slide, x: number, y: number, w
 }
 
 // Versión de UNA sola franja — para cuando solo hay un dato agregado del
-// partido completo (no 3 zonas reales medidas). Misma cancha con marcas de
-// portería a los lados, pero sin fingir 3 mediciones que no existen.
+// partido completo (no 3 zonas reales medidas). Misma cancha real, sin
+// dividir en 3 — no se finge una medición por zona que no existe.
 function pitchBandSingle(pres: pptxgen, slide: pptxgen.Slide, x: number, y: number, w: number, title: string, valueLabel: string, valueText: string) {
   slide.addShape(pres.ShapeType.roundRect, { x, y, w, h: 0.4, rectRadius: 0.06, fill: { color: COLOR.indigoDark }, line: { type: 'none' } });
   slide.addText(title.toUpperCase(), { x: x + 0.2, y, w: w - 0.4, h: 0.4, fontFace: FONT_BODY, fontSize: 11.5, bold: true, color: COLOR.white, valign: 'middle', charSpacing: 1, isTextBox: true, margin: 0 });
 
-  const gy = y + 0.55, gw = 2.6, gh = 1.3;
-  const goalW = 0.07, goalH = gh * 0.45;
-  slide.addShape(pres.ShapeType.rect, { x: x - goalW, y: gy + (gh - goalH) / 2, w: goalW, h: goalH, fill: { color: COLOR.white }, line: { color: COLOR.ink, width: 1 } });
-  slide.addShape(pres.ShapeType.rect, { x: x + gw, y: gy + (gh - goalH) / 2, w: goalW, h: goalH, fill: { color: COLOR.white }, line: { color: COLOR.ink, width: 1 } });
-  slide.addShape(pres.ShapeType.rect, { x, y: gy, w: gw, h: gh, fill: { color: COLOR.indigo }, line: { color: COLOR.white, width: 1.5 } });
-  slide.addShape(pres.ShapeType.ellipse, { x: x + gw * 0.5 - 0.35, y: gy + gh / 2 - 0.35, w: 0.7, h: 0.7, fill: { type: 'none' }, line: { color: COLOR.white, width: 1.25 } });
+  const gy = y + 0.55, gw = 2.9, gh = 1.84;
+  slide.addImage({ data: PITCH_BASE64, x, y: gy, w: gw, h: gh });
 
   const legendX = x + gw + 0.35, legendW = w - gw - 0.35;
   slide.addText(valueLabel, { x: legendX, y: gy + 0.1, w: legendW, h: 0.3, fontFace: FONT_BODY, fontSize: 10.5, bold: true, color: COLOR.indigo, isTextBox: true, margin: 0 });
@@ -341,15 +337,24 @@ function calcularEstiloDeJuego(tags: Tag[], players: Player[], positionsMap?: Ma
   // Bloque de presión — % de 1 vs 1 defensivo ganados, agrupado por la
   // posición base del jugador (Delantero/Medio/Defensa). Más ganados por
   // delanteros → bloque alto; por medios → bloque medio; por defensas → bajo.
+  // Clasifica por PALABRA CLAVE (no texto exacto): `posicion` es campo libre
+  // (lo que haya escrito el coach en su Excel — "Defensa Central", "delantero",
+  // "LATERAL", etc.), así que una comparación exacta fallaba para casi todos.
+  function clasificarPosicionBase(posicionLibre: string): 'Delantero' | 'Medio' | 'Defensa' | null {
+    const p = posicionLibre.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    if (!p || p.includes('porter') || p.includes('arquero')) return null;
+    if (p.includes('delant') || p.includes('extrem') || p.includes('punta')) return 'Delantero';
+    if (p.includes('medi')) return 'Medio';
+    if (p.includes('defens') || p.includes('lateral') || p.includes('central') || p.includes('zagu')) return 'Defensa';
+    return null;
+  }
   const duelosGanadosPorGrupo: Record<'Delantero' | 'Medio' | 'Defensa', number> = { Delantero: 0, Medio: 0, Defensa: 0 };
   tags.forEach((t) => {
     if (t.accion !== '1 vs 1 defensivo' || t.resultado !== 'logrado') return;
     const player = players.find((p) => p.id === t.player_id);
     if (!player) return;
-    const pos = (player.posicion || '').trim();
-    if (pos === 'Delantero' || pos === 'Medio' || pos === 'Defensa') {
-      duelosGanadosPorGrupo[pos]++;
-    }
+    const grupo = clasificarPosicionBase(player.posicion || '');
+    if (grupo) duelosGanadosPorGrupo[grupo]++;
   });
   const totalDuelos = duelosGanadosPorGrupo.Delantero + duelosGanadosPorGrupo.Medio + duelosGanadosPorGrupo.Defensa;
   let bloque = 'Sin suficientes 1 vs 1 defensivos ganados con posición registrada.';
@@ -368,7 +373,7 @@ function calcularEstiloDeJuego(tags: Tag[], players: Player[], positionsMap?: Ma
 // solo "Kevin"), así que primero intenta exacto y si no, por contención /
 // primer nombre, antes de rendirse.
 function findPlayerByName(players: Player[], nombre: string): Player | undefined {
-  const norm = (s: string) => s.trim().toLowerCase();
+  const norm = (s: string) => s.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   const target = norm(nombre);
   let found = players.find((p) => norm(p.nombre) === target);
   if (found) return found;
