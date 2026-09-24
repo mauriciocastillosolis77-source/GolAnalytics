@@ -4,6 +4,8 @@ import { analyzeTeamPerformance } from './geminiTeamAnalysisService';
 import { LOGO_BASE64 } from '../constants/logoBase64';
 import { PITCH_BASE64 } from '../constants/pitchBase64';
 import type { Match, Tag, Player, RivalAnalysis, RivalTipo, RivalZona } from '../types';
+import { TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona, etiquetaZona } from '../utils/zonas';
+import { esJugadorFicticio } from '../utils/efectividad';
 
 // ── Marca GolAnalytics ──────────────────────────────────────────────────
 const COLOR = {
@@ -662,6 +664,66 @@ export async function generateMatchReportPptx(
       estiloDeJuego.bloque, estiloDeJuego.bloqueAltura);
 
     footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+  }
+
+  // Slide — Dónde recuperamos y dónde perdimos (mejora 1). Solo sale si el partido
+  // tiene recuperaciones o pérdidas con zona marcada. No cuenta al jugador ficticio "Perdida".
+  {
+    const idsFicticios = new Set(players.filter((p) => esJugadorFicticio(p.nombre)).map((p) => p.id));
+    const recs = tags.filter((t) => t.accion === 'Recuperación de balón' && !idsFicticios.has(t.player_id));
+    const perds = tags.filter((t) => t.accion === 'Pérdida de balón' && !idsFicticios.has(t.player_id));
+    const conZona = (arr: Tag[]) => arr.filter((t) => !!t.zona);
+    if (conZona(recs).length + conZona(perds).length > 0) {
+      const slide = pres.addSlide();
+      slide.background = { color: COLOR.white };
+      sectionHeader(slide, 'Rendimiento táctico', 'Dónde recuperamos y dónde perdimos');
+
+      const drawMap = (x: number, titulo: string, arr: Tag[], fillColor: string, nombre: string) => {
+        const w = 5.7;
+        slide.addText(titulo.toUpperCase(), { x, y: 1.5, w, h: 0.35, fontFace: FONT_BODY, fontSize: 12, bold: true, color: COLOR.ink, isTextBox: true, margin: 0 });
+        const labelW = 0.95;
+        const gx = x + labelW;
+        const cellW = (w - labelW) / 3;
+        const cellH = 0.95;
+        const gy = 2.25;
+        TERCIOS.forEach((t, i) => {
+          slide.addText(TERCIO_LABEL[t], { x: gx + i * cellW, y: 1.92, w: cellW, h: 0.3, fontFace: FONT_BODY, fontSize: 10, color: COLOR.gray, align: 'center', isTextBox: true, margin: 0 });
+        });
+        const conteo: Record<string, number> = {};
+        arr.forEach((t) => { if (t.zona) conteo[t.zona] = (conteo[t.zona] || 0) + 1; });
+        const max = Math.max(0, ...Object.values(conteo));
+        let mejor = null as string | null;
+        CARRILES.forEach((c, r) => {
+          slide.addText(CARRIL_LABEL[c], { x, y: gy + r * cellH, w: labelW - 0.05, h: cellH, fontFace: FONT_BODY, fontSize: 10, color: COLOR.gray, valign: 'middle', isTextBox: true, margin: 0 });
+          TERCIOS.forEach((t, i) => {
+            const k = codigoZona(t, c);
+            const v = conteo[k] || 0;
+            if (v > 0 && (mejor === null || v > conteo[mejor])) mejor = k;
+            const transparency = max > 0 && v > 0 ? Math.round(80 - 75 * (v / max)) : 95;
+            slide.addShape(pres.ShapeType.rect, {
+              x: gx + i * cellW + 0.03, y: gy + r * cellH + 0.03, w: cellW - 0.06, h: cellH - 0.06,
+              fill: { color: fillColor, transparency }, line: { color: 'D1D5DB', width: 0.5 },
+            });
+            if (v > 0) {
+              slide.addText(String(v), { x: gx + i * cellW, y: gy + r * cellH, w: cellW, h: cellH, fontFace: FONT_HEAD, fontSize: 20, bold: true, color: COLOR.ink, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
+            }
+          });
+        });
+        slide.addText('Nuestro equipo ataca hacia la derecha →', { x: gx, y: gy + 3 * cellH + 0.05, w: w - labelW, h: 0.28, fontFace: FONT_BODY, fontSize: 9, color: COLOR.gray, isTextBox: true, margin: 0 });
+        const conZ = conZona(arr).length;
+        const lectura = conZ === 0
+          ? `Sin ${nombre} con zona marcada en este partido.`
+          : `Más ${nombre} en ${etiquetaZona(mejor)} (${mejor ? conteo[mejor] : 0}).`;
+        slide.addText(lectura, { x, y: gy + 3 * cellH + 0.45, w, h: 0.4, fontFace: FONT_BODY, fontSize: 12, bold: true, color: COLOR.ink, isTextBox: true, margin: 0 });
+        if (conZ < arr.length) {
+          slide.addText(`${conZ} de ${arr.length} ${nombre} tienen zona marcada.`, { x, y: gy + 3 * cellH + 0.85, w, h: 0.3, fontFace: FONT_BODY, fontSize: 9.5, color: COLOR.gray, isTextBox: true, margin: 0 });
+        }
+      };
+      drawMap(0.6, 'Dónde recuperamos', recs, '16A34A', 'recuperaciones');
+      drawMap(7.0, 'Dónde perdimos', perds, 'DC2626', 'pérdidas');
+
+      footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+    }
   }
 
   // Slide — Modelo de juego: plan vs. ejecución (contenido del cuerpo técnico, no calculado)
