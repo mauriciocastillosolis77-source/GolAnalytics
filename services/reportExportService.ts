@@ -684,7 +684,7 @@ export async function generateMatchReportPptx(
         const labelW = 0.95;
         const gx = x + labelW;
         const cellW = (w - labelW) / 3;
-        const cellH = 0.95;
+        const cellH = (w - labelW) / (326 / 207) / 3; // misma proporción que la imagen de la cancha
         const gy = 2.25;
         TERCIOS.forEach((t, i) => {
           slide.addText(TERCIO_LABEL[t], { x: gx + i * cellW, y: 1.92, w: cellW, h: 0.3, fontFace: FONT_BODY, fontSize: 10, color: COLOR.gray, align: 'center', isTextBox: true, margin: 0 });
@@ -693,19 +693,23 @@ export async function generateMatchReportPptx(
         arr.forEach((t) => { if (t.zona) conteo[t.zona] = (conteo[t.zona] || 0) + 1; });
         const max = Math.max(0, ...Object.values(conteo));
         let mejor = null as string | null;
+        // Cancha de fondo (la misma imagen que usa el resto del reporte)
+        slide.addImage({ data: PITCH_BASE64, x: gx, y: gy, w: 3 * cellW, h: 3 * cellH });
         CARRILES.forEach((c, r) => {
           slide.addText(CARRIL_LABEL[c], { x, y: gy + r * cellH, w: labelW - 0.05, h: cellH, fontFace: FONT_BODY, fontSize: 10, color: COLOR.gray, valign: 'middle', isTextBox: true, margin: 0 });
           TERCIOS.forEach((t, i) => {
             const k = codigoZona(t, c);
             const v = conteo[k] || 0;
             if (v > 0 && (mejor === null || v > conteo[mejor])) mejor = k;
-            const transparency = max > 0 && v > 0 ? Math.round(80 - 75 * (v / max)) : 95;
+            const transparency = max > 0 && v > 0 ? Math.round(75 - 60 * (v / max)) : 100;
             slide.addShape(pres.ShapeType.rect, {
-              x: gx + i * cellW + 0.03, y: gy + r * cellH + 0.03, w: cellW - 0.06, h: cellH - 0.06,
-              fill: { color: fillColor, transparency }, line: { color: 'D1D5DB', width: 0.5 },
+              x: gx + i * cellW, y: gy + r * cellH, w: cellW, h: cellH,
+              fill: { color: fillColor, transparency }, line: { color: 'FFFFFF', width: 0.75, dashType: 'dash' },
             });
             if (v > 0) {
-              slide.addText(String(v), { x: gx + i * cellW, y: gy + r * cellH, w: cellW, h: cellH, fontFace: FONT_HEAD, fontSize: 20, bold: true, color: COLOR.ink, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
+              const d = 0.5;
+              slide.addShape(pres.ShapeType.ellipse, { x: gx + i * cellW + (cellW - d) / 2, y: gy + r * cellH + (cellH - d) / 2, w: d, h: d, fill: { color: '111827', transparency: 15 }, line: { type: 'none' } });
+              slide.addText(String(v), { x: gx + i * cellW, y: gy + r * cellH, w: cellW, h: cellH, fontFace: FONT_HEAD, fontSize: 16, bold: true, color: COLOR.white, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
             }
           });
         });
@@ -719,8 +723,8 @@ export async function generateMatchReportPptx(
           slide.addText(`${conZ} de ${arr.length} ${nombre} tienen zona marcada.`, { x, y: gy + 3 * cellH + 0.85, w, h: 0.3, fontFace: FONT_BODY, fontSize: 9.5, color: COLOR.gray, isTextBox: true, margin: 0 });
         }
       };
-      drawMap(0.6, 'Dónde recuperamos', recs, '16A34A', 'recuperaciones');
-      drawMap(7.0, 'Dónde perdimos', perds, 'DC2626', 'pérdidas');
+      drawMap(0.6, 'Dónde recuperamos', recs, '22D3EE', 'recuperaciones');
+      drawMap(7.0, 'Dónde perdimos', perds, 'EF4444', 'pérdidas');
 
       footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
     }
