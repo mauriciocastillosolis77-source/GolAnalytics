@@ -83,6 +83,12 @@ const VideoTaggerPage: React.FC = () => {
     const [currentTime, setCurrentTime] = useState(0);
     const [showShortcutsGuide, setShowShortcutsGuide] = useState(false);
 
+    // Estado solo visual (no cambia datos ni lógica): video encogido y paneles plegables
+    const [videoCompacto, setVideoCompacto] = useState(false);
+    const [gestionAbierta, setGestionAbierta] = useState(false);
+    const [cargaAbierta, setCargaAbierta] = useState(false);
+    const [iaAbierta, setIaAbierta] = useState(false);
+
     // Voice Commands State
     const [isVoiceActive, setIsVoiceActive] = useState(false);
     const [voiceTranscript, setVoiceTranscript] = useState('');
@@ -1477,7 +1483,22 @@ const VideoTaggerPage: React.FC = () => {
             <div className="flex-1 flex flex-col gap-4 overflow-y-auto">
                 <div className="bg-gray-800 rounded-lg p-4 flex flex-col">
                     {/* VIDEO, altura fija */}
-                    <div className="min-h-[300px] max-h-[450px] flex items-center justify-center bg-black rounded-md relative group">
+                    {videoCompacto && (
+                        <div className="flex items-center gap-3 bg-black border border-dashed border-gray-600 rounded-md px-3 py-2 text-sm">
+                            <span className="text-gray-300 truncate">
+                                Video: <strong className="text-white">{currentVideoFile?.name || selectedVideo?.video_file || 'sin video'}</strong>
+                                <span className="text-gray-400"> · se reproduce en otra ventana</span>
+                            </span>
+                            <button
+                                onClick={() => setVideoCompacto(false)}
+                                className="ml-auto whitespace-nowrap text-xs text-cyan-400 hover:text-cyan-300 underline"
+                            >
+                                Mostrar video aquí
+                            </button>
+                        </div>
+                    )}
+                    {/* El video sigue montado aunque esté encogido (la voz, la IA y la sincronía lo necesitan) */}
+                    <div className={videoCompacto ? "h-0 min-h-0 overflow-hidden relative" : "min-h-[300px] max-h-[450px] flex items-center justify-center bg-black rounded-md relative group"}>
                         {activeVideoUrl ? (
                             <>
                                 <video
@@ -1561,6 +1582,7 @@ const VideoTaggerPage: React.FC = () => {
                                             const url = URL.createObjectURL(blob);
                                             const sw = window.open(url, '_blank', 'width=1280,height=720');
                                             secondaryWindowRef.current = sw;
+                                            setVideoCompacto(true);
                                         }}
                                         className="bg-cyan-700/80 hover:bg-cyan-600 text-white px-2 py-1 rounded text-xs font-bold border border-cyan-400/40 shadow"
                                         title="Abrir video en nueva ventana (segunda pantalla)"
@@ -1581,6 +1603,15 @@ const VideoTaggerPage: React.FC = () => {
                             <p className="text-gray-400">Seleccione un partido y cargue videos para empezar</p>
                         )}
                     </div>
+                    {!videoCompacto && (activeVideoUrl || selectedVideo) && (
+                        <button
+                            onClick={() => setVideoCompacto(true)}
+                            className="self-end mt-1 text-xs text-gray-400 hover:text-cyan-300 underline"
+                            title="Encoge el cuadro del video cuando lo ves en otra pantalla"
+                        >
+                            Encoger video
+                        </button>
+                    )}
                     
                     {/* PANEL DE ETIQUETADO RAPIDO - Siempre visible debajo del video */}
                     <div className="mt-3 bg-gradient-to-r from-gray-700 to-gray-800 rounded-lg p-3 border border-cyan-600/30">
@@ -1674,45 +1705,7 @@ const VideoTaggerPage: React.FC = () => {
                             </button>
                         </div>
                         
-                        {/* Fila 2: Menu desplegable de atajos */}
-                        <div className="mt-2">
-                            <button 
-                                onClick={() => setShowShortcutsGuide(!showShortcutsGuide)}
-                                className="flex items-center gap-2 text-xs text-cyan-400 hover:text-cyan-300"
-                            >
-                                <span>{showShortcutsGuide ? '▼' : '▶'}</span>
-                                <span>Ver atajos de teclado</span>
-                            </button>
-                            
-                            {showShortcutsGuide && (
-                                <div className="mt-2 grid grid-cols-4 gap-1 text-xs">
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">1</span> Pase corto def logrado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">2</span> Pase corto def fallado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">3</span> Pase corto of logrado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">4</span> Pase corto of fallado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">5</span> Pase largo def logrado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">6</span> Pase largo def fallado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">7</span> Pase largo of logrado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">8</span> Pase largo of fallado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">9</span> 1v1 def logrado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">0</span> 1v1 def fallado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">Q</span> 1v1 of logrado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">W</span> 1v1 of fallado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">E</span> Aereo def logrado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">R</span> Aereo def fallado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">T</span> Aereo of logrado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">Y</span> Aereo of fallado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">U</span> Trans of lograda</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">I</span> Trans of no lograda</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">A</span> Atajadas</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">S</span> Goles a favor</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">D</span> Goles recibidos</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">F</span> Perdida de balon</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">G</span> Tiros a porteria</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">H</span> Recuperacion</div>
-                                </div>
-                            )}
-                        </div>
+                        {/* Los atajos de teclado se muestran una sola vez, en el panel de la derecha */}
                         
                         {/* Indicador de accion seleccionada */}
                         {selectedAction && (
@@ -1783,7 +1776,26 @@ const VideoTaggerPage: React.FC = () => {
             <div className="w-1/3 flex flex-col gap-4 overflow-y-auto pr-2">
                 {/* 1. Gestión del Partido */}
                 <div className="bg-gray-800 rounded-lg p-4">
-                    <h3 className="text-lg font-semibold mb-2 text-white">1. Gestión del Partido</h3>
+                    {(() => {
+                        const abierta = gestionAbierta || !selectedMatchId || isCreatingMatch;
+                        const m = matches.find(mm => mm.id === selectedMatchId);
+                        return (
+                            <button
+                                onClick={() => setGestionAbierta(!abierta)}
+                                className="w-full flex items-center justify-between text-left gap-2"
+                                title={abierta ? 'Encoger' : 'Abrir'}
+                            >
+                                <span className="min-w-0">
+                                    <span className="block text-lg font-semibold text-white">1. Gestión del Partido</span>
+                                    {!abierta && m && (
+                                        <span className="block text-sm text-gray-300 truncate">{m.nombre_equipo} vs {m.rival} · J{m.jornada} · {m.torneo}</span>
+                                    )}
+                                </span>
+                                <span className="text-cyan-400 flex-shrink-0">{abierta ? '▼' : '▶'}</span>
+                            </button>
+                        );
+                    })()}
+                    <div className={(gestionAbierta || !selectedMatchId || isCreatingMatch) ? 'mt-2' : 'hidden'}>
                     <select value={selectedMatchId} onChange={e => setSelectedMatchId(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-2">
                         {matches.length === 0 && <option>Cree un partido para empezar</option>}
                         {matches.map(m => (
@@ -1828,11 +1840,32 @@ const VideoTaggerPage: React.FC = () => {
                             {matchCreationError && <div className="text-red-400 text-xs">{matchCreationError}</div>}
                         </div>
                     )}
+                    </div>
                 </div>
 
                 {/* 2. Carga de Archivos */}
                 <div className="bg-gray-800 rounded-lg p-4">
-                    <h3 className="text-lg font-semibold mb-2 text-white">2. Carga de Archivos</h3>
+                    {(() => {
+                        const falta = filteredPlayers.length === 0 || (!activeVideoUrl && !selectedVideo);
+                        const abierta = cargaAbierta || falta;
+                        const videoNombre = currentVideoFile?.name || selectedVideo?.video_file || 'sin video';
+                        return (
+                            <button
+                                onClick={() => setCargaAbierta(!abierta)}
+                                className="w-full flex items-center justify-between text-left gap-2"
+                                title={abierta ? 'Encoger' : 'Abrir'}
+                            >
+                                <span className="min-w-0">
+                                    <span className="block text-lg font-semibold text-white">2. Carga de Archivos</span>
+                                    {!abierta && (
+                                        <span className="block text-sm text-gray-300 truncate">{filteredPlayers.length} jugadores · video: {videoNombre}</span>
+                                    )}
+                                </span>
+                                <span className="text-cyan-400 flex-shrink-0">{abierta ? '▼' : '▶'}</span>
+                            </button>
+                        );
+                    })()}
+                    <div className={(cargaAbierta || filteredPlayers.length === 0 || (!activeVideoUrl && !selectedVideo)) ? 'mt-2' : 'hidden'}>
                     <label className="block text-sm text-gray-400 mb-1">Jugadores (Excel)</label>
                     <div className="flex items-center gap-2">
                         <input type="file" accept=".xlsx,.xls" onChange={handlePlayerFileChange} className="w-full text-sm text-gray-400 file:mr-4 file:py-1 file:px-2 file:rounded-full file:border-0 file:font-semibold file:bg-gray-600 file:text-white hover:file:bg-gray-500 disabled:opacity-50" disabled={playerUploadStatus === 'loading'} />
@@ -1862,38 +1895,21 @@ const VideoTaggerPage: React.FC = () => {
                     <input type="file" accept="image/*" onChange={e => setTeamUniformFile(e.target.files?.[0] || null)} className="w-full text-sm file:mr-4 file:py-1 file:px-2 file:rounded-full file:border-0 file:font-semibold file:bg-gray-600 file:text-white hover:file:bg-gray-500" />
                     <label className="block text-sm text-gray-400 mt-4 mb-1">Equipo Rival (uniforme)</label>
                     <input type="file" accept="image/*" onChange={e => setOpponentUniformFile(e.target.files?.[0] || null)} className="w-full text-sm file:mr-4 file:py-1 file:px-2 file:rounded-full file:border-0 file:font-semibold file:bg-gray-600 file:text-white hover:file:bg-gray-500" />
+                    </div>
                 </div>
 
-                {/* 3. Etiquetar Jugada */}
-                <div className="bg-gray-800 rounded-lg p-4">
-                    <h3 className="text-lg font-semibold mb-2 text-white">3. Etiquetar Jugada</h3>
-                    <label className="block text-sm text-gray-400 mb-1">Jugador</label>
-                    <select value={selectedPlayerId} onChange={e => setSelectedPlayerId(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-2" disabled={filteredPlayers.length === 0}>
-                        {filteredPlayers.length > 0 ? filteredPlayers.map(p => (
-                            <option key={p.id} value={p.id}>{p.numero} - {p.nombre}</option>
-                        )) : <option>Sin jugadores del equipo</option>}
-                    </select>
-                    <label className="block text-sm text-gray-400 mb-1">Acción</label>
-                    <select value={selectedAction} onChange={e => setSelectedAction(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-4">
-                        {METRICS.map(m => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                    <button onClick={addTag} disabled={!selectedPlayerId || !selectedAction || (!activeVideoUrl && !selectedVideo)} className="w-full bg-green-600 hover:bg-green-500 p-2 rounded font-semibold text-white flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
-                        Etiquetar Jugada
-                    </button>
-                    <button onClick={saveTags} disabled={isSaving || tags.filter(t => String(t.id).startsWith('temp-')).length === 0} className="mt-2 w-full bg-blue-600 hover:bg-blue-500 p-2 rounded font-semibold text-white flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
-                        Guardar Jugadas
-                        {isSaving && <Spinner size="h-4 w-4" />}
-                    </button>
-                    {saveStatus && (
-                        <div className={`mt-3 p-2 rounded text-center text-sm ${saveStatus.type === 'success' ? 'bg-green-800 text-green-200' : 'bg-red-800 text-red-200'}`}>
-                            {saveStatus.message}
-                        </div>
-                    )}
-                </div>
+                {/* "3. Etiquetar Jugada" se quitó: repetía lo que ya está en el panel central (jugador, acción, Etiquetar y Guardar). Aquí irá "Detalle de la jugada". */}
 
                 {/* 4. Analisis Asistido por IA */}
                 <div className="bg-gray-800 rounded-lg p-4">
-                    <h3 className="text-lg font-semibold mb-2 text-white">Análisis Asistido por IA (Beta)</h3>
+                    <button
+                        onClick={() => setIaAbierta(!(iaAbierta || isAnyAnalysisRunning))}
+                        className="w-full flex items-center justify-between text-lg font-semibold text-white"
+                    >
+                        <span>Análisis Asistido por IA (Beta)</span>
+                        <span className="text-cyan-400">{(iaAbierta || isAnyAnalysisRunning) ? '▼' : '▶'}</span>
+                    </button>
+                    <div className={(iaAbierta || isAnyAnalysisRunning) ? 'mt-2' : 'hidden'}>
                     <p className="text-xs text-gray-400 mb-4">La IA puede sugerir jugadas. Puedes aceptar o rechazar las sugerencias.</p>
                     
                     {/* Segment Analysis Button (Gemini) - RECOMMENDED */}
@@ -1941,6 +1957,7 @@ const VideoTaggerPage: React.FC = () => {
                     >
                         {isCustomAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Modelo Personalizado (74% Top-3)</>}
                     </button>
+                    </div>
                 </div>
 
                 {/* 5. Atajos de Teclado */}
