@@ -625,7 +625,8 @@ const DashboardPage: React.FC = () => {
                 name: players.find(p => p.id === playerId)?.nombre || 'Desconocido',
                 value: count,
             }))
-            .sort((a, b) => b.value - a.value);
+            .sort((a, b) => b.value - a.value)
+            .slice(0, 10);
     }, [filteredTags, players]);
 
     const scatterTransicionesData = useMemo(() => {
