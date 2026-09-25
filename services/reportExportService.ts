@@ -7,6 +7,7 @@ import type { Match, Tag, Player, RivalAnalysis, RivalTipo, RivalZona } from '..
 import { TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona, etiquetaZona } from '../utils/zonas';
 import { esJugadorFicticio } from '../utils/efectividad';
 import { ALTURAS, LADOS, codigoPorteria, detalleGolDe, resumenGol } from '../utils/goles';
+import { esAccionBalonParado, contarCobros, contarPenales, envioMasUsado, ENVIO_LABEL, CORNER_FAVOR, CORNER_CONTRA, TL_FAVOR, TL_CONTRA, PENAL_FAVOR, PENAL_CONTRA } from '../utils/balonParado';
 
 // ── Marca GolAnalytics ──────────────────────────────────────────────────
 const COLOR = {
@@ -209,6 +210,7 @@ const ATTR_CONFIG: Record<RivalTipo, { lbl2: string }> = {
   Ofensiva: { lbl2: 'Carril' },
   Defensiva: { lbl2: 'Número de hombres' },
   Transicion: { lbl2: 'Carril' },
+  BalonParado: { lbl2: 'Resultado' },
 };
 const ZONAS: RivalZona[] = ['Inicio', 'Creacion', 'Finalizacion'];
 const ZONA_LABEL: Record<RivalZona, string> = { Inicio: 'Inicio', Creacion: 'Creación', Finalizacion: 'Finalización' };
@@ -489,7 +491,10 @@ export async function generateMatchReportPptx(
 ): Promise<void> {
   const { data: tagsData, error: tagsError } = await supabase.from('tags').select('*').eq('match_id', match.id);
   if (tagsError) throw tagsError;
-  const tags = (tagsData || []) as Tag[];
+  // Balón parado y penales solo se cuentan en su diapositiva: no entran en efectividad,
+  // conteos generales ni en el análisis de la IA.
+  const tagsTodos = (tagsData || []) as Tag[];
+  const tags = tagsTodos.filter((t) => !esAccionBalonParado(t.accion));
   if (tags.length === 0) {
     throw new Error('Este partido todavía no tiene acciones etiquetadas — no hay datos para generar el reporte.');
   }
@@ -526,7 +531,7 @@ export async function generateMatchReportPptx(
   if (otherMatches && otherMatches.length > 0) {
     const otherIds = otherMatches.map((m: Match) => m.id);
     const { data: otherTagsData } = await supabase.from('tags').select('*').in('match_id', otherIds);
-    const otherTags = (otherTagsData || []) as Tag[];
+    const otherTags = ((otherTagsData || []) as Tag[]).filter((t) => !esAccionBalonParado(t.accion));
     if (otherTags.length > 0) promedioTorneo = calcularEfectividad(otherTags);
   }
 
@@ -780,6 +785,40 @@ export async function generateMatchReportPptx(
       };
       porteria(8.4, 1.55, 'Dónde metimos los goles', golesFav, '22D3EE');
       porteria(8.4, 4.15, 'Dónde nos metieron los goles', golesCon, 'FB923C');
+
+      footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+    }
+  }
+
+  // Slide — Balón parado y penales (mejoras 4 y 5). Solo sale si el partido tiene alguno etiquetado.
+  {
+    const idsFicticiosB = new Set(players.filter((p) => esJugadorFicticio(p.nombre)).map((p) => p.id));
+    const abp = tagsTodos.filter((t) => esAccionBalonParado(t.accion) && !idsFicticiosB.has(t.player_id));
+    if (abp.length > 0) {
+      const slide = pres.addSlide();
+      slide.background = { color: COLOR.white };
+      sectionHeader(slide, 'Balón parado', 'Balón parado y penales');
+
+      const caja = (x: number, titulo: string, fondo: string, color: string, corner: string, tl: string, penal: string) => {
+        const w = 5.9;
+        slide.addShape(pres.ShapeType.roundRect, { x, y: 1.55, w, h: 3.55, fill: { color: fondo }, line: { color: fondo }, rectRadius: 0.12 });
+        slide.addText(titulo, { x: x + 0.3, y: 1.7, w: w - 0.6, h: 0.35, fontFace: FONT_BODY, fontSize: 14, bold: true, color, isTextBox: true, margin: 0 });
+        slide.addText('cobros → remates → goles', { x: x + 0.3, y: 2.05, w: w - 0.6, h: 0.28, fontFace: FONT_BODY, fontSize: 10, color: COLOR.gray, isTextBox: true, margin: 0 });
+        const fila = (y: number, label: string, accion: string) => {
+          const c = contarCobros(abp, accion);
+          slide.addText(label, { x: x + 0.3, y, w: 2.2, h: 0.5, fontFace: FONT_BODY, fontSize: 13, color: COLOR.ink, valign: 'middle', isTextBox: true, margin: 0 });
+          slide.addText(c.cobros === 0 ? '—' : `${c.cobros} → ${c.remates} → ${c.goles}`, { x: x + 2.5, y, w: w - 2.8, h: 0.5, fontFace: FONT_HEAD, fontSize: 22, bold: true, color: COLOR.ink, valign: 'middle', isTextBox: true, margin: 0 });
+        };
+        fila(2.45, 'Córners', corner);
+        fila(3.05, 'Tiros libres', tl);
+        const p = contarPenales(abp, penal);
+        slide.addText(`Penales: ${p.tirados === 0 ? 'ninguno' : `${p.goles} anotado${p.goles === 1 ? '' : 's'} de ${p.tirados}`}`, { x: x + 0.3, y: 3.8, w: w - 0.6, h: 0.4, fontFace: FONT_BODY, fontSize: 13, bold: true, color: COLOR.ink, isTextBox: true, margin: 0 });
+        const top = envioMasUsado(abp.filter((t) => t.accion === corner || t.accion === tl));
+        slide.addText(top ? `Zona de envío más usada: ${ENVIO_LABEL[top.envio].toLowerCase()} (${top.n})` : 'Zona de envío: sin marcar', { x: x + 0.3, y: 4.3, w: w - 0.6, h: 0.35, fontFace: FONT_BODY, fontSize: 11, color: COLOR.gray, isTextBox: true, margin: 0 });
+      };
+      caja(0.6, 'A FAVOR', 'ECFEFF', '0E7490', CORNER_FAVOR, TL_FAVOR, PENAL_FAVOR);
+      caja(6.85, 'EN CONTRA', 'FFF7ED', 'C2410C', CORNER_CONTRA, TL_CONTRA, PENAL_CONTRA);
+      slide.addText('Remates incluye los que terminaron en gol. Solo se cuenta: no cambia la efectividad del partido.', { x: 0.6, y: 5.35, w: 12.1, h: 0.3, fontFace: FONT_BODY, fontSize: 10, italic: true, color: COLOR.gray, isTextBox: true, margin: 0 });
 
       footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
     }

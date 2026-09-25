@@ -39,10 +39,19 @@ interface RivalFaseData {
   zonas: RivalZonaSummary[];
 }
 
+interface RivalBalonParadoData {
+  pregunta: string;
+  cobra: string;          // lectura automática cuando el rival cobra
+  notaCobra?: string;
+  defiende: string;       // lectura automática cuando el rival defiende
+  notaDefiende?: string;
+}
+
 interface RivalReportData {
   rivalName: string;
   ofensiva: RivalFaseData;
   defensiva: RivalFaseData;
+  balonParado?: RivalBalonParadoData; // tipo 4 (solo si hay momentos de balón parado)
 }
 
 const ZONA_COLOR_RGB: Record<string, [number, number, number]> = {
@@ -358,6 +367,47 @@ function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: 
   return Math.max(y + pitchHeight, textY) + 8;
 }
 
+// Balón parado del rival (tipo 4): dos bloques de texto, cuando cobra y cuando defiende.
+function addBalonParadoSection(doc: jsPDF, bp: RivalBalonParadoData, startY: number, pageWidth: number): number {
+  const pageHeight = doc.internal.pageSize.getHeight();
+  let y = startY;
+  if (y > pageHeight - 80) { doc.addPage(); y = 20; }
+  y = addSection(doc, 'BALÓN PARADO', y, pageWidth);
+
+  doc.setFontSize(9);
+  doc.setTextColor(...COLORS.secondary);
+  doc.setFont('helvetica', 'italic');
+  const preguntaLines = doc.splitTextToSize(bp.pregunta, pageWidth - 30);
+  doc.text(preguntaLines, 15, y);
+  y += preguntaLines.length * 5 + 4;
+
+  const bloque = (titulo: string, texto: string, nota?: string) => {
+    doc.setFillColor(...COLORS.secondary);
+    doc.rect(15, y - 3, 3, 3, 'F');
+    doc.setFontSize(9.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...COLORS.dark);
+    doc.text(titulo, 21, y);
+    y += 4.5;
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(...COLORS.text);
+    const lines = doc.splitTextToSize(texto, pageWidth - 36);
+    doc.text(lines, 21, y);
+    y += lines.length * 4.5 + 1;
+    if (nota && nota.trim()) {
+      doc.setFont('helvetica', 'italic');
+      const notaLines = doc.splitTextToSize(`Nota del analista: ${nota.trim()}`, pageWidth - 36);
+      doc.text(notaLines, 21, y);
+      y += notaLines.length * 4.5 + 1;
+    }
+    y += 4;
+  };
+  bloque('Cuando cobra', bp.cobra, bp.notaCobra);
+  bloque('Cuando defiende', bp.defiende, bp.notaDefiende);
+  return y + 4;
+}
+
 function addFooter(doc: jsPDF) {
   const pageCount = doc.getNumberOfPages();
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -592,6 +642,7 @@ export async function exportRivalAnalysisToPDF(
 
   y = addFaseSection(doc, 'FASE OFENSIVA', data.ofensiva, y, pageWidth);
   y = addFaseSection(doc, 'FASE DEFENSIVA', data.defensiva, y, pageWidth);
+  if (data.balonParado) y = addBalonParadoSection(doc, data.balonParado, y, pageWidth);
 
   addFooter(doc);
 
