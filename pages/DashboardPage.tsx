@@ -10,6 +10,8 @@ import { useAuth } from '../contexts/AuthContext';
 import { cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios, esTagDeJugadorFicticio, calcularPorcentajeAtajadas } from '../utils/efectividad';
 import MapaZonas from '../components/charts/MapaZonas';
 import GolesPorTipo from '../components/charts/GolesPorTipo';
+import BalonParadoCard from '../components/charts/BalonParadoCard';
+import { esAccionBalonParado } from '../utils/balonParado';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, Cell, Treemap, ScatterChart, Scatter } from 'recharts';
 
 type Filters = {
@@ -265,6 +267,11 @@ const DashboardPage: React.FC = () => {
         () => filteredTags.filter(t => t.accion === 'Goles recibidos' && !esTagDeJugadorFicticio(t, idsJugadoresFicticios)),
         [filteredTags, idsJugadoresFicticios]
     );
+    // Mejoras 4 y 5: córners, tiros libres y penales (a favor y en contra) de jugadores reales.
+    const tagsBalonParado = useMemo(
+        () => filteredTags.filter(t => esAccionBalonParado(t.accion) && !esTagDeJugadorFicticio(t, idsJugadoresFicticios)),
+        [filteredTags, idsJugadoresFicticios]
+    );
     const tagsPerdidaConJugadorReal = useMemo(
         () => filteredTags.filter(t => t.accion === 'Pérdida de balón' && !esTagDeJugadorFicticio(t, idsJugadoresFicticios)),
         [filteredTags, idsJugadoresFicticios]
@@ -283,7 +290,8 @@ const DashboardPage: React.FC = () => {
 
     const summaryData = useMemo(() => {
         // "Acciones Totales" cuenta todas las acciones de jugadores reales (sin el jugador ficticio).
-        const total = filteredTags.filter(t => !esTagDeJugadorFicticio(t, idsJugadoresFicticios)).length;
+        // Balón parado y penales no suman aquí: solo se cuentan en su propia tarjeta.
+        const total = filteredTags.filter(t => !esTagDeJugadorFicticio(t, idsJugadoresFicticios) && !esAccionBalonParado(t.accion)).length;
         // "Efectividad General" sigue las reglas de utils/efectividad.ts.
         const eligibleTags = filteredTags.filter(t => cuentaEnEfectividad(t, idsJugadoresFicticios));
         const logrados = eligibleTags.filter(esAccionLograda).length;
@@ -322,7 +330,7 @@ const DashboardPage: React.FC = () => {
 
         try {
             // "Total de acciones" reportado a la IA = mismo número que la tarjeta "Acciones Totales".
-            const totalAcciones = filteredTags.filter(t => !esTagDeJugadorFicticio(t, idsJugadoresFicticios)).length;
+            const totalAcciones = filteredTags.filter(t => !esTagDeJugadorFicticio(t, idsJugadoresFicticios) && !esAccionBalonParado(t.accion)).length;
             // "Efectividad global" = mismo cálculo que la tarjeta "Efectividad General".
             const eligibleTags = filteredTags.filter(t => cuentaEnEfectividad(t, idsJugadoresFicticios));
             const totalLogradas = eligibleTags.filter(esAccionLograda).length;
@@ -961,11 +969,10 @@ const DashboardPage: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* GOLES POR TIPO (mejora 6), debajo de las tarjetas de portería */}
+                    {/* GOLES POR TIPO (mejora 6) + BALÓN PARADO (mejoras 4 y 5), debajo de las tarjetas de portería */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                        <div className="lg:col-span-2">
-                            <GolesPorTipo titulo="Goles por tipo" aFavor={golesAFavorTags} enContra={golesRecibidosTags} conPorterias />
-                        </div>
+                        <GolesPorTipo titulo="Goles por tipo" aFavor={golesAFavorTags} enContra={golesRecibidosTags} conPorterias />
+                        <BalonParadoCard tags={tagsBalonParado} />
                     </div>
 
                     {/* TRANSICIONES: cantidad y tiempo, juntas */}

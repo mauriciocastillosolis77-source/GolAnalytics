@@ -12,18 +12,32 @@ const ATTR_CONFIG: Record<RivalTipo, { lbl1: string; opts1: [string, string][]; 
   Ofensiva:   { lbl1: 'Estilo', opts1: [['Combinativo', '1'], ['Directo', '2']], lbl2: 'Carril', opts2: [['Izquierda', '1'], ['Centro', '2'], ['Derecha', '3']] },
   Defensiva:  { lbl1: 'Altura de presión', opts1: [['Alta', '1'], ['Media', '2'], ['Baja', '3']], lbl2: 'Número de hombres', opts2: [['Muchos', '1'], ['Pocos', '2']] },
   Transicion: { lbl1: 'Planteamiento', opts1: [['Contraataque', '1'], ['Ataque organizado', '2']], lbl2: 'Carril', opts2: [['Izquierda', '1'], ['Centro', '2'], ['Derecha', '3']] },
+  // Balón parado usa su propio panel (abajo); estas opciones genéricas no se muestran.
+  BalonParado: { lbl1: 'Detalle', opts1: [], lbl2: 'Resultado', opts2: [] },
 };
-const TIPOS: RivalTipo[] = ['Ofensiva', 'Defensiva', 'Transicion'];
+const TIPOS: RivalTipo[] = ['Ofensiva', 'Defensiva', 'Transicion', 'BalonParado'];
+const TIPO_LABEL: Record<RivalTipo, string> = { Ofensiva: 'Ofensiva', Defensiva: 'Defensiva', Transicion: 'Transición', BalonParado: 'Balón parado' };
+
+// ─── Balón parado (tipo 4, mejora 4): el rival cobra o defiende ──────────────
+type BpLado = 'cobra' | 'defiende';
+type BpCobro = 'Córner' | 'Tiro libre';
+const BP_COBROS: BpCobro[] = ['Córner', 'Tiro libre'];
+const BP_ENVIOS = ['1er palo', '2º palo', 'Área chica', 'Punto penal', 'Frontal', 'En corto'];
+const BP_RES_COBRA = ['Gol', 'Remate', 'Nada'];
+const BP_MARCAJES = ['En zona', 'Al hombre', 'Mixto'];
+const BP_RES_DEFIENDE = ['Gol', 'Remate', 'Despejado'];
+const sinAcentosBp = (t: string) => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
 // El reporte y la impresión solo muestran Ofensiva y Defensiva — Transición sigue
 // disponible para etiquetar (por si se usa con otro rival), pero no en el reporte.
-const REPORT_TIPOS: RivalTipo[] = ['Ofensiva', 'Defensiva'];
+const REPORT_TIPOS: RivalTipo[] = ['Ofensiva', 'Defensiva', 'BalonParado'];
 const REPORT_QUESTION: Partial<Record<RivalTipo, string>> = {
   Ofensiva: '¿Cómo ataca el rival cuando tiene el balón?',
   Defensiva: '¿Cómo presiona el rival cuando no tiene el balón?',
+  BalonParado: '¿Cómo cobra y cómo defiende el rival el balón parado?',
 };
 const ZONAS: RivalZona[] = ['Inicio', 'Creacion', 'Finalizacion'];
 const ZONA_LABEL: Record<RivalZona, string> = { Inicio: 'Inicio', Creacion: 'Creación', Finalizacion: 'Finalización' };
-const EYEBROW: Record<RivalTipo, string> = { Ofensiva: 'FASE OFENSIVA', Defensiva: 'FASE DEFENSIVA', Transicion: 'TRANSICIÓN OFENSIVA' };
+const EYEBROW: Record<RivalTipo, string> = { Ofensiva: 'FASE OFENSIVA', Defensiva: 'FASE DEFENSIVA', Transicion: 'TRANSICIÓN OFENSIVA', BalonParado: 'BALÓN PARADO' };
 const ZONA_COLOR: Record<RivalZona, string> = { Inicio: '#D85A30', Creacion: '#EF9F27', Finalizacion: '#378ADD' };
 
 let idCounter = 0;
@@ -58,6 +72,12 @@ const AnalisisRivalPage: React.FC = () => {
   const [selAttr1, setSelAttr1] = useState<string | null>(null);
   const [selAttr2, setSelAttr2] = useState<string | null>(null);
   const [tagError, setTagError] = useState<string | null>(null);
+  // Balón parado (tipo 4)
+  const [bpLado, setBpLado] = useState<BpLado | null>(null);
+  const [bpCobro, setBpCobro] = useState<BpCobro | null>(null);
+  const [bpDetalle, setBpDetalle] = useState<string | null>(null);   // envío (cobra) o marcaje (defiende)
+  const [bpResultado, setBpResultado] = useState<string | null>(null);
+  const resetBp = () => { setBpLado(null); setBpCobro(null); setBpDetalle(null); setBpResultado(null); };
 
   // ── Borrador (sin guardar) y guardado ──
   const [draftMomentos, setDraftMomentos] = useState<RivalMomento[]>([]);
@@ -104,7 +124,7 @@ const AnalisisRivalPage: React.FC = () => {
   // ─── Momentos combinados (guardados + borrador) para conteos en pantalla ──────
   const allMomentos = useMemo(() => [...(selected?.momentos || []), ...draftMomentos], [selected, draftMomentos]);
   const countsByTipo = useMemo(() => {
-    const c: Record<RivalTipo, number> = { Ofensiva: 0, Defensiva: 0, Transicion: 0 };
+    const c: Record<RivalTipo, number> = { Ofensiva: 0, Defensiva: 0, Transicion: 0, BalonParado: 0 };
     allMomentos.forEach(m => { c[m.tipo]++; });
     return c;
   }, [allMomentos]);
@@ -113,7 +133,7 @@ const AnalisisRivalPage: React.FC = () => {
   const openAnalysis = (a: RivalAnalysis) => {
     setSelected(a);
     setDraftMomentos([]); setDraftNotes({});
-    setSelTipo(null); setSelZona(null); setSelAttr1(null); setSelAttr2(null);
+    setSelTipo(null); setSelZona(null); setSelAttr1(null); setSelAttr2(null); resetBp();
     setVideoUrl(null); setVideoFileName('');
     setSaveMsg(null);
     setMode(isAdmin ? 'tag' : 'report');
@@ -127,7 +147,7 @@ const AnalisisRivalPage: React.FC = () => {
     setNewTeamId(teams[0]?.id || '');
     setNewRivalName('');
     setDraftMomentos([]); setDraftNotes({});
-    setSelTipo(null); setSelZona(null); setSelAttr1(null); setSelAttr2(null);
+    setSelTipo(null); setSelZona(null); setSelAttr1(null); setSelAttr2(null); resetBp();
     setVideoUrl(null); setVideoFileName('');
     setSaveMsg(null);
     setMode('tag');
@@ -201,12 +221,15 @@ const AnalisisRivalPage: React.FC = () => {
   }, []);
 
   // ─── Selección de Tipo/Zona/Atributos ───────────────────────────────────────
-  const selectTipo = (t: RivalTipo) => { setSelTipo(t); setSelAttr1(null); setSelAttr2(null); setTagError(null); };
+  const selectTipo = (t: RivalTipo) => { setSelTipo(t); setSelAttr1(null); setSelAttr2(null); resetBp(); setTagError(null); };
+  const selectBpLado = (l: BpLado) => { setBpLado(l); setBpDetalle(null); setBpResultado(null); setTagError(null); };
   const selectZona = (z: RivalZona) => { setSelZona(z); setTagError(null); };
   const selectAttr1 = (v: string) => { setSelAttr1(v); setTagError(null); };
   const selectAttr2 = (v: string) => { setSelAttr2(v); setTagError(null); };
 
-  const notaKey = selTipo && selZona ? `${selTipo}|${selZona}` : null;
+  const notaKey = selTipo === 'BalonParado'
+    ? (bpLado ? `BalonParado|${bpLado}` : null)
+    : (selTipo && selZona ? `${selTipo}|${selZona}` : null);
   useEffect(() => {
     if (notaKey) {
       setNotaTexto(draftNotes[notaKey] ?? selected?.notas?.[notaKey] ?? '');
@@ -222,6 +245,21 @@ const AnalisisRivalPage: React.FC = () => {
   };
 
   const registrarMomento = useCallback(() => {
+    if (selTipo === 'BalonParado') {
+      if (!bpLado) { setTagError('Elige si el rival cobra o defiende'); return; }
+      if (bpLado === 'cobra' && (!bpCobro || !bpDetalle)) { setTagError('Elige el cobro (córner o tiro libre) y la zona de envío'); return; }
+      if (bpLado === 'defiende' && !bpDetalle) { setTagError('Elige el tipo de marcaje'); return; }
+      setTagError(null);
+      const momentoBp: RivalMomento = {
+        id: newLocalId(), tipo: 'BalonParado', lado: bpLado, cobro: bpLado === 'cobra' ? (bpCobro || undefined) : undefined,
+        attr1: bpDetalle as string, attr2: bpResultado || undefined,
+        timestamp_video: videoRef.current ? Math.floor(videoRef.current.currentTime) : undefined,
+      };
+      setDraftMomentos(prev => [...prev, momentoBp]);
+      setSaveMsg(null);
+      setBpCobro(null); setBpDetalle(null); setBpResultado(null);
+      return;
+    }
     if (!selTipo || !selZona || !selAttr1) { setTagError('Selecciona tipo, zona y el primer atributo'); return; }
     setTagError(null);
     const momento: RivalMomento = {
@@ -231,7 +269,7 @@ const AnalisisRivalPage: React.FC = () => {
     setDraftMomentos(prev => [...prev, momento]);
     setSaveMsg(null);
     setSelZona(null); setSelAttr1(null); setSelAttr2(null);
-  }, [selTipo, selZona, selAttr1, selAttr2]);
+  }, [selTipo, selZona, selAttr1, selAttr2, bpLado, bpCobro, bpDetalle, bpResultado]);
 
   const eliminarMomento = (id: string) => setDraftMomentos(prev => prev.filter(m => m.id !== id));
 
@@ -299,6 +337,40 @@ const AnalisisRivalPage: React.FC = () => {
 
     if (/guardar/.test(text)) { guardarAnalisis(); show('💾 Guardando análisis...'); return; }
     if (/registrar|registra\b|agregar momento/.test(text)) { registrarMomento(); show('✅ Momento registrado'); return; }
+
+    // Balón parado (tipo 4): "balón parado", "cobra" / "defiende", "córner", "primer palo", "remate", "en zona"…
+    const tBp = sinAcentosBp(text);
+    if (/\bbalon parado\b|\bpelota parada\b/.test(tBp)) { selectTipo('BalonParado'); show('🎯 Tipo: Balón parado'); return; }
+    if (selTipo === 'BalonParado') {
+      if (/\bcobra\b|\bcobro\b/.test(tBp)) { selectBpLado('cobra'); show('🎯 El rival cobra'); return; }
+      if (/\bdefiende\b|\bdefensa\b/.test(tBp)) { selectBpLado('defiende'); show('🎯 El rival defiende'); return; }
+      const dichos: string[] = [];
+      if (bpLado === 'cobra') {
+        if (/\bcorner\b|\btiro de esquina\b|\bsaque de esquina\b/.test(tBp)) { setBpCobro('Córner'); dichos.push('Córner'); }
+        else if (/\btiro libre\b|\bfalta\b/.test(tBp)) { setBpCobro('Tiro libre'); dichos.push('Tiro libre'); }
+        let envio: string | null = null;
+        if (/\bprimer palo\b|\b1er palo\b/.test(tBp)) envio = '1er palo';
+        else if (/\bsegundo palo\b|\b2do palo\b/.test(tBp)) envio = '2º palo';
+        else if (/\barea chica\b/.test(tBp)) envio = 'Área chica';
+        else if (/\bpunto penal\b|\bpunto de penal\b/.test(tBp)) envio = 'Punto penal';
+        else if (/\bfrontal\b|\bborde del area\b/.test(tBp)) envio = 'Frontal';
+        else if (/\ben corto\b|\bcorto\b/.test(tBp)) envio = 'En corto';
+        if (envio) { setBpDetalle(envio); dichos.push(envio); }
+        let res: string | null = null;
+        if (/\bgol\b/.test(tBp)) res = 'Gol'; else if (/\bremate\b|\bremato\b/.test(tBp)) res = 'Remate'; else if (/\bnada\b|\bsin remate\b/.test(tBp)) res = 'Nada';
+        if (res) { setBpResultado(res); dichos.push(res); }
+      } else if (bpLado === 'defiende') {
+        let marc: string | null = null;
+        if (/\ben zona\b|\bzonal\b/.test(tBp)) marc = 'En zona';
+        else if (/\bal hombre\b|\bhombre a hombre\b|\bindividual\b/.test(tBp)) marc = 'Al hombre';
+        else if (/\bmixto\b|\bmixta\b/.test(tBp)) marc = 'Mixto';
+        if (marc) { setBpDetalle(marc); dichos.push(marc); }
+        let res: string | null = null;
+        if (/\bgol\b/.test(tBp)) res = 'Gol'; else if (/\bremate\b|\bremato\b/.test(tBp)) res = 'Remate'; else if (/\bdespejad[oa]\b|\bdespeje\b|\bdespejo\b/.test(tBp)) res = 'Despejado';
+        if (res) { setBpResultado(res); dichos.push(res); }
+      }
+      if (dichos.length > 0) { setTagError(null); show(`🎯 ${dichos.join(' · ')}`); return; }
+    }
 
     if (/ofensiva/.test(text)) { selectTipo('Ofensiva'); show('🎯 Tipo: Ofensiva'); return; }
     if (/defensiva/.test(text)) { selectTipo('Defensiva'); show('🎯 Tipo: Defensiva'); return; }
@@ -393,8 +465,10 @@ const AnalisisRivalPage: React.FC = () => {
         if (e.key === '1') selectTipo('Ofensiva');
         else if (e.key === '2') selectTipo('Defensiva');
         else if (e.key === '3') selectTipo('Transicion');
+        else if (e.key === '4') selectTipo('BalonParado');
         return;
       }
+      if (selTipo === 'BalonParado') return; // Balón parado se llena con voz o mouse
       if (!selZona) {
         if (e.key === '1') selectZona('Inicio');
         else if (e.key === '2') selectZona('Creacion');
@@ -466,6 +540,46 @@ const AnalisisRivalPage: React.FC = () => {
     return `${text}.`;
   };
 
+  // ─── Balón parado: conteos y lectura automática (se calcula de los momentos) ─
+  const contarLista = (valores: string[], opciones: string[]) => opciones.map(o => ({ label: o, n: valores.filter(v => v === o).length }));
+  const bpReport = () => {
+    const cobra = allMomentos.filter(m => m.tipo === 'BalonParado' && m.lado === 'cobra');
+    const defiende = allMomentos.filter(m => m.tipo === 'BalonParado' && m.lado === 'defiende');
+    const nota = (lado: BpLado) => draftNotes[`BalonParado|${lado}`] ?? selected?.notas?.[`BalonParado|${lado}`] ?? '';
+
+    const envios = contarLista(cobra.map(m => m.attr1), BP_ENVIOS);
+    const corners = cobra.filter(m => m.cobro === 'Córner').length;
+    const tirosLibres = cobra.filter(m => m.cobro === 'Tiro libre').length;
+    const golesCobra = cobra.filter(m => m.attr2 === 'Gol').length;
+    const rematesCobra = cobra.filter(m => m.attr2 === 'Remate' || m.attr2 === 'Gol').length;
+    const conResCobra = cobra.filter(m => !!m.attr2).length;
+    let lecturaCobra = '';
+    if (cobra.length > 0) {
+      const top = [...envios].sort((a, b) => b.n - a.n)[0];
+      const frecuencia = top.n / cobra.length >= 0.6 ? 'casi siempre' : 'más seguido';
+      const destino = top.label === 'En corto' ? 'en corto' : `al ${top.label.toLowerCase()}`;
+      lecturaCobra = `Cobra ${frecuencia} ${destino} (${top.n} de ${cobra.length})`;
+      if (conResCobra > 0) lecturaCobra += `; ${rematesCobra} de ${conResCobra} terminaron en remate${golesCobra > 0 ? ` y ${golesCobra} en gol` : ''}`;
+      lecturaCobra += '.';
+    }
+
+    const marcajes = contarLista(defiende.map(m => m.attr1), BP_MARCAJES);
+    const golesDef = defiende.filter(m => m.attr2 === 'Gol').length;
+    const rematesDef = defiende.filter(m => m.attr2 === 'Remate' || m.attr2 === 'Gol').length;
+    const conResDef = defiende.filter(m => !!m.attr2).length;
+    let lecturaDefiende = '';
+    if (defiende.length > 0) {
+      const top = [...marcajes].sort((a, b) => b.n - a.n)[0];
+      lecturaDefiende = `Defiende ${top.label.toLowerCase()} en ${top.n} de ${defiende.length} cobros`;
+      if (conResDef > 0) lecturaDefiende += `; le remataron ${rematesDef} ${rematesDef === 1 ? 'vez' : 'veces'} y le anotaron ${golesDef}`;
+      lecturaDefiende += '.';
+    }
+    return {
+      cobra: { n: cobra.length, corners, tirosLibres, envios, lectura: lecturaCobra, nota: nota('cobra') },
+      defiende: { n: defiende.length, marcajes, lectura: lecturaDefiende, nota: nota('defiende') },
+    };
+  };
+
   const handleExportPDF = async () => {
     if (!selected) return;
     try {
@@ -478,6 +592,17 @@ const AnalisisRivalPage: React.FC = () => {
           rivalName: selected.rival_name,
           ofensiva: buildFase('Ofensiva', REPORT_QUESTION.Ofensiva || ''),
           defensiva: buildFase('Defensiva', REPORT_QUESTION.Defensiva || ''),
+          balonParado: (() => {
+            const bp = bpReport();
+            if (bp.cobra.n === 0 && bp.defiende.n === 0) return undefined;
+            return {
+              pregunta: REPORT_QUESTION.BalonParado || '',
+              cobra: bp.cobra.n > 0 ? `${bp.cobra.lectura} (${bp.cobra.n} cobros: ${bp.cobra.corners} córners, ${bp.cobra.tirosLibres} tiros libres)` : 'Sin cobros registrados todavía.',
+              notaCobra: bp.cobra.nota || undefined,
+              defiende: bp.defiende.n > 0 ? bp.defiende.lectura : 'Sin cobros del otro equipo registrados todavía.',
+              notaDefiende: bp.defiende.nota || undefined,
+            };
+          })(),
         },
         { userName: profile?.username || 'Usuario', teamName: teamName(selected.team_id) }
       );
@@ -620,11 +745,12 @@ const AnalisisRivalPage: React.FC = () => {
             <div className="flex gap-2 mb-4">
               {TIPOS.map((t, i) => (
                 <button key={t} onClick={() => selectTipo(t)} className={`flex-1 px-3 py-2 rounded-lg text-sm border-2 transition-colors ${selTipo === t ? 'bg-cyan-900/40 border-cyan-500 text-cyan-300' : 'bg-gray-700 border-transparent text-gray-300 hover:bg-gray-600'}`}>
-                  <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-gray-900 text-[10px] mr-1.5 text-gray-400">{i + 1}</span>{t === 'Transicion' ? 'Transición' : t}
+                  <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-gray-900 text-[10px] mr-1.5 text-gray-400">{i + 1}</span>{TIPO_LABEL[t]}
                 </button>
               ))}
             </div>
 
+            {selTipo !== 'BalonParado' && (<>
             <p className="text-xs text-gray-500 mb-2">Zona</p>
             <div className="flex gap-2 mb-4">
               {ZONAS.map((z, i) => (
@@ -633,8 +759,51 @@ const AnalisisRivalPage: React.FC = () => {
                 </button>
               ))}
             </div>
+            </>)}
 
-            {selTipo && (
+            {selTipo === 'BalonParado' && (() => {
+              const chip = (activo: boolean) => `px-2.5 py-1.5 rounded-lg text-xs border-2 transition-colors ${activo ? 'bg-cyan-900/40 border-cyan-500 text-cyan-300' : 'bg-gray-700 border-transparent text-gray-300 hover:bg-gray-600'}`;
+              return (
+                <div className="space-y-3 mb-4">
+                  <div className="flex gap-2">
+                    <button onClick={() => selectBpLado('cobra')} className={`flex-1 px-3 py-2 rounded-lg text-sm border-2 transition-colors ${bpLado === 'cobra' ? 'bg-cyan-900/40 border-cyan-500 text-cyan-300' : 'bg-gray-700 border-transparent text-gray-300 hover:bg-gray-600'}`}>El rival cobra</button>
+                    <button onClick={() => selectBpLado('defiende')} className={`flex-1 px-3 py-2 rounded-lg text-sm border-2 transition-colors ${bpLado === 'defiende' ? 'bg-cyan-900/40 border-cyan-500 text-cyan-300' : 'bg-gray-700 border-transparent text-gray-300 hover:bg-gray-600'}`}>El rival defiende</button>
+                  </div>
+                  {bpLado === 'cobra' && (
+                    <>
+                      <div>
+                        <p className="text-xs text-gray-500 mb-2">Cobro</p>
+                        <div className="flex gap-2 flex-wrap">{BP_COBROS.map(c => <button key={c} onClick={() => { setBpCobro(c); setTagError(null); }} className={chip(bpCobro === c)}>{c}</button>)}</div>
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500 mb-2">Zona de envío</p>
+                        <div className="flex gap-2 flex-wrap">{BP_ENVIOS.map(v => <button key={v} onClick={() => { setBpDetalle(v); setTagError(null); }} className={chip(bpDetalle === v)}>{v}</button>)}</div>
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500 mb-2">Resultado</p>
+                        <div className="flex gap-2 flex-wrap">{BP_RES_COBRA.map(v => <button key={v} onClick={() => setBpResultado(v)} className={chip(bpResultado === v)}>{v}</button>)}</div>
+                      </div>
+                      <p className="text-xs text-gray-500">Por voz: "córner primer palo remate", luego "registrar"</p>
+                    </>
+                  )}
+                  {bpLado === 'defiende' && (
+                    <>
+                      <div>
+                        <p className="text-xs text-gray-500 mb-2">Tipo de marcaje</p>
+                        <div className="flex gap-2 flex-wrap">{BP_MARCAJES.map(v => <button key={v} onClick={() => { setBpDetalle(v); setTagError(null); }} className={chip(bpDetalle === v)}>{v}</button>)}</div>
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500 mb-2">Resultado del cobro del otro equipo</p>
+                        <div className="flex gap-2 flex-wrap">{BP_RES_DEFIENDE.map(v => <button key={v} onClick={() => setBpResultado(v)} className={chip(bpResultado === v)}>{v}</button>)}</div>
+                      </div>
+                      <p className="text-xs text-gray-500">Por voz: "en zona despejado", luego "registrar"</p>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
+
+            {selTipo && selTipo !== 'BalonParado' && (
               <div className="grid grid-cols-2 gap-3 mb-4">
                 <div>
                   <p className="text-xs text-gray-500 mb-2">{ATTR_CONFIG[selTipo].lbl1}</p>
@@ -667,14 +836,14 @@ const AnalisisRivalPage: React.FC = () => {
 
           <div className="bg-gray-800 rounded-xl p-4 border border-gray-700">
             <p className="text-xs text-gray-500 mb-1">Nota del analista (opcional)</p>
-            <p className="text-xs text-gray-600 mb-2">Se guarda para: <span className="text-gray-300">{selTipo && selZona ? `${selTipo === 'Transicion' ? 'Transición' : selTipo} · ${ZONA_LABEL[selZona]}` : 'selecciona tipo y zona arriba'}</span></p>
+            <p className="text-xs text-gray-600 mb-2">Se guarda para: <span className="text-gray-300">{selTipo === 'BalonParado' ? (bpLado ? `Balón parado · ${bpLado === 'cobra' ? 'cuando cobra' : 'cuando defiende'}` : 'elige si el rival cobra o defiende') : selTipo && selZona ? `${TIPO_LABEL[selTipo]} · ${ZONA_LABEL[selZona]}` : 'selecciona tipo y zona arriba'}</span></p>
             <textarea value={notaTexto} onChange={e => handleNotaChange(e.target.value)} disabled={!notaKey} rows={2} placeholder="Ej. Rice y Zubimendi como ejecutores clave del primer pase tras el robo" className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none resize-y disabled:opacity-50" />
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {TIPOS.map(t => (
               <div key={t} className="bg-gray-800 rounded-lg p-3">
-                <p className="text-xs text-gray-500">{t === 'Transicion' ? 'Transición' : t}</p>
+                <p className="text-xs text-gray-500">{TIPO_LABEL[t]}</p>
                 <p className="text-2xl font-medium text-white">{countsByTipo[t]}</p>
               </div>
             ))}
@@ -686,7 +855,9 @@ const AnalisisRivalPage: React.FC = () => {
               <div className="space-y-1.5">
                 {draftMomentos.map(m => (
                   <div key={m.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2 text-sm">
-                    <span className="text-gray-300">{m.tipo === 'Transicion' ? 'Transición' : m.tipo} · {ZONA_LABEL[m.zona]} · {m.attr1}{m.attr2 ? ` · ${m.attr2}` : ''}</span>
+                    <span className="text-gray-300">{m.tipo === 'BalonParado'
+                      ? `Balón parado · ${m.lado === 'cobra' ? `Cobra${m.cobro ? ` · ${m.cobro}` : ''}` : 'Defiende'} · ${m.attr1}${m.attr2 ? ` · ${m.attr2}` : ''}`
+                      : `${TIPO_LABEL[m.tipo]} · ${m.zona ? ZONA_LABEL[m.zona] : ''} · ${m.attr1}${m.attr2 ? ` · ${m.attr2}` : ''}`}</span>
                     <button onClick={() => eliminarMomento(m.id)} aria-label="Eliminar momento" className="w-6 h-6 flex items-center justify-center text-gray-500 hover:text-red-400 transition-colors">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M6 18L18 6M6 6l12 12" /></svg>
                     </button>
@@ -707,11 +878,64 @@ const AnalisisRivalPage: React.FC = () => {
         <div className="space-y-4">
           <div className="flex gap-2">
             {REPORT_TIPOS.map(t => (
-              <button key={t} onClick={() => setRepTipo(t)} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${repTipo === t ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>{t}</button>
+              <button key={t} onClick={() => setRepTipo(t)} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${repTipo === t ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>{TIPO_LABEL[t]}</button>
             ))}
           </div>
           {REPORT_QUESTION[repTipo] && <p className="text-sm text-gray-400 italic">{REPORT_QUESTION[repTipo]}</p>}
 
+          {repTipo === 'BalonParado' ? (() => {
+            const bp = bpReport();
+            const maxEnvio = Math.max(1, ...bp.cobra.envios.map(e => e.n));
+            return (
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="bg-gray-800 rounded-xl p-4 border border-gray-700 space-y-3">
+                  <p className="text-base font-medium text-white">Cuando cobra</p>
+                  {bp.cobra.n === 0 ? <p className="text-sm text-gray-500">Sin cobros registrados todavía.</p> : (
+                    <>
+                      <p className="text-xs text-gray-500">Zona de envío · {bp.cobra.n} cobros ({bp.cobra.corners} córners · {bp.cobra.tirosLibres} tiros libres)</p>
+                      {bp.cobra.envios.map(e => (
+                        <div key={e.label} className="grid items-center gap-2 text-xs" style={{ gridTemplateColumns: '90px minmax(0,1fr) 24px' }}>
+                          <span className="text-gray-300">{e.label}</span>
+                          <div className="h-2 bg-gray-700 rounded-full overflow-hidden"><div className="h-full bg-cyan-500 rounded-full" style={{ width: `${(e.n / maxEnvio) * 100}%` }} /></div>
+                          <span className="text-gray-200 font-semibold text-right">{e.n}</span>
+                        </div>
+                      ))}
+                      <p className="text-sm text-gray-200 bg-gray-900 rounded-lg p-2.5"><span className="font-semibold">Lectura automática:</span> {bp.cobra.lectura}</p>
+                    </>
+                  )}
+                  {bp.cobra.nota && (
+                    <div className="border-t border-gray-700 pt-2">
+                      <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">Nota del analista</p>
+                      <p className="text-sm italic text-gray-300">{bp.cobra.nota}</p>
+                    </div>
+                  )}
+                </div>
+                <div className="bg-gray-800 rounded-xl p-4 border border-gray-700 space-y-3">
+                  <p className="text-base font-medium text-white">Cuando defiende</p>
+                  {bp.defiende.n === 0 ? <p className="text-sm text-gray-500">Sin cobros del otro equipo registrados todavía.</p> : (
+                    <>
+                      <p className="text-xs text-gray-500">Tipo de marcaje · {bp.defiende.n} cobros del otro equipo en el video</p>
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        {bp.defiende.marcajes.map(m => (
+                          <div key={m.label} className="bg-gray-900 rounded-lg p-3">
+                            <p className="text-2xl font-bold text-white">{m.n}</p>
+                            <p className="text-xs text-gray-400">{m.label}</p>
+                          </div>
+                        ))}
+                      </div>
+                      <p className="text-sm text-gray-200 bg-gray-900 rounded-lg p-2.5"><span className="font-semibold">Lectura automática:</span> {bp.defiende.lectura}</p>
+                    </>
+                  )}
+                  {bp.defiende.nota && (
+                    <div className="border-t border-gray-700 pt-2">
+                      <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">Nota del analista</p>
+                      <p className="text-sm italic text-gray-300">{bp.defiende.nota}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })() : (<>
           <div className="flex gap-5 flex-wrap items-start">
             <div className="flex-1 min-w-[200px]" style={{ flexBasis: 220 }}>
               <p className="text-xs text-gray-500 mb-2 text-center">Toca una zona de la cancha para ver su detalle</p>
@@ -792,6 +1016,7 @@ const AnalisisRivalPage: React.FC = () => {
               ))}
             </div>
           </div>
+          </>)}
 
           <button onClick={handleExportPDF} className="w-full flex items-center justify-center gap-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>Descargar PDF

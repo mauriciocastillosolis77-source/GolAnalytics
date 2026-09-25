@@ -12,6 +12,7 @@ import { cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios, esJ
 import MapaZonas from '../components/charts/MapaZonas';
 import GolesPorTipo from '../components/charts/GolesPorTipo';
 import MapaPorteria from '../components/charts/MapaPorteria';
+import { esAccionBalonParado, contarPenales, PENAL_FAVOR, PENAL_CONTRA } from '../utils/balonParado';
 
 const RendimientoPage: React.FC = () => {
     const { profile } = useAuth();
@@ -193,7 +194,8 @@ const RendimientoPage: React.FC = () => {
             };
         }
 
-        const totalAcciones = playerTags.length;
+        // Balón parado y penales no suman en "Acciones Totales" (solo se cuentan en su línea).
+        const totalAcciones = playerTags.filter(t => !esAccionBalonParado(t.accion)).length;
         const accionesLogradas = efectividadTags.filter(esAccionLograda).length;
         const efectividadGlobal = efectividadTags.length > 0 ? Math.round((accionesLogradas / efectividadTags.length) * 100) : 0;
 
@@ -533,6 +535,12 @@ const RendimientoPage: React.FC = () => {
             };
         }).sort((a, b) => b.total - a.total);
     }, [playerTags]);
+
+    // Mejora 5: penales del jugador (a favor como tirador; en contra como portero).
+    const penalesJugador = useMemo(() => ({
+        favor: contarPenales(playerTags, PENAL_FAVOR),
+        contra: contarPenales(playerTags, PENAL_CONTRA),
+    }), [playerTags]);
 
     // % de atajadas del jugador seleccionado (solo aplica a porteros).
     const porteriaJugador = useMemo(() => {
@@ -1028,7 +1036,16 @@ const RendimientoPage: React.FC = () => {
                             </div>
 
                             {/* Sus goles por tipo (mejora 6) */}
-                            <GolesPorTipo titulo="Sus goles por tipo" aFavor={playerTags.filter(t => t.accion === 'Goles a favor')} />
+                            <GolesPorTipo
+                                titulo="Sus goles por tipo"
+                                aFavor={playerTags.filter(t => t.accion === 'Goles a favor')}
+                                pie={penalesJugador.favor.tirados > 0 ? (
+                                    <p className="border-t border-gray-700 pt-2 text-sm text-violet-300">
+                                        Penales: <span className="font-bold">{penalesJugador.favor.goles} anotados de {penalesJugador.favor.tirados}</span>
+                                        {penalesJugador.favor.conResultado < penalesJugador.favor.tirados && <span className="text-xs text-gray-500"> · {penalesJugador.favor.tirados - penalesJugador.favor.conResultado} sin resultado marcado</span>}
+                                    </p>
+                                ) : undefined}
+                            />
 
                             {/* Recuperaciones de Balón */}
                             <div className="bg-gray-800 rounded-lg p-6">
@@ -1179,9 +1196,19 @@ const RendimientoPage: React.FC = () => {
                             </div>
                         </div>
                         {/* Dónde le anotan (mejora 6): solo si el jugador recibió goles, es decir, es portero */}
-                        {porteriaJugador.golesRecibidos > 0 && (
+                        {(porteriaJugador.golesRecibidos > 0 || penalesJugador.contra.tirados > 0) && (
                             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
-                                <MapaPorteria titulo="Dónde le anotan" tags={playerTags.filter(t => t.accion === 'Goles recibidos')} matches={matches} />
+                                <MapaPorteria
+                                    titulo="Dónde le anotan"
+                                    tags={playerTags.filter(t => t.accion === 'Goles recibidos')}
+                                    matches={matches}
+                                    pie={penalesJugador.contra.tirados > 0 ? (
+                                        <p className="border-t border-gray-700 pt-2 text-sm text-violet-300">
+                                            Penales en contra: <span className="font-bold">{penalesJugador.contra.atajados} atajado{penalesJugador.contra.atajados === 1 ? '' : 's'} de {penalesJugador.contra.tirados}</span>
+                                            {penalesJugador.contra.conResultado < penalesJugador.contra.tirados && <span className="text-xs text-gray-500"> · {penalesJugador.contra.tirados - penalesJugador.contra.conResultado} sin resultado marcado</span>}
+                                        </p>
+                                    ) : undefined}
+                                />
                             </div>
                         )}
                     </div>

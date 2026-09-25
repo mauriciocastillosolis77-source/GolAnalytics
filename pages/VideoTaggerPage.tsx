@@ -14,6 +14,7 @@ import { ACCIONES_CON_ZONA, TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codig
 import { esJugadorFicticio } from '../utils/efectividad';
 import { ACCIONES_GOL, TIPOS_GOL, TIPO_GOL_LABEL, GOLPEOS, GOLPEO_LABEL, detalleGolDe, detalleGolDesdeVoz, resumenGol, etiquetaPorteria, type DetalleGol } from '../utils/goles';
 import PorteriaEstadio from '../components/charts/PorteriaEstadio';
+import { ACCIONES_ABP, ACCIONES_ABP_SET, ACCIONES_PENAL, ACCIONES_EN_CONTRA, ENVIOS, ENVIO_LABEL, RESULTADOS_COBRO, RESULTADO_COBRO_LABEL, MARCAJES, MARCAJE_LABEL, RESULTADOS_PENAL, RESULTADO_PENAL_LABEL, detalleAbpDe, resumenAbp, accionAbpDesdeVoz, detalleAbpDesdeVoz, type DetalleAbp } from '../utils/balonParado';
 
 declare var XLSX: any;
 
@@ -482,7 +483,7 @@ const VideoTaggerPage: React.FC = () => {
 
         // Mejora 1: si es recuperación o pérdida de un jugador real, pedir la zona en el panel de detalle.
         const jugadorDelTag = players.find(p => p.id === selectedPlayerId);
-        if ((ACCIONES_CON_ZONA.has(accion) || ACCIONES_GOL.has(accion)) && !esJugadorFicticio(jugadorDelTag?.nombre)) {
+        if ((ACCIONES_CON_ZONA.has(accion) || ACCIONES_GOL.has(accion) || ACCIONES_ABP_SET.has(accion)) && !esJugadorFicticio(jugadorDelTag?.nombre)) {
             setDetallePendiente({ id: newTag.id, match_id: newTag.match_id, player_id: newTag.player_id, accion: newTag.accion, timestamp: newTag.timestamp });
         } else {
             setDetallePendiente(null);
@@ -556,6 +557,28 @@ const VideoTaggerPage: React.FC = () => {
         }
         setTags(prev => prev.map(t => (t.id === tag.id ? { ...t, detalle: nuevo } : t)));
         return `⚽ ${resumenGol(detalleGolDe({ detalle: nuevo })) || 'Detalle guardado'}`;
+    };
+
+    // Mejoras 4 y 5: agrega el detalle de balón parado o penal (zona de envío, resultado,
+    // marcaje; o portería y resultado del penal). Igual que el gol: el panel sigue abierto
+    // hasta "listo", "saltar" o la siguiente jugada.
+    const aplicarDetalleAbp = async (parcial: DetalleAbp): Promise<string> => {
+        const pend = detallePendiente;
+        if (!pend) return '⚠ No hay jugada esperando detalle';
+        const tag = tags.find(t => t.id === pend.id)
+            || tags.find(t => t.match_id === pend.match_id && t.player_id === pend.player_id && t.accion === pend.accion && t.timestamp === pend.timestamp);
+        if (!tag) { setDetallePendiente(null); return '⚠ No encontré la jugada'; }
+        const nuevo = { ...(tag.detalle || {}), ...parcial };
+        const esTemporal = String(tag.id).startsWith('temp-');
+        if (!esTemporal) {
+            const { error } = await supabase.from('tags').update({ detalle: nuevo }).eq('id', tag.id);
+            if (error) {
+                console.error('Error al guardar el detalle de balón parado', error);
+                return '⚠ No se pudo guardar el detalle';
+            }
+        }
+        setTags(prev => prev.map(t => (t.id === tag.id ? { ...t, detalle: nuevo } : t)));
+        return `🚩 ${resumenAbp(tag.accion, detalleAbpDe({ accion: tag.accion, detalle: nuevo })) || 'Detalle guardado'}`;
     };
 
     // Handler for saving all tags (jugadas) to DB
@@ -1258,6 +1281,32 @@ const VideoTaggerPage: React.FC = () => {
         // ── Mejora 1: zona de la jugada ("creación centro", "zona inicio izquierda") y "saltar" ──
         // Solo actúa si hay una recuperación o pérdida esperando zona; si no, sigue con los demás comandos.
         // Mejora 6: detalle del gol ("contraataque dentro del área abajo izquierda", "cabeza", "listo")
+        // Mejoras 4 y 5: decir una acción de balón parado la selecciona ("córner a favor",
+        // "tiro libre en contra", "penal a favor"). Va antes del detalle para no confundirla con él.
+        const accionAbpDicha = accionAbpDesdeVoz(text);
+        if (accionAbpDicha) {
+            setSelectedAction(accionAbpDicha);
+            show(`🎯 Acción: ${accionAbpDicha}`);
+            return;
+        }
+        // Detalle de balón parado o penal: "primer palo remate en zona", "abajo izquierda gol", "listo".
+        // No se lee como detalle si la frase es otra acción, un jugador, "etiquetar" o "guardar".
+        if (detallePendiente && ACCIONES_ABP_SET.has(detallePendiente.accion)) {
+            if (/\blisto\b|\bsaltar\b|\bterminar\b/.test(text)) {
+                setDetallePendiente(null);
+                show('✅ Detalle cerrado');
+                return;
+            }
+            const esOtroComando = /\bjugador\b|\betiquetar\b|\betiqueta\b|\bguardar\b|\btecla\b|\bletra\b/.test(text)
+                || METRICS.some(m => text.includes(m.toLowerCase()));
+            if (!esOtroComando) {
+                const dicho = detalleAbpDesdeVoz(detallePendiente.accion, text);
+                if (Object.keys(dicho).length > 0) {
+                    aplicarDetalleAbp(dicho).then(show);
+                    return;
+                }
+            }
+        }
         if (detallePendiente && ACCIONES_GOL.has(detallePendiente.accion)) {
             if (/\blisto\b|\bsaltar\b|\bterminar\b/.test(text)) {
                 setDetallePendiente(null);
@@ -1776,6 +1825,9 @@ const VideoTaggerPage: React.FC = () => {
                                 className="flex-1 min-w-[150px] bg-gray-600 p-2 rounded text-sm"
                             >
                                 {METRICS.map(m => <option key={m} value={m}>{m}</option>)}
+                                <optgroup label="Balón parado y penales (solo se cuentan)">
+                                    {ACCIONES_ABP.map(m => <option key={m} value={m}>{m}</option>)}
+                                </optgroup>
                             </select>
                             <button 
                                 onClick={addTag} 
@@ -1858,6 +1910,18 @@ const VideoTaggerPage: React.FC = () => {
                                                     title="Marcar o cambiar el detalle de este gol"
                                                 >
                                                     {resumen ? `Gol: ${resumen}` : '+ detalle del gol'}
+                                                </button>
+                                            );
+                                        })()}
+                                        {ACCIONES_ABP_SET.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (() => {
+                                            const resumen = resumenAbp(tag.accion, detalleAbpDe(tag));
+                                            return (
+                                                <button
+                                                    onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
+                                                    className={`block text-xs mt-1 underline text-left ${resumen ? 'text-cyan-300' : 'text-gray-400'}`}
+                                                    title="Marcar o cambiar el detalle de esta jugada"
+                                                >
+                                                    {resumen ? `Detalle: ${resumen}` : '+ detalle'}
                                                 </button>
                                             );
                                         })()}
@@ -2012,7 +2076,66 @@ const VideoTaggerPage: React.FC = () => {
                 {/* Detalle de la jugada (mejora 1: zona de recuperaciones y pérdidas) */}
                 <div className={`bg-gray-800 rounded-lg p-4 ${detallePendiente ? 'border-2 border-cyan-500' : ''}`}>
                     <h3 className="text-lg font-semibold mb-2 text-white">Detalle de la jugada</h3>
-                    {detallePendiente && ACCIONES_GOL.has(detallePendiente.accion) ? (() => {
+                    {detallePendiente && ACCIONES_ABP_SET.has(detallePendiente.accion) ? (() => {
+                        const jug = players.find(p => p.id === detallePendiente.player_id);
+                        const tagActual = tags.find(t => t.id === detallePendiente.id)
+                            || tags.find(t => t.match_id === detallePendiente.match_id && t.player_id === detallePendiente.player_id && t.accion === detallePendiente.accion && t.timestamp === detallePendiente.timestamp);
+                        const d = tagActual ? detalleAbpDe(tagActual) : {} as DetalleAbp;
+                        const aplicar = (parcial: DetalleAbp) => { aplicarDetalleAbp(parcial).then(msg => { setVoiceStatus(msg); setTimeout(() => setVoiceStatus(''), 2500); }); };
+                        const chip = (activo: boolean) => `px-2.5 py-1.5 rounded text-sm ${activo ? 'bg-cyan-700 border-2 border-cyan-300 text-white font-semibold' : 'bg-gray-700 hover:bg-gray-600 text-gray-200 border-2 border-transparent'}`;
+                        const esPenal = ACCIONES_PENAL.has(detallePendiente.accion);
+                        const enContra = ACCIONES_EN_CONTRA.has(detallePendiente.accion);
+                        const rol = esPenal ? (enContra ? 'portero' : 'tirador') : (enContra ? 'marcaba o despejó' : 'lanzador');
+                        return (
+                            <div className="space-y-2">
+                                <p className="text-sm text-gray-200">
+                                    {detallePendiente.accion} · {jug ? `#${jug.numero} ${jug.nombre.trim().split(/\s+/)[0]}` : 'Jugador'} <span className="text-gray-400">({rol})</span>
+                                </p>
+                                {esPenal ? (
+                                    <>
+                                        <p className="text-xs text-gray-400">¿A dónde tiró? (portería vista de frente)</p>
+                                        <PorteriaEstadio rgb={enContra ? '251,146,60' : '34,211,238'} seleccion={d.porteria || null} onSelect={k => aplicar({ porteria: k })} />
+                                        {d.porteria && <p className="text-xs text-cyan-300">Tiró: {(etiquetaPorteria(d.porteria) || '').toLowerCase()}</p>}
+                                        <p className="text-xs text-gray-400">Resultado</p>
+                                        <div className="grid grid-cols-4 gap-1">
+                                            {RESULTADOS_PENAL.map(r => <button key={r} onClick={() => aplicar({ resultado: r })} className={chip(d.resultado === r)}>{RESULTADO_PENAL_LABEL[r]}</button>)}
+                                        </div>
+                                    </>
+                                ) : (
+                                    <>
+                                        <p className="text-xs text-gray-400">Zona de envío</p>
+                                        <div className="flex flex-wrap gap-1">
+                                            {ENVIOS.map(e => <button key={e} onClick={() => aplicar({ envio: e })} className={chip(d.envio === e)}>{ENVIO_LABEL[e]}</button>)}
+                                        </div>
+                                        <p className="text-xs text-gray-400">Resultado</p>
+                                        <div className="flex gap-1">
+                                            {RESULTADOS_COBRO.map(r => <button key={r} onClick={() => aplicar({ resultado: r })} className={`flex-1 ${chip(d.resultado === r)}`}>{RESULTADO_COBRO_LABEL[r]}</button>)}
+                                        </div>
+                                        {enContra && (
+                                            <>
+                                                <p className="text-xs text-gray-400">Tipo de marcaje</p>
+                                                <div className="flex gap-1">
+                                                    {MARCAJES.map(m => <button key={m} onClick={() => aplicar({ marcaje: m })} className={`flex-1 ${chip(d.marcaje === m)}`}>{MARCAJE_LABEL[m]}</button>)}
+                                                </div>
+                                            </>
+                                        )}
+                                    </>
+                                )}
+                                <div className="flex items-center gap-2">
+                                    <p className="flex-1 text-sm bg-gray-900 rounded px-2 py-1.5 text-gray-200">
+                                        Di: <span className="text-cyan-300">{esPenal ? '"abajo izquierda gol"' : enContra ? '"segundo palo remate en zona"' : '"primer palo remate"'}</span> · <span className="text-cyan-300">"listo"</span> para cerrar
+                                    </p>
+                                    <button
+                                        onClick={() => setDetallePendiente(null)}
+                                        className="px-3 py-2 rounded bg-gray-600 hover:bg-gray-500 text-sm whitespace-nowrap"
+                                    >
+                                        Listo
+                                    </button>
+                                </div>
+                                <p className="text-xs text-gray-500">Solo se cuenta: no cambia la efectividad. Sigue etiquetando el tiro, gol o atajada como siempre.</p>
+                            </div>
+                        );
+                    })() : detallePendiente && ACCIONES_GOL.has(detallePendiente.accion) ? (() => {
                         const jug = players.find(p => p.id === detallePendiente.player_id);
                         const tagActual = tags.find(t => t.id === detallePendiente.id)
                             || tags.find(t => t.match_id === detallePendiente.match_id && t.player_id === detallePendiente.player_id && t.accion === detallePendiente.accion && t.timestamp === detallePendiente.timestamp);
@@ -2090,7 +2213,7 @@ const VideoTaggerPage: React.FC = () => {
                             </div>
                         );
                     })() : (
-                        <p className="text-sm text-gray-400">Aparece al etiquetar una recuperación o una pérdida (zona) o un gol (tipo, área y portería).</p>
+                        <p className="text-sm text-gray-400">Aparece al etiquetar una recuperación o una pérdida (zona), un gol (tipo, área y portería) o un balón parado o penal.</p>
                     )}
                 </div>
 
