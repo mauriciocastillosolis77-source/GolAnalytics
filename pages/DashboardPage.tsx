@@ -964,7 +964,7 @@ const DashboardPage: React.FC = () => {
                     {/* GOLES POR TIPO (mejora 6), debajo de las tarjetas de portería */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <div className="lg:col-span-2">
-                            <GolesPorTipo titulo="Goles por tipo" aFavor={golesAFavorTags} enContra={golesRecibidosTags} />
+                            <GolesPorTipo titulo="Goles por tipo" aFavor={golesAFavorTags} enContra={golesRecibidosTags} conPorterias />
                         </div>
                     </div>
 
