@@ -1,4 +1,5 @@
 import type { Tag, Player } from '../types';
+import { ACCIONES_ABP } from './balonParado';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Reglas de efectividad de GolAnalytics (un solo lugar para toda la plataforma).
@@ -12,6 +13,8 @@ import type { Tag, Player } from '../types';
 //        Pérdida de balón (de un jugador real).
 // NO CUENTAN en efectividad:
 //   - Goles recibidos (se muestran solo como número).
+//   - Balón parado y penales (Córner / Tiro libre / Penal, a favor y en contra):
+//     solo se cuentan en su propia tarjeta; tampoco suman en "Acciones Totales".
 //   - Cualquier acción del jugador ficticio "Perdida" (se usa solo para medir
 //     tiempos de recuperación; no es una acción de nuestro equipo).
 //
@@ -33,6 +36,7 @@ export const ACCIONES_SIEMPRE_FALLADA = new Set<string>([
 
 export const ACCIONES_FUERA_DE_EFECTIVIDAD = new Set<string>([
     'Goles recibidos',
+    ...ACCIONES_ABP,
 ]);
 
 // Quita espacios al inicio/final, pasa a minúsculas y quita acentos.
