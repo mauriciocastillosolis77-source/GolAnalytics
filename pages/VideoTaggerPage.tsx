@@ -12,7 +12,8 @@ import { fetchVideosForMatch, createVideoForMatch, Video as VideoMeta } from '..
 import { fetchTeams, getOrCreateTeam, type Team } from '../services/teamsService';
 import { ACCIONES_CON_ZONA, TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona, etiquetaZona, zonaDesdeVoz } from '../utils/zonas';
 import { esJugadorFicticio } from '../utils/efectividad';
-import { ACCIONES_GOL, TIPOS_GOL, TIPO_GOL_LABEL, ALTURAS, LADOS, ALTURA_LABEL, LADO_LABEL, GOLPEOS, GOLPEO_LABEL, codigoPorteria, detalleGolDe, detalleGolDesdeVoz, resumenGol, type DetalleGol } from '../utils/goles';
+import { ACCIONES_GOL, TIPOS_GOL, TIPO_GOL_LABEL, GOLPEOS, GOLPEO_LABEL, detalleGolDe, detalleGolDesdeVoz, resumenGol, etiquetaPorteria, type DetalleGol } from '../utils/goles';
+import PorteriaEstadio from '../components/charts/PorteriaEstadio';
 
 declare var XLSX: any;
 
@@ -2033,12 +2034,8 @@ const VideoTaggerPage: React.FC = () => {
                                     <button onClick={() => aplicar({ area: 'fuera' })} className={`flex-1 ${chip(d.area === 'fuera')}`}>Fuera del área</button>
                                 </div>
                                 <p className="text-xs text-gray-400">¿Dónde entró? (portería vista de frente)</p>
-                                <div className="grid grid-cols-3 gap-1 border-4 border-b-0 border-gray-200 rounded-t p-1">
-                                    {ALTURAS.map(a => LADOS.map(l => {
-                                        const k = codigoPorteria(a, l);
-                                        return <button key={k} onClick={() => aplicar({ porteria: k })} className={`min-h-[36px] text-xs ${chip(d.porteria === k)}`}>{ALTURA_LABEL[a]} {LADO_LABEL[l] === 'Izquierda' ? 'izq' : LADO_LABEL[l] === 'Derecha' ? 'der' : 'centro'}</button>;
-                                    }))}
-                                </div>
+                                <PorteriaEstadio rgb="34,211,238" seleccion={d.porteria || null} onSelect={k => aplicar({ porteria: k })} />
+                                {d.porteria && <p className="text-xs text-cyan-300">Entró: {(etiquetaPorteria(d.porteria) || '').toLowerCase()}</p>}
                                 <p className="text-xs text-gray-400">Golpeo (opcional)</p>
                                 <div className="flex gap-1">
                                     {GOLPEOS.map(g => <button key={g} onClick={() => aplicar({ golpeo: g })} className={`flex-1 ${chip(d.golpeo === g)}`}>{GOLPEO_LABEL[g]}</button>)}
