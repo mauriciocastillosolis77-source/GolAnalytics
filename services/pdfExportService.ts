@@ -52,6 +52,7 @@ interface RivalReportData {
   ofensiva: RivalFaseData;
   defensiva: RivalFaseData;
   balonParado?: RivalBalonParadoData; // tipo 4 (solo si hay momentos de balón parado)
+  dafo?: { fortalezas: string[]; debilidades: string[]; oportunidades: string[]; amenazas: string[] };
 }
 
 const ZONA_COLOR_RGB: Record<string, [number, number, number]> = {
@@ -408,6 +409,39 @@ function addBalonParadoSection(doc: jsPDF, bp: RivalBalonParadoData, startY: num
   return y + 4;
 }
 
+// DAFO del rival: 4 bloques de viñetas.
+function addDafoSection(doc: jsPDF, dafo: NonNullable<RivalReportData['dafo']>, startY: number, pageWidth: number): number {
+  const pageHeight = doc.internal.pageSize.getHeight();
+  let y = startY;
+  if (y > pageHeight - 90) { doc.addPage(); y = 20; }
+  y = addSection(doc, 'DAFO DEL RIVAL', y, pageWidth);
+  const bloque = (titulo: string, items: string[], color: [number, number, number]) => {
+    if (y > pageHeight - 40) { doc.addPage(); y = 20; }
+    doc.setFillColor(...color);
+    doc.rect(15, y - 3, 3, 3, 'F');
+    doc.setFontSize(9.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...COLORS.dark);
+    doc.text(titulo, 21, y);
+    y += 4.5;
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(...COLORS.text);
+    (items || []).forEach(it => {
+      const lines = doc.splitTextToSize(`• ${it}`, pageWidth - 36);
+      if (y + lines.length * 4.5 > pageHeight - 30) { doc.addPage(); y = 20; }
+      doc.text(lines, 21, y);
+      y += lines.length * 4.5 + 1;
+    });
+    y += 4;
+  };
+  bloque('Fortalezas del rival', dafo.fortalezas, COLORS.success);
+  bloque('Debilidades del rival', dafo.debilidades, COLORS.danger);
+  bloque('Oportunidades para nosotros', dafo.oportunidades, COLORS.secondary);
+  bloque('Amenazas para nosotros', dafo.amenazas, COLORS.warning);
+  return y + 4;
+}
+
 function addFooter(doc: jsPDF) {
   const pageCount = doc.getNumberOfPages();
   const pageWidth = doc.internal.pageSize.getWidth();
@@ -643,6 +677,7 @@ export async function exportRivalAnalysisToPDF(
   y = addFaseSection(doc, 'FASE OFENSIVA', data.ofensiva, y, pageWidth);
   y = addFaseSection(doc, 'FASE DEFENSIVA', data.defensiva, y, pageWidth);
   if (data.balonParado) y = addBalonParadoSection(doc, data.balonParado, y, pageWidth);
+  if (data.dafo) y = addDafoSection(doc, data.dafo, y, pageWidth);
 
   addFooter(doc);
 
