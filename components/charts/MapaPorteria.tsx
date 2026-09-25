@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import type { Tag, Match } from '../../types';
-import { ALTURAS, LADOS, ALTURA_LABEL, LADO_LABEL, codigoPorteria, detalleGolDe, etiquetaPorteria } from '../../utils/goles';
+import { ALTURAS, LADOS, codigoPorteria, detalleGolDe, etiquetaPorteria } from '../../utils/goles';
+import PorteriaEstadio from './PorteriaEstadio';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Mini portería 3×3 (mejora 6): dónde entraron los goles que recibe.
@@ -55,19 +56,7 @@ const MapaPorteria: React.FC<Props> = ({ titulo, tags, matches }) => {
                 </div>
             )}
             <div className="mx-auto w-full max-w-sm">
-                <div className="grid grid-cols-3 gap-1 p-1 border-4 border-b-0 border-gray-100 rounded-t" style={{ backgroundImage: 'linear-gradient(rgba(255,255,255,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.06) 1px, transparent 1px)', backgroundSize: '12px 12px' }}>
-                    {ALTURAS.map(a => LADOS.map(l => {
-                        const k = codigoPorteria(a, l);
-                        const v = conteo[k] || 0;
-                        const alpha = max > 0 && v > 0 ? 0.25 + 0.65 * (v / max) : 0;
-                        return (
-                            <div key={k} className="h-12 rounded flex items-center justify-center" style={{ backgroundColor: `rgba(251,146,60,${alpha.toFixed(2)})` }} title={`${ALTURA_LABEL[a]} ${LADO_LABEL[l].toLowerCase()}: ${v}`}>
-                                {v > 0 && <span className="min-w-[28px] h-7 px-2 rounded-full bg-gray-900/80 text-white text-sm font-bold flex items-center justify-center">{v}</span>}
-                            </div>
-                        );
-                    }))}
-                </div>
-                <div className="h-2 bg-green-800 rounded-b" />
+                <PorteriaEstadio conteo={conteo} rgb="251,146,60" />
             </div>
             <p className="text-xs text-gray-400 text-center">Portería vista de frente · alto, medio y bajo</p>
             {con === 0 ? (

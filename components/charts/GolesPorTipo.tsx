@@ -1,6 +1,7 @@
 import React, { useMemo } from 'react';
 import type { Tag } from '../../types';
-import { TIPOS_GOL, TIPO_GOL_LABEL, detalleGolDe, ALTURAS, LADOS, ALTURA_LABEL, LADO_LABEL, codigoPorteria } from '../../utils/goles';
+import { TIPOS_GOL, TIPO_GOL_LABEL, detalleGolDe } from '../../utils/goles';
+import PorteriaEstadio from './PorteriaEstadio';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Goles por tipo (mejora 6). Barras horizontales por tipo de gol.
@@ -19,28 +20,15 @@ interface Props {
     conPorterias?: boolean;
 }
 
-// Mini portería 3×3 (vista de frente) dentro de la tarjeta.
+// Mini portería (vista de frente) dentro de la tarjeta, con el dibujo de estadio.
 const PorteriaMini: React.FC<{ titulo: string; tags: Tag[]; rgb: string }> = ({ titulo, tags, rgb }) => {
     const conteo: Record<string, number> = {};
     let con = 0;
     tags.forEach(t => { const k = detalleGolDe(t).porteria; if (k) { conteo[k] = (conteo[k] || 0) + 1; con++; } });
-    const max = Math.max(0, ...Object.values(conteo));
     return (
         <div className="flex flex-col gap-1.5">
             <p className="text-sm text-gray-300 font-semibold">{titulo}</p>
-            <div className="grid grid-cols-3 gap-1 p-1 border-4 border-b-0 border-gray-100 rounded-t">
-                {ALTURAS.map(a => LADOS.map(l => {
-                    const k = codigoPorteria(a, l);
-                    const v = conteo[k] || 0;
-                    const alpha = max > 0 && v > 0 ? 0.25 + 0.65 * (v / max) : 0;
-                    return (
-                        <div key={k} className="h-9 rounded flex items-center justify-center" style={{ backgroundColor: `rgba(${rgb},${alpha.toFixed(2)})` }} title={`${ALTURA_LABEL[a]} ${LADO_LABEL[l].toLowerCase()}: ${v}`}>
-                            {v > 0 && <span className="min-w-[24px] h-6 px-1.5 rounded-full bg-gray-900/80 text-white text-xs font-bold flex items-center justify-center">{v}</span>}
-                        </div>
-                    );
-                }))}
-            </div>
-            <div className="h-1.5 bg-green-800 rounded-b" />
+            <PorteriaEstadio conteo={conteo} rgb={rgb} />
             <p className="text-xs text-gray-500">{con === 0 ? 'Sin portería marcada' : `${con} de ${tags.length} con portería marcada`}</p>
         </div>
     );
@@ -105,7 +93,7 @@ const GolesPorTipo: React.FC<Props> = ({ titulo, aFavor, enContra, pie, conPorte
             )}
             </div>
             {conPorterias && (
-                <div className="w-full sm:w-[200px] flex flex-col gap-4">
+                <div className="w-full sm:w-[240px] flex flex-col gap-4">
                     <PorteriaMini titulo="Dónde anotamos" tags={aFavor} rgb="34,211,238" />
                     <PorteriaMini titulo="Dónde nos anotan" tags={enContra || []} rgb="251,146,60" />
                     <p className="text-xs text-gray-500">Porterías vistas de frente</p>
