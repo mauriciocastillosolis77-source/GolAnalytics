@@ -10,6 +10,8 @@ import { getCachedAnalysis, saveAnalysis, getPlayerAnalysisHistory, formatHistor
 import { exportPlayerAnalysisToPDF } from '../services/pdfExportService';
 import { cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios, esJugadorFicticio, calcularPorcentajeAtajadas, ACCIONES_FUERA_DE_EFECTIVIDAD } from '../utils/efectividad';
 import MapaZonas from '../components/charts/MapaZonas';
+import GolesPorTipo from '../components/charts/GolesPorTipo';
+import MapaPorteria from '../components/charts/MapaPorteria';
 
 const RendimientoPage: React.FC = () => {
     const { profile } = useAuth();
@@ -1025,28 +1027,8 @@ const RendimientoPage: React.FC = () => {
                                 )}
                             </div>
 
-                            {/* Transiciones Ofensivas */}
-                            <div className="bg-gray-800 rounded-lg p-6">
-                                <h3 className="text-lg font-semibold mb-4 text-white">Transiciones Ofensivas</h3>
-                                {transicionesOfensivasData.length === 0 ? (
-                                    <p className="text-gray-400 text-center py-8">Sin datos de transiciones ofensivas</p>
-                                ) : (
-                                    <ResponsiveContainer width="100%" height={300}>
-                                        <BarChart data={transicionesOfensivasData}>
-                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
-                                            <YAxis stroke="#9CA3AF" />
-                                            <Tooltip
-                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
-                                                labelStyle={{ color: '#F3F4F6' }}
-                                            />
-                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
-                                            <Bar dataKey="logrados" stackId="a" fill="#10B981" name="Logradas" />
-                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="No Logradas" />
-                                        </BarChart>
-                                    </ResponsiveContainer>
-                                )}
-                            </div>
+                            {/* Sus goles por tipo (mejora 6) */}
+                            <GolesPorTipo titulo="Sus goles por tipo" aFavor={playerTags.filter(t => t.accion === 'Goles a favor')} />
 
                             {/* Recuperaciones de Balón */}
                             <div className="bg-gray-800 rounded-lg p-6">
@@ -1096,6 +1078,29 @@ const RendimientoPage: React.FC = () => {
                             </div>
                             {/* Dónde pierde (mejora 1) */}
                             <MapaZonas titulo="Dónde pierde" tags={playerTags.filter(t => t.accion === 'Pérdida de balón')} color="rojo" matches={matches} nombreAccion="pérdidas" />
+                            {/* Transiciones Ofensivas */}
+                            <div className="bg-gray-800 rounded-lg p-6">
+                                <h3 className="text-lg font-semibold mb-4 text-white">Transiciones Ofensivas</h3>
+                                {transicionesOfensivasData.length === 0 ? (
+                                    <p className="text-gray-400 text-center py-8">Sin datos de transiciones ofensivas</p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height={300}>
+                                        <BarChart data={transicionesOfensivasData}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
+                                            <YAxis stroke="#9CA3AF" />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
+                                                labelStyle={{ color: '#F3F4F6' }}
+                                            />
+                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
+                                            <Bar dataKey="logrados" stackId="a" fill="#10B981" name="Logradas" />
+                                            <Bar dataKey="fallados" stackId="a" fill="#EF4444" name="No Logradas" />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </div>
+
                         </div>
                     </div>
 
@@ -1173,6 +1178,12 @@ const RendimientoPage: React.FC = () => {
                                 )}
                             </div>
                         </div>
+                        {/* Dónde le anotan (mejora 6): solo si el jugador recibió goles, es decir, es portero */}
+                        {porteriaJugador.golesRecibidos > 0 && (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+                                <MapaPorteria titulo="Dónde le anotan" tags={playerTags.filter(t => t.accion === 'Goles recibidos')} matches={matches} />
+                            </div>
+                        )}
                     </div>
 
                     {/* Performance Table */}

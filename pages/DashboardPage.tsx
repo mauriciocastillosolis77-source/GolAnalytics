@@ -9,6 +9,7 @@ import { exportTeamAnalysisToPDF } from '../services/pdfExportService';
 import { useAuth } from '../contexts/AuthContext';
 import { cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios, esTagDeJugadorFicticio, calcularPorcentajeAtajadas } from '../utils/efectividad';
 import MapaZonas from '../components/charts/MapaZonas';
+import GolesPorTipo from '../components/charts/GolesPorTipo';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, Cell, Treemap, ScatterChart, Scatter } from 'recharts';
 
 type Filters = {
@@ -253,6 +254,15 @@ const DashboardPage: React.FC = () => {
     // Mejora 1: recuperaciones y pérdidas de jugadores reales (sin el ficticio "Perdida") para los mapas de zonas.
     const tagsRecuperacionConJugadorReal = useMemo(
         () => filteredTags.filter(t => t.accion === 'Recuperación de balón' && !esTagDeJugadorFicticio(t, idsJugadoresFicticios)),
+        [filteredTags, idsJugadoresFicticios]
+    );
+    // Mejora 6: goles a favor y recibidos (sin el jugador ficticio) para "Goles por tipo".
+    const golesAFavorTags = useMemo(
+        () => filteredTags.filter(t => t.accion === 'Goles a favor' && !esTagDeJugadorFicticio(t, idsJugadoresFicticios)),
+        [filteredTags, idsJugadoresFicticios]
+    );
+    const golesRecibidosTags = useMemo(
+        () => filteredTags.filter(t => t.accion === 'Goles recibidos' && !esTagDeJugadorFicticio(t, idsJugadoresFicticios)),
         [filteredTags, idsJugadoresFicticios]
     );
     const tagsPerdidaConJugadorReal = useMemo(
@@ -948,6 +958,13 @@ const DashboardPage: React.FC = () => {
                                     </p>
                                 </div>
                             )}
+                        </div>
+                    </div>
+
+                    {/* GOLES POR TIPO (mejora 6), debajo de las tarjetas de portería */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div className="lg:col-span-2">
+                            <GolesPorTipo titulo="Goles por tipo" aFavor={golesAFavorTags} enContra={golesRecibidosTags} />
                         </div>
                     </div>
 
