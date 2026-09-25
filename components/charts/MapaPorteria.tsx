@@ -12,9 +12,11 @@ interface Props {
     titulo: string;
     tags: Tag[];
     matches?: Match[];
+    // Línea extra al final (por ejemplo, penales en contra del portero).
+    pie?: React.ReactNode;
 }
 
-const MapaPorteria: React.FC<Props> = ({ titulo, tags, matches }) => {
+const MapaPorteria: React.FC<Props> = ({ titulo, tags, matches, pie }) => {
     const [jornadaSel, setJornadaSel] = useState<number | 'todas'>('todas');
     const jornadaDe = useMemo(() => {
         const m = new Map<string, number>();
@@ -65,6 +67,7 @@ const MapaPorteria: React.FC<Props> = ({ titulo, tags, matches }) => {
                 <p className="text-sm text-gray-200"><span className="font-semibold">Lectura:</span> más goles en {(etiquetaPorteria(mejor) || '').toLowerCase()} ({mejor ? conteo[mejor] : 0}).</p>
             )}
             {con < visibles.length && <p className="text-xs text-gray-500">{con} de {visibles.length} goles tienen portería marcada.</p>}
+            {pie}
         </div>
     );
 };
