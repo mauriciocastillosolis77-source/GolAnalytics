@@ -2145,9 +2145,9 @@ const VideoTaggerPage: React.FC = () => {
                                         <div className="flex gap-1">
                                             {RESULTADOS_COBRO.map(r => <button key={r} onClick={() => aplicar({ resultado: r })} className={`flex-1 ${chip(d.resultado === r)}`}>{RESULTADO_COBRO_LABEL[r]}</button>)}
                                         </div>
-                                        {enContra && (
+                                        {(
                                             <>
-                                                <p className="text-xs text-gray-400">Tipo de marcaje</p>
+                                                <p className="text-xs text-gray-400">{enContra ? 'Tipo de marcaje' : 'Marcaje del rival (opcional)'}</p>
                                                 <div className="flex gap-1">
                                                     {MARCAJES.map(m => <button key={m} onClick={() => aplicar({ marcaje: m })} className={`flex-1 ${chip(d.marcaje === m)}`}>{MARCAJE_LABEL[m]}</button>)}
                                                 </div>
@@ -2157,7 +2157,7 @@ const VideoTaggerPage: React.FC = () => {
                                 )}
                                 <div className="flex items-center gap-2">
                                     <p className="flex-1 text-sm bg-gray-900 rounded px-2 py-1.5 text-gray-200">
-                                        Di: <span className="text-cyan-300">{esPenal ? '"abajo izquierda gol"' : enContra ? '"segundo palo remate en zona"' : '"primer palo remate"'}</span> · <span className="text-cyan-300">"listo"</span> para cerrar
+                                        Di: <span className="text-cyan-300">{esPenal ? '"abajo izquierda gol"' : enContra ? '"segundo palo remate en zona"' : '"primer palo remate en zona"'}</span> · <span className="text-cyan-300">"listo"</span> para cerrar
                                     </p>
                                     <button
                                         onClick={() => setDetallePendiente(null)}
