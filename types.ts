@@ -233,8 +233,23 @@ export interface RivalAnalysis {
   video_path?: string | null;
   momentos: RivalMomento[];
   notas: RivalNotas;
+  // Partidos propios contra este rival que se usan en Balón parado y DAFO (ids de matches).
+  // null = todavía no se eligió; se preseleccionan por nombre.
+  partidos?: string[] | null;
+  dafo?: DafoRival | null;
   created_by?: string | null;
   created_at: string;
+}
+
+// DAFO del rival, generado con IA y guardado junto al análisis.
+export interface DafoRival {
+  fortalezas: string[];
+  debilidades: string[];
+  oportunidades: string[];
+  amenazas: string[];
+  generado: string;       // fecha ISO
+  partidos: number;       // cuántos partidos propios se usaron
+  momentos: number;       // cuántos momentos del rival se usaron
 }
 
 export interface RivalAnalysisInsert {
