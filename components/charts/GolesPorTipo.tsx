@@ -93,10 +93,10 @@ const GolesPorTipo: React.FC<Props> = ({ titulo, aFavor, enContra, pie, conPorte
             )}
             </div>
             {conPorterias && (
-                <div className="w-full sm:w-[240px] flex flex-col gap-4">
+                <div className="w-full lg:w-[460px] grid grid-cols-2 gap-3 self-start">
                     <PorteriaMini titulo="Dónde anotamos" tags={aFavor} rgb="34,211,238" />
                     <PorteriaMini titulo="Dónde nos anotan" tags={enContra || []} rgb="251,146,60" />
-                    <p className="text-xs text-gray-500">Porterías vistas de frente</p>
+                    <p className="col-span-2 text-xs text-gray-500">Porterías vistas de frente</p>
                 </div>
             )}
             </div>
