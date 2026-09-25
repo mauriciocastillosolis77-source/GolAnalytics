@@ -496,6 +496,26 @@ const VideoTaggerPage: React.FC = () => {
         }
     };
 
+    // Tocar el minuto de una jugada de la lista: el video salta 3 segundos antes y queda en pausa,
+    // en el video de esta pantalla y/o en la ventana nueva. No guarda nada.
+    // Si la jugada se etiquetó con otro nombre de video, avisa (sin bloquear).
+    const [avisoVideo, setAvisoVideo] = useState<string | null>(null);
+    const saltarAJugada = (tag: Tag) => {
+        const t = Math.max(0, (tag.timestamp || 0) - 3);
+        const sw = secondaryWindowRef.current;
+        const hayVentana = !!(sw && !sw.closed);
+        if (hayVentana) sw!.postMessage({ type: 'gol_videocontrol', action: 'seekTo', time: t }, '*');
+        const v = videoRef.current;
+        if (v) { v.currentTime = t; v.pause(); }
+        if (!hayVentana && !v) { setAvisoVideo('Carga el video del partido para poder saltar a la jugada.'); return; }
+        const cargado = currentVideoFile?.name || selectedVideo?.video_file || null;
+        if (tag.video_file && cargado && tag.video_file !== cargado) {
+            setAvisoVideo(`Esta jugada se etiquetó con el video "${tag.video_file}" y tienes cargado "${cargado}". Si es el mismo video con otro nombre, ignora este aviso.`);
+        } else {
+            setAvisoVideo(null);
+        }
+    };
+
     // Handler for deleting a tag
     const deleteTag = async (tagToDelete: Tag) => {
         const isSaved = !String(tagToDelete.id).startsWith('temp-');
@@ -1713,6 +1733,7 @@ const VideoTaggerPage: React.FC = () => {
     else if (e.data.action === 'play') vid.play();
     else if (e.data.action === 'back') vid.currentTime = Math.max(0, vid.currentTime - 5);
     else if (e.data.action === 'forward') vid.currentTime += 5;
+    else if (e.data.action === 'seekTo') { vid.currentTime = Math.max(0, e.data.time || 0); vid.pause(); }
   });
 </script>
 </body></html>`;
@@ -1878,6 +1899,12 @@ const VideoTaggerPage: React.FC = () => {
                     {/* LISTA DE JUGADAS debajo, scroll propio */}
                     <div className="h-[200px] overflow-y-auto mt-4 bg-gray-900 rounded p-2">
                         <h3 className="text-lg font-semibold mb-2 text-white">Jugadas Etiquetadas</h3>
+                        {avisoVideo && (
+                            <div className="mb-2 p-2 rounded bg-yellow-900/60 border border-yellow-600 text-xs text-yellow-200 flex justify-between gap-2">
+                                <span>{avisoVideo}</span>
+                                <button type="button" onClick={() => setAvisoVideo(null)} className="text-yellow-300 hover:text-white" aria-label="Cerrar aviso">✕</button>
+                            </div>
+                        )}
                         {tags.length > 0 ? tags.map(tag => {
                             const isSuccess = tag.resultado === 'logrado';
                             const isFailure = tag.resultado === 'fallado';
@@ -1890,7 +1917,14 @@ const VideoTaggerPage: React.FC = () => {
                                 >
                                     <div className="flex-1">
                                         <span className="font-semibold">{players.find(p => p.id === tag.player_id)?.nombre || "Jugador"}</span>
-                                        <span className="text-xs text-gray-300 ml-2">{formatTime(tag.timestamp)}</span>
+                                        <button
+                                            type="button"
+                                            onClick={() => saltarAJugada(tag)}
+                                            className="ml-2 px-1.5 py-0.5 rounded bg-cyan-900/60 border border-cyan-500 text-xs text-white hover:bg-cyan-700"
+                                            title="Ir a esta jugada en el video (3 segundos antes)"
+                                        >
+                                            ▶ {formatTime(tag.timestamp)}
+                                        </button>
                                         <div className="text-xs text-gray-300">{tag.accion} {tag.resultado && <span className={isSuccess ? 'text-green-300' : 'text-red-300'}>{tag.resultado}</span>}</div>
                                         {ACCIONES_CON_ZONA.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (
                                             <button
