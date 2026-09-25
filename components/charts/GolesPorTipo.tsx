@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import type { Tag } from '../../types';
-import { TIPOS_GOL, TIPO_GOL_LABEL, detalleGolDe } from '../../utils/goles';
+import { TIPOS_GOL, TIPO_GOL_LABEL, detalleGolDe, ALTURAS, LADOS, ALTURA_LABEL, LADO_LABEL, codigoPorteria } from '../../utils/goles';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Goles por tipo (mejora 6). Barras horizontales por tipo de gol.
@@ -15,7 +15,36 @@ interface Props {
     enContra?: Tag[];
     // Texto extra al final (por ejemplo, la línea de penales en la entrega 6).
     pie?: React.ReactNode;
+    // Tablero: muestra al lado dos mini porterías, "Dónde anotamos" y "Dónde nos anotan".
+    conPorterias?: boolean;
 }
+
+// Mini portería 3×3 (vista de frente) dentro de la tarjeta.
+const PorteriaMini: React.FC<{ titulo: string; tags: Tag[]; rgb: string }> = ({ titulo, tags, rgb }) => {
+    const conteo: Record<string, number> = {};
+    let con = 0;
+    tags.forEach(t => { const k = detalleGolDe(t).porteria; if (k) { conteo[k] = (conteo[k] || 0) + 1; con++; } });
+    const max = Math.max(0, ...Object.values(conteo));
+    return (
+        <div className="flex flex-col gap-1.5">
+            <p className="text-sm text-gray-300 font-semibold">{titulo}</p>
+            <div className="grid grid-cols-3 gap-1 p-1 border-4 border-b-0 border-gray-100 rounded-t">
+                {ALTURAS.map(a => LADOS.map(l => {
+                    const k = codigoPorteria(a, l);
+                    const v = conteo[k] || 0;
+                    const alpha = max > 0 && v > 0 ? 0.25 + 0.65 * (v / max) : 0;
+                    return (
+                        <div key={k} className="h-9 rounded flex items-center justify-center" style={{ backgroundColor: `rgba(${rgb},${alpha.toFixed(2)})` }} title={`${ALTURA_LABEL[a]} ${LADO_LABEL[l].toLowerCase()}: ${v}`}>
+                            {v > 0 && <span className="min-w-[24px] h-6 px-1.5 rounded-full bg-gray-900/80 text-white text-xs font-bold flex items-center justify-center">{v}</span>}
+                        </div>
+                    );
+                }))}
+            </div>
+            <div className="h-1.5 bg-green-800 rounded-b" />
+            <p className="text-xs text-gray-500">{con === 0 ? 'Sin portería marcada' : `${con} de ${tags.length} con portería marcada`}</p>
+        </div>
+    );
+};
 
 const contar = (tags: Tag[]) => {
     const c: Record<string, number> = {};
@@ -27,7 +56,7 @@ const contar = (tags: Tag[]) => {
     return { c, con, total: tags.length };
 };
 
-const GolesPorTipo: React.FC<Props> = ({ titulo, aFavor, enContra, pie }) => {
+const GolesPorTipo: React.FC<Props> = ({ titulo, aFavor, enContra, pie, conPorterias }) => {
     const fav = useMemo(() => contar(aFavor), [aFavor]);
     const con = useMemo(() => contar(enContra || []), [enContra]);
     const max = Math.max(1, ...TIPOS_GOL.map(t => Math.max(fav.c[t] || 0, con.c[t] || 0)));
@@ -50,12 +79,14 @@ const GolesPorTipo: React.FC<Props> = ({ titulo, aFavor, enContra, pie }) => {
                     <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm" style={{ backgroundColor: '#FB923C' }} />En contra</span>
                 </div>
             )}
+            <div className="flex flex-wrap gap-6">
+            <div className="flex-1 min-w-[240px] flex flex-col gap-3">
             {!hayDatos ? (
                 <p className="text-sm text-gray-400">Todavía no hay goles con tipo marcado.</p>
             ) : (
                 <div className="flex flex-col gap-2.5">
                     {TIPOS_GOL.map(t => (
-                        <div key={t} className="grid items-center gap-3" style={{ gridTemplateColumns: '150px minmax(0, 1fr)' }}>
+                        <div key={t} className="grid items-center gap-3" style={{ gridTemplateColumns: '130px minmax(0, 1fr)' }}>
                             <span className="text-sm text-gray-300">{TIPO_GOL_LABEL[t]}</span>
                             <div className="flex flex-col gap-1">
                                 {barra(fav.c[t] || 0, '#22D3EE')}
@@ -72,6 +103,15 @@ const GolesPorTipo: React.FC<Props> = ({ titulo, aFavor, enContra, pie }) => {
                         : `${fav.con} de ${fav.total} goles tienen tipo marcado.`}
                 </p>
             )}
+            </div>
+            {conPorterias && (
+                <div className="w-full sm:w-[200px] flex flex-col gap-4">
+                    <PorteriaMini titulo="Dónde anotamos" tags={aFavor} rgb="34,211,238" />
+                    <PorteriaMini titulo="Dónde nos anotan" tags={enContra || []} rgb="251,146,60" />
+                    <p className="text-xs text-gray-500">Porterías vistas de frente</p>
+                </div>
+            )}
+            </div>
             {pie}
         </div>
     );
