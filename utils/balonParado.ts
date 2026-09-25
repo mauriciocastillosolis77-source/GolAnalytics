@@ -6,6 +6,7 @@
 // que antes (Tiro a portería, Goles a favor, Goles recibidos, Atajadas); estas
 // etiquetas se agregan aparte para guardar el detalle en `tags.detalle` (jsonb):
 //   Córner / Tiro libre: { envio: 'primer_palo', resultado: 'remate', marcaje: 'zona' }
+//     marcaje: en contra = cómo marcamos nosotros; a favor = cómo marcó el RIVAL (opcional).
 //   Penal:               { porteria: 'bajo-izquierda', resultado: 'gol' }
 // Todos los campos son opcionales.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -60,7 +61,7 @@ export const detalleAbpDe = (tag: { accion: string; detalle?: Record<string, any
     } else if (ACCIONES_COBRO.has(tag.accion)) {
         if (ENVIOS.includes(d.envio)) out.envio = d.envio;
         if (RESULTADOS_COBRO.includes(d.resultado)) out.resultado = d.resultado;
-        if (ACCIONES_EN_CONTRA.has(tag.accion) && MARCAJES.includes(d.marcaje)) out.marcaje = d.marcaje;
+        if (MARCAJES.includes(d.marcaje)) out.marcaje = d.marcaje;
     }
     return out;
 };
@@ -74,7 +75,7 @@ export const resumenAbp = (accion: string, d: DetalleAbp): string | null => {
     } else {
         if (d.envio) partes.push(ENVIO_LABEL[d.envio]);
         if (d.resultado) partes.push(RESULTADO_COBRO_LABEL[d.resultado as ResultadoCobro].toLowerCase());
-        if (d.marcaje) partes.push(MARCAJE_LABEL[d.marcaje].toLowerCase());
+        if (d.marcaje) partes.push(ACCIONES_EN_CONTRA.has(accion) ? MARCAJE_LABEL[d.marcaje].toLowerCase() : `rival ${MARCAJE_LABEL[d.marcaje].toLowerCase()}`);
     }
     return partes.length ? partes.join(' · ') : null;
 };
@@ -126,7 +127,7 @@ export const detalleAbpDesdeVoz = (accion: string, texto: string): DetalleAbp =>
     else if (/\bremate\b|\bremato\b|\btiro\b/.test(t)) d.resultado = 'remate';
     else if (/\bnada\b|\bdespeje\b|\bdespejad[oa]\b|\bsin remate\b/.test(t)) d.resultado = 'nada';
 
-    if (ACCIONES_EN_CONTRA.has(accion)) {
+    {
         if (/\ben zona\b|\bzonal\b/.test(t)) d.marcaje = 'zona';
         else if (/\bal hombre\b|\bhombre a hombre\b|\bindividual\b/.test(t)) d.marcaje = 'hombre';
         else if (/\bmixto\b|\bmixta\b/.test(t)) d.marcaje = 'mixto';
