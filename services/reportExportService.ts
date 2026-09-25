@@ -6,6 +6,7 @@ import { PITCH_BASE64 } from '../constants/pitchBase64';
 import type { Match, Tag, Player, RivalAnalysis, RivalTipo, RivalZona } from '../types';
 import { TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona, etiquetaZona } from '../utils/zonas';
 import { esJugadorFicticio } from '../utils/efectividad';
+import { ALTURAS, LADOS, codigoPorteria, detalleGolDe, resumenGol } from '../utils/goles';
 
 // ── Marca GolAnalytics ──────────────────────────────────────────────────
 const COLOR = {
@@ -725,6 +726,60 @@ export async function generateMatchReportPptx(
       };
       drawMap(0.6, 'Dónde recuperamos', recs, '22D3EE', 'recuperaciones');
       drawMap(7.0, 'Dónde perdimos', perds, 'EF4444', 'pérdidas');
+
+      footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+    }
+  }
+
+  // Slide — Goles del partido (mejora 6). Solo sale si algún gol tiene tipo o portería marcada.
+  {
+    const idsFicticiosG = new Set(players.filter((p) => esJugadorFicticio(p.nombre)).map((p) => p.id));
+    const golesFav = tags.filter((t) => t.accion === 'Goles a favor' && !idsFicticiosG.has(t.player_id));
+    const golesCon = tags.filter((t) => t.accion === 'Goles recibidos' && !idsFicticiosG.has(t.player_id));
+    const conDetalle = (t: Tag) => { const d = detalleGolDe(t); return !!(d.tipo_gol || d.porteria); };
+    if (golesFav.some(conDetalle) || golesCon.some(conDetalle)) {
+      const slide = pres.addSlide();
+      slide.background = { color: COLOR.white };
+      sectionHeader(slide, 'Goles', 'Goles del partido');
+
+      const minuto = (t: Tag) => {
+        const seg = typeof t.timestamp_absolute === 'number' ? t.timestamp_absolute : t.timestamp;
+        return `Min ${Math.floor((seg || 0) / 60) + 1}`;
+      };
+      const nombre = (t: Tag) => players.find((p) => p.id === t.player_id)?.nombre?.trim().split(/\s+/)[0] || 'Jugador';
+      const lista = (y: number, titulo: string, arr: Tag[], color: string) => {
+        slide.addText(`${titulo} · ${arr.length}`, { x: 0.6, y, w: 7.2, h: 0.35, fontFace: FONT_BODY, fontSize: 13, bold: true, color, isTextBox: true, margin: 0 });
+        const orden = [...arr].sort((a, b) => (a.timestamp_absolute ?? a.timestamp) - (b.timestamp_absolute ?? b.timestamp)).slice(0, 6);
+        orden.forEach((t, i) => {
+          const r = resumenGol(detalleGolDe(t));
+          slide.addText(`${minuto(t)} · ${nombre(t)}${r ? ' · ' + r : ' · sin detalle'}`, { x: 0.75, y: y + 0.42 + i * 0.36, w: 7.1, h: 0.32, fontFace: FONT_BODY, fontSize: 11.5, color: COLOR.ink, isTextBox: true, margin: 0 });
+        });
+        if (arr.length > 6) slide.addText(`y ${arr.length - 6} más`, { x: 0.75, y: y + 0.42 + 6 * 0.36, w: 7, h: 0.3, fontFace: FONT_BODY, fontSize: 10, color: COLOR.gray, isTextBox: true, margin: 0 });
+        return y + 0.42 + Math.min(arr.length, 7) * 0.36 + 0.25;
+      };
+      let yy = 1.55;
+      if (golesFav.length > 0) yy = lista(yy, 'A FAVOR', golesFav, '0E7490');
+      if (golesCon.length > 0) lista(yy, 'EN CONTRA', golesCon, 'C2410C');
+
+      const porteria = (x: number, y: number, titulo: string, arr: Tag[], fillColor: string) => {
+        const w = 4.2; const cw = w / 3; const ch = 0.5;
+        slide.addText(titulo, { x, y, w, h: 0.3, fontFace: FONT_BODY, fontSize: 11, bold: true, color: COLOR.ink, align: 'center', isTextBox: true, margin: 0 });
+        const conteo: Record<string, number> = {};
+        arr.forEach((t) => { const k = detalleGolDe(t).porteria; if (k) conteo[k] = (conteo[k] || 0) + 1; });
+        const max = Math.max(0, ...Object.values(conteo));
+        const gy = y + 0.38;
+        // Marco de la portería (postes y travesaño)
+        slide.addShape(pres.ShapeType.rect, { x: x - 0.06, y: gy - 0.06, w: w + 0.12, h: 3 * ch + 0.06, fill: { color: 'F3F4F6' }, line: { color: '1B1B1B', width: 3 } });
+        ALTURAS.forEach((a, r) => LADOS.forEach((l, i) => {
+          const k = codigoPorteria(a, l);
+          const v = conteo[k] || 0;
+          slide.addShape(pres.ShapeType.rect, { x: x + i * cw, y: gy + r * ch, w: cw, h: ch, fill: { color: fillColor, transparency: max > 0 && v > 0 ? Math.round(75 - 60 * (v / max)) : 100 }, line: { color: 'D1D5DB', width: 0.5, dashType: 'dash' } });
+          if (v > 0) slide.addText(String(v), { x: x + i * cw, y: gy + r * ch, w: cw, h: ch, fontFace: FONT_HEAD, fontSize: 14, bold: true, color: COLOR.ink, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
+        }));
+        slide.addText('Vista de frente', { x, y: gy + 3 * ch + 0.08, w, h: 0.25, fontFace: FONT_BODY, fontSize: 9, color: COLOR.gray, align: 'center', isTextBox: true, margin: 0 });
+      };
+      porteria(8.4, 1.55, 'Dónde metimos los goles', golesFav, '22D3EE');
+      porteria(8.4, 4.15, 'Dónde nos metieron los goles', golesCon, 'FB923C');
 
       footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
     }
