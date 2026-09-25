@@ -894,6 +894,40 @@ export async function generateMatchReportPptx(
     footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
 
+  // Slide — DAFO del rival (el que se genera con IA y se guarda en Análisis del Rival).
+  // Solo sale si ese rival tiene su DAFO guardado. Es distinto del DAFO de este partido.
+  if (rivalAnalysis?.dafo) {
+    const d = rivalAnalysis.dafo;
+    const slide = pres.addSlide();
+    slide.background = { color: COLOR.white };
+    sectionHeader(slide, 'Próximo partido', `DAFO del rival — ${match.rival}`);
+    const quads: Array<{ title: string; sub: string; items: string[]; fill: string; color: string }> = [
+      { title: 'FORTALEZAS', sub: `de ${match.rival}`, items: d.fortalezas || [], fill: COLOR.greenLight, color: COLOR.green },
+      { title: 'DEBILIDADES', sub: `de ${match.rival}`, items: d.debilidades || [], fill: COLOR.orangeLight, color: COLOR.orange },
+      { title: 'OPORTUNIDADES', sub: 'para nosotros', items: d.oportunidades || [], fill: COLOR.blueLight, color: COLOR.blue },
+      { title: 'AMENAZAS', sub: 'para nosotros', items: d.amenazas || [], fill: COLOR.redLight, color: COLOR.red },
+    ];
+    const qw = 5.75, qh = 2.3, gapX = 0.3, gapY = 0.2, startX = 0.6, startY = 1.55;
+    quads.forEach((q, i) => {
+      const col = i % 2, row = Math.floor(i / 2);
+      const x = startX + col * (qw + gapX), y = startY + row * (qh + gapY);
+      slide.addShape(pres.ShapeType.roundRect, { x, y, w: qw, h: qh, rectRadius: 0.08, fill: { color: q.fill }, line: { type: 'none' } });
+      slide.addText([
+        { text: q.title, options: { bold: true, color: q.color } },
+        { text: '   ' + q.sub, options: { color: COLOR.gray, italic: true } },
+      ] as any, { x: x + 0.3, y: y + 0.16, w: qw - 0.6, h: 0.32, fontFace: FONT_BODY, fontSize: 12, charSpacing: 0.5, isTextBox: true, margin: 0 });
+      const items = (q.items.length ? q.items : ['Sin datos suficientes.']).slice(0, 4);
+      slide.addText(
+        items.map((t, j) => ({ text: stripMd(t), options: { bullet: { code: '2022' }, breakLine: j < items.length - 1, paraSpaceAfter: 7 } })) as any,
+        { x: x + 0.3, y: y + 0.54, w: qw - 0.6, h: qh - 0.68, fontFace: FONT_BODY, fontSize: 11.5, color: COLOR.ink, valign: 'top', isTextBox: true, margin: 0 }
+      );
+    });
+    const fecha = d.generado ? new Date(d.generado).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+    slide.addText(`Generado con IA en Análisis del Rival${fecha ? ` el ${fecha}` : ''} · con ${d.momentos ?? 0} momentos del rival y ${d.partidos ?? 0} partido${d.partidos === 1 ? '' : 's'} contra él.`,
+      { x: 0.6, y: 6.45, w: 11.8, h: 0.28, fontFace: FONT_BODY, fontSize: 9, italic: true, color: COLOR.gray, isTextBox: true, margin: 0 });
+    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+  }
+
   // Slide — Recomendaciones de entrenamiento
   {
     const slide = pres.addSlide();
