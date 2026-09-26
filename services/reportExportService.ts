@@ -752,19 +752,20 @@ export async function generateMatchReportPptx(
         return `Min ${Math.floor((seg || 0) / 60) + 1}`;
       };
       const nombre = (t: Tag) => players.find((p) => p.id === t.player_id)?.nombre?.trim().split(/\s+/)[0] || 'Jugador';
-      const lista = (y: number, titulo: string, arr: Tag[], color: string) => {
+      // conNombre: a favor sí (reconocimiento); en contra no, para no exponer a un jugador por un gol recibido.
+      const lista = (y: number, titulo: string, arr: Tag[], color: string, conNombre: boolean) => {
         slide.addText(`${titulo} · ${arr.length}`, { x: 0.6, y, w: 7.2, h: 0.35, fontFace: FONT_BODY, fontSize: 13, bold: true, color, isTextBox: true, margin: 0 });
         const orden = [...arr].sort((a, b) => (a.timestamp_absolute ?? a.timestamp) - (b.timestamp_absolute ?? b.timestamp)).slice(0, 6);
         orden.forEach((t, i) => {
           const r = resumenGol(detalleGolDe(t));
-          slide.addText(`${minuto(t)} · ${nombre(t)}${r ? ' · ' + r : ' · sin detalle'}`, { x: 0.75, y: y + 0.42 + i * 0.36, w: 7.1, h: 0.32, fontFace: FONT_BODY, fontSize: 11.5, color: COLOR.ink, isTextBox: true, margin: 0 });
+          slide.addText(`${minuto(t)}${conNombre ? ` · ${nombre(t)}` : ''}${r ? ' · ' + r : ' · sin detalle'}`, { x: 0.75, y: y + 0.42 + i * 0.36, w: 7.1, h: 0.32, fontFace: FONT_BODY, fontSize: 11.5, color: COLOR.ink, isTextBox: true, margin: 0 });
         });
         if (arr.length > 6) slide.addText(`y ${arr.length - 6} más`, { x: 0.75, y: y + 0.42 + 6 * 0.36, w: 7, h: 0.3, fontFace: FONT_BODY, fontSize: 10, color: COLOR.gray, isTextBox: true, margin: 0 });
         return y + 0.42 + Math.min(arr.length, 7) * 0.36 + 0.25;
       };
       let yy = 1.55;
-      if (golesFav.length > 0) yy = lista(yy, 'A FAVOR', golesFav, '0E7490');
-      if (golesCon.length > 0) lista(yy, 'EN CONTRA', golesCon, 'C2410C');
+      if (golesFav.length > 0) yy = lista(yy, 'A FAVOR', golesFav, '0E7490', true);
+      if (golesCon.length > 0) lista(yy, 'EN CONTRA', golesCon, 'C2410C', false);
 
       const porteria = (x: number, y: number, titulo: string, arr: Tag[], fillColor: string) => {
         const w = 4.2; const cw = w / 3; const ch = 0.5;
