@@ -285,7 +285,7 @@ const GenerarReportesPage: React.FC = () => {
         const ordenados = agruparPorFase<ModeloPilar>(pilaresEquipo).flatMap(g => g.pilares);
         pilares = ordenados.map(p => p.nombre);
         checklistLimpio = ordenados
-          .map(p => ({ label: p.nombre, signal: califs[p.id]?.semaforo || 'verde', nota: (califs[p.id]?.nota || '').trim() }))
+          .map(p => ({ label: p.nombre, fase: p.fase, signal: califs[p.id]?.semaforo || 'verde', nota: (califs[p.id]?.nota || '').trim() }))
           .filter(r => r.nota);
         await handleGuardarCalif(true);
       }
