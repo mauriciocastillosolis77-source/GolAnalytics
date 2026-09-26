@@ -470,6 +470,7 @@ export interface ModeloDeJuegoChecklistRow {
   label: string;
   signal: 'verde' | 'ambar' | 'rojo';
   nota: string;
+  fase?: string; // fase del pilar (modelo guardado); distingue pilares con el mismo nombre
 }
 export interface ModeloDeJuego {
   pilares: string[];
@@ -826,41 +827,47 @@ export async function generateMatchReportPptx(
   }
 
   // Slide — Modelo de juego: plan vs. ejecución (contenido del cuerpo técnico, no calculado)
-  if (modeloDeJuego && (modeloDeJuego.pilares.length > 0 || modeloDeJuego.checklist.length > 0)) {
-    const slide = pres.addSlide();
-    slide.background = { color: COLOR.white };
-    sectionHeader(slide, 'Análisis táctico', 'Modelo de juego — plan vs. ejecución');
+  // Solo las filas calificadas (con nota), en tarjetas a 2 columnas; cada tarjeta dice su fase.
+  // Hasta 12 por diapositiva; si hay más, sigue en otra diapositiva.
+  if (modeloDeJuego && modeloDeJuego.checklist.length > 0) {
+    const signalColor: Record<string, string> = { verde: COLOR.green, ambar: COLOR.gold, rojo: COLOR.red };
+    const signalLabel: Record<string, string> = { verde: 'Se cumplió', ambar: 'A medias', rojo: 'No se cumplió' };
+    const filas = modeloDeJuego.checklist;
+    const porSlide = 12;
+    for (let inicio = 0; inicio < filas.length; inicio += porSlide) {
+      const grupo = filas.slice(inicio, inicio + porSlide);
+      const slide = pres.addSlide();
+      slide.background = { color: COLOR.white };
+      sectionHeader(slide, 'Análisis táctico', `Modelo de juego — ¿se ejecutó en este partido?${filas.length > porSlide ? ` (${Math.floor(inicio / porSlide) + 1}/${Math.ceil(filas.length / porSlide)})` : ''}`);
 
-    let py = 1.55;
-    if (modeloDeJuego.pilares.length > 0) {
-      slide.addText('Lo que el cuerpo técnico pide siempre', { x: 0.6, y: py, w: 8, h: 0.28, fontFace: FONT_BODY, fontSize: 11.5, bold: true, color: COLOR.gray, isTextBox: true, margin: 0 });
-      let px = 0.6; py += 0.32;
-      const pillH = 0.38;
-      modeloDeJuego.pilares.forEach((label) => {
-        const w = 0.28 + label.length * 0.095;
-        if (px + w > 12.8) { px = 0.6; py += pillH + 0.1; }
-        slide.addShape(pres.ShapeType.roundRect, { x: px, y: py, w, h: pillH, rectRadius: 0.2, fill: { type: 'none' }, line: { color: COLOR.indigo, width: 1.25 } });
-        slide.addText(label, { x: px, y: py, w, h: pillH, fontFace: FONT_BODY, fontSize: 10.5, bold: true, color: COLOR.indigo, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
-        px += w + 0.16;
+      // Leyenda del semáforo
+      let lx = 0.6;
+      (['verde', 'ambar', 'rojo'] as const).forEach((k) => {
+        slide.addShape(pres.ShapeType.ellipse, { x: lx, y: 1.42, w: 0.16, h: 0.16, fill: { color: signalColor[k] }, line: { type: 'none' } });
+        slide.addText(signalLabel[k], { x: lx + 0.22, y: 1.35, w: 1.5, h: 0.3, fontFace: FONT_BODY, fontSize: 10, color: COLOR.gray, valign: 'middle', isTextBox: true, margin: 0 });
+        lx += 1.75;
       });
-      py += pillH + 0.3;
-    }
 
-    if (modeloDeJuego.checklist.length > 0) {
-      slide.addText('¿Se ejecutó en este partido?', { x: 0.6, y: py, w: 8, h: 0.28, fontFace: FONT_BODY, fontSize: 11.5, bold: true, color: COLOR.gray, isTextBox: true, margin: 0 });
-      py += 0.36;
-      const signalColor: Record<string, string> = { verde: COLOR.green, ambar: COLOR.gold, rojo: COLOR.red };
-      const rowH = 0.6, rowGap = 0.1;
-      modeloDeJuego.checklist.forEach((row) => {
-        slide.addShape(pres.ShapeType.roundRect, { x: 0.6, y: py, w: 11.8, h: rowH, rectRadius: 0.07, fill: { color: 'F7F7FA' }, line: { type: 'none' } });
-        slide.addShape(pres.ShapeType.ellipse, { x: 0.85, y: py + rowH / 2 - 0.11, w: 0.22, h: 0.22, fill: { color: signalColor[row.signal] }, line: { type: 'none' } });
-        slide.addText(row.label, { x: 1.25, y: py, w: 4.2, h: rowH, fontFace: FONT_HEAD, fontSize: 11.5, bold: true, color: COLOR.ink, valign: 'middle', isTextBox: true, margin: 0 });
-        slide.addText(row.nota, { x: 5.55, y: py, w: 6.65, h: rowH, fontFace: FONT_BODY, fontSize: 10.5, color: COLOR.ink, valign: 'middle', isTextBox: true, margin: 0 });
-        py += rowH + rowGap;
+      const cols = grupo.length > 6 ? 2 : 1;
+      const porCol = Math.ceil(grupo.length / cols);
+      const colW = cols === 2 ? 5.8 : 11.8;
+      const top = 1.8, bottom = 6.75, gap = 0.08;
+      const rowH = Math.min(1.05, (bottom - top - gap * (porCol - 1)) / porCol);
+      grupo.forEach((row, i) => {
+        const col = Math.floor(i / porCol), r = i % porCol;
+        const x = 0.6 + col * (colW + 0.2), y = top + r * (rowH + gap);
+        slide.addShape(pres.ShapeType.roundRect, { x, y, w: colW, h: rowH, rectRadius: 0.06, fill: { color: 'F7F7FA' }, line: { type: 'none' } });
+        slide.addShape(pres.ShapeType.rect, { x, y, w: 0.07, h: rowH, fill: { color: signalColor[row.signal] }, line: { type: 'none' } });
+        slide.addShape(pres.ShapeType.ellipse, { x: x + 0.22, y: y + 0.13, w: 0.18, h: 0.18, fill: { color: signalColor[row.signal] }, line: { type: 'none' } });
+        slide.addText([
+          { text: row.label, options: { bold: true, color: COLOR.ink, fontFace: FONT_HEAD, fontSize: 11.5 } },
+          ...(row.fase ? [{ text: `   ${row.fase}`, options: { color: COLOR.gray, italic: true, fontSize: 9 } }] : []),
+        ] as any, { x: x + 0.5, y: y + 0.06, w: colW - 0.65, h: 0.3, fontFace: FONT_BODY, valign: 'middle', isTextBox: true, margin: 0 });
+        slide.addText(row.nota, { x: x + 0.5, y: y + 0.36, w: colW - 0.65, h: rowH - 0.42, fontFace: FONT_BODY, fontSize: cols === 2 ? 9.5 : 10.5, color: COLOR.ink, valign: 'top', isTextBox: true, margin: 0, fit: 'shrink' } as any);
       });
-    }
 
-    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+      footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+    }
   }
 
   // Slide — Jugadores destacados
