@@ -1087,7 +1087,7 @@ const AnalisisRivalPage: React.FC = () => {
                   <button onClick={handleGenerarDafo} disabled={generandoDafo || !selected} className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-medium disabled:opacity-50">
                     {generandoDafo ? 'Generando…' : selected?.dafo ? '✨ Volver a generar DAFO' : '✨ Generar DAFO'}
                   </button>
-                  <span className="text-xs text-gray-500">Usa {allMomentos.length} momentos del rival y {partidosElegidos.length} partido{partidosElegidos.length === 1 ? '' : 's'} tuyo{partidosElegidos.length === 1 ? '' : 's'} · solo con el botón (cuota de Gemini)</span>
+                  <span className="text-xs text-gray-500">Usa {allMomentos.length} momentos del rival y {partidosElegidos.length} partido{partidosElegidos.length === 1 ? '' : 's'} tuyo{partidosElegidos.length === 1 ? '' : 's'}</span>
                 </div>
               )}
               {dafoError && <p className="text-sm text-red-400">{dafoError}</p>}

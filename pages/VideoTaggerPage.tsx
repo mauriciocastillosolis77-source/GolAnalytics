@@ -2166,7 +2166,6 @@ const VideoTaggerPage: React.FC = () => {
                                         Listo
                                     </button>
                                 </div>
-                                <p className="text-xs text-gray-500">Solo se cuenta: no cambia la efectividad. Sigue etiquetando el tiro, gol o atajada como siempre.</p>
                             </div>
                         );
                     })() : detallePendiente && ACCIONES_GOL.has(detallePendiente.accion) ? (() => {

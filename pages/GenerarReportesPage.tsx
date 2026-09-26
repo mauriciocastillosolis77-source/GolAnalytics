@@ -467,7 +467,6 @@ const GenerarReportesPage: React.FC = () => {
                 >
                   {guardandoCalif ? 'Guardando…' : 'Guardar calificación'}
                 </button>
-                <span className="text-xs text-gray-500">Generar el PowerPoint también la guarda.</span>
                 {califMsg && <span className={`text-xs ${califMsg.ok ? 'text-green-400' : 'text-red-400'}`}>{califMsg.text}</span>}
               </div>
             </div>

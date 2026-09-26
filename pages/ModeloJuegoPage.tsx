@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
 import { supabase } from '../services/supabaseClient';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../constants';
@@ -241,12 +240,11 @@ const ModeloJuegoPage: React.FC = () => {
                                 <div className="flex gap-1 justify-end">
                                     <button onClick={() => mover(i, -1)} aria-label="Subir" className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs text-white">↑</button>
                                     <button onClick={() => mover(i, 1)} aria-label="Bajar" className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs text-white">↓</button>
-                                    <button onClick={() => setEdit(prev => prev.filter((_, idx) => idx !== i))} className="px-2 py-1 rounded text-xs text-red-400 hover:text-red-300">Quitar</button>
+                                    <button onClick={() => setEdit(prev => prev.filter((_, idx) => idx !== i))} title="Quitar un pilar no borra sus calificaciones pasadas; solo deja de aparecer para calificar." className="px-2 py-1 rounded text-xs text-red-400 hover:text-red-300">Quitar</button>
                                 </div>
                             </div>
                         ))}
                         <button onClick={() => setEdit(prev => [...prev, { nombre: '', fase: 'General', zona: null }])} className="text-sm text-cyan-400 hover:text-cyan-300">+ Agregar pilar</button>
-                        <p className="text-xs text-gray-500">Quitar un pilar no borra sus calificaciones pasadas; solo deja de aparecer para calificar.</p>
                         <div className="flex gap-2 items-center flex-wrap">
                             <button onClick={handleGuardarModelo} disabled={guardando} className="px-4 py-2 rounded bg-cyan-600 hover:bg-cyan-700 text-sm text-white font-medium disabled:opacity-50">{guardando ? 'Guardando…' : 'Guardar modelo'}</button>
                             <button onClick={() => { setEdit(pilares.map(p => ({ id: p.id, nombre: p.nombre, fase: p.fase, zona: p.zona }))); setEditando(false); }} className="px-4 py-2 rounded bg-gray-700 hover:bg-gray-600 text-sm text-white">Cancelar</button>
@@ -267,16 +265,18 @@ const ModeloJuegoPage: React.FC = () => {
                 {msg && <p className={`text-sm ${msg.ok ? 'text-green-400' : 'text-red-400'}`}>{msg.text}</p>}
             </section>
 
-            {/* 2 · Calificar */}
-            <section className="bg-gray-800 rounded-lg p-4 text-sm text-gray-300">
-                <span className="font-semibold text-white">2 · Calificar cada partido:</span> se hace en{' '}
-                {isAdmin ? <Link to="/generar-reportes" className="text-cyan-400 underline">Generar Reportes</Link> : 'Generar Reportes'}
-                {' '}(semáforo y nota por pilar). Generar el PowerPoint también guarda la calificación.
-            </section>
-
-            {/* 3 · Seguimiento mensual */}
+            {/* 2 · Seguimiento mensual */}
             <section className="bg-gray-800 rounded-lg p-5 space-y-2">
-                <h2 className="text-lg font-semibold text-white">3 · Seguimiento mensual</h2>
+                <h2 className="text-lg font-semibold text-white">2 · Seguimiento mensual</h2>
+                {pilares.length > 0 && meses.length > 0 && (
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-gray-400">
+                    {([['verde', 'Se cumplió'], ['ambar', 'A medias'], ['rojo', 'No se cumplió']] as const).map(([k, l]) => (
+                        <span key={k} className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm" style={{ backgroundColor: SEMAFORO_COLOR[k] }} />{l}</span>
+                    ))}
+                    <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-gray-700" />Sin calificar</span>
+                    <span><span className="font-semibold text-gray-200">3/4</span> = partidos en verde</span>
+                </div>
+                )}
                 {pilares.length === 0 ? (
                     <p className="text-sm text-gray-400">Primero guarda el modelo del equipo.</p>
                 ) : meses.length === 0 ? (
@@ -304,7 +304,7 @@ const ModeloJuegoPage: React.FC = () => {
                                                         disabled={!r}
                                                         className={`text-center py-1.5 rounded text-xs font-bold text-white ${activa ? 'ring-2 ring-white' : ''}`}
                                                         style={{ backgroundColor: r ? SEMAFORO_COLOR[r.color] : '#374151', cursor: r ? 'pointer' : 'default' }}
-                                                        title={r ? `${SEMAFORO_LABEL[r.color]} · ${r.verdes} de ${r.calificados} en verde` : 'Sin calificar'}
+                                                        title={r ? `${SEMAFORO_LABEL[r.color]} · ${r.verdes} de ${r.calificados} partidos en verde · clic para ver las notas` : 'Sin calificar'}
                                                     >
                                                         {r ? `${r.verdes}/${r.calificados}` : '—'}
                                                     </button>
@@ -317,7 +317,7 @@ const ModeloJuegoPage: React.FC = () => {
                         </div>
                     </div>
                 )}
-                <p className="text-xs text-gray-500">Color = lo que más se repitió en los partidos del mes (si empatan, el más bajo) · número = partidos en verde de los calificados · gris = sin calificar. Clic en una celda para ver las notas.</p>
+
                 {pilarCelda && celda && (
                     <div className="bg-gray-900 rounded p-3 space-y-1.5">
                         <p className="text-sm font-semibold text-white">{pilarCelda.nombre} · {etiquetaMes(celda.mes, true)}</p>
@@ -334,9 +334,9 @@ const ModeloJuegoPage: React.FC = () => {
                 )}
             </section>
 
-            {/* 4 · Lectura del mes (IA) */}
+            {/* 3 · Lectura del mes (IA) */}
             <section className="bg-gray-800 rounded-lg p-5 space-y-3">
-                <h2 className="text-lg font-semibold text-white">4 · Lectura del mes (IA)</h2>
+                <h2 className="text-lg font-semibold text-white">3 · Lectura del mes (IA)</h2>
                 {meses.length === 0 ? (
                     <p className="text-sm text-gray-400">Aparece cuando haya partidos calificados.</p>
                 ) : (
@@ -348,8 +348,7 @@ const ModeloJuegoPage: React.FC = () => {
                             <button onClick={handleLectura} disabled={generando} className="px-4 py-2 rounded bg-cyan-600 hover:bg-cyan-700 text-sm text-white font-medium disabled:opacity-50">
                                 {generando ? 'Generando…' : lecturas[mesLectura] ? '✨ Volver a generar' : '✨ Generar lectura'}
                             </button>
-                            <span className="text-xs text-gray-500">Solo con el botón, para cuidar la cuota de Gemini.</span>
-                        </div>
+                                                    </div>
                         {lecturaError && <p className="text-sm text-red-400">{lecturaError}</p>}
                         {lecturas[mesLectura] && (
                             <div className="bg-gray-900 rounded p-4 space-y-1.5 text-sm leading-relaxed text-gray-200">
@@ -361,7 +360,6 @@ const ModeloJuegoPage: React.FC = () => {
                                 })}
                             </div>
                         )}
-                        <p className="text-xs text-gray-500">La IA compara lo definido (pilares, fase y zona) contra los semáforos y notas de los partidos del mes, y contra el mes anterior.</p>
                     </>
                 )}
             </section>
