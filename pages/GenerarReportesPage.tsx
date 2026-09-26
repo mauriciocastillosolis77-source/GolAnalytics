@@ -3,6 +3,9 @@ import { supabase } from '../services/supabaseClient';
 import type { Match } from '../types';
 import { Spinner } from '../components/ui/Spinner';
 import { generateMatchReportPptx, mejorarRedaccionChecklist } from '../services/reportExportService';
+import { Link } from 'react-router-dom';
+import { fetchPilares, fetchCalificacionesPartido, guardarCalificaciones } from '../services/modeloJuegoService';
+import { agruparPorFase, type ModeloPilar, type Semaforo as SemaforoModelo } from '../utils/modeloJuego';
 
 declare var XLSX: any;
 
@@ -66,6 +69,16 @@ const GenerarReportesPage: React.FC = () => {
   const removeChecklistRow = (i: number) => setChecklist((rows) => rows.filter((_, idx) => idx !== i));
   const updateChecklistRow = (i: number, patch: Partial<ChecklistRow>) =>
     setChecklist((rows) => rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+
+  // ── Mejora 3: si el equipo ya tiene su modelo guardado (página "Modelo de juego"),
+  // se precargan SUS pilares por fase y la calificación del partido se guarda en
+  // Supabase. Si no lo tiene (o las tablas aún no existen), queda todo como antes.
+  const [pilaresEquipo, setPilaresEquipo] = useState<ModeloPilar[] | null>(null);
+  const [califs, setCalifs] = useState<Record<string, { semaforo: SemaforoModelo; nota: string }>>({});
+  const [cargandoModelo, setCargandoModelo] = useState(false);
+  const [guardandoCalif, setGuardandoCalif] = useState(false);
+  const [califMsg, setCalifMsg] = useState<{ text: string; ok: boolean } | null>(null);
+  const [mejorandoPilar, setMejorandoPilar] = useState<string | null>(null);
 
   const [mejorandoIdx, setMejorandoIdx] = useState<number | null>(null);
   const handleMejorarNota = async (i: number) => {
@@ -146,6 +159,69 @@ const GenerarReportesPage: React.FC = () => {
 
   const allSelected = !!(torneo && categoria && jornada && equipo);
 
+  useEffect(() => {
+    let cancelado = false;
+    setCalifMsg(null);
+    if (!selectedMatch?.team_id) { setPilaresEquipo(null); setCalifs({}); return; }
+    setCargandoModelo(true);
+    (async () => {
+      try {
+        const pil = await fetchPilares(selectedMatch.team_id as string);
+        const prev = pil.length > 0 ? await fetchCalificacionesPartido(selectedMatch.id) : [];
+        if (cancelado) return;
+        const inicial: Record<string, { semaforo: SemaforoModelo; nota: string }> = {};
+        pil.forEach(p => {
+          const c = prev.find(x => x.pilar_id === p.id);
+          inicial[p.id] = { semaforo: c?.semaforo || 'verde', nota: c?.nota || '' };
+        });
+        setPilaresEquipo(pil);
+        setCalifs(inicial);
+      } catch (err) {
+        console.error('No se pudo cargar el modelo de juego del equipo:', err);
+        if (!cancelado) { setPilaresEquipo(null); setCalifs({}); }
+      } finally {
+        if (!cancelado) setCargandoModelo(false);
+      }
+    })();
+    return () => { cancelado = true; };
+  }, [selectedMatch]);
+
+  const usaModeloGuardado = !!(pilaresEquipo && pilaresEquipo.length > 0);
+
+  const filasCalificacion = () => (pilaresEquipo || []).map(p => ({ pilar_id: p.id, semaforo: califs[p.id]?.semaforo || 'verde', nota: califs[p.id]?.nota || '' }));
+
+  const handleGuardarCalif = async (silencioso = false): Promise<boolean> => {
+    if (!selectedMatch || !usaModeloGuardado) return false;
+    setGuardandoCalif(true);
+    try {
+      const n = await guardarCalificaciones(selectedMatch.id, filasCalificacion());
+      setCalifMsg({ text: `Calificación guardada (${n} pilar${n === 1 ? '' : 'es'} con nota).`, ok: true });
+      return true;
+    } catch (err: any) {
+      console.error('Error guardando calificación:', err);
+      setCalifMsg({ text: 'No se pudo guardar la calificación. ' + (err?.message || ''), ok: false });
+      return false;
+    } finally {
+      setGuardandoCalif(false);
+      if (silencioso) { /* el mensaje queda visible junto al botón */ }
+    }
+  };
+
+  const handleMejorarPilar = async (p: ModeloPilar) => {
+    const nota = califs[p.id]?.nota?.trim();
+    if (!nota) return;
+    setMejorandoPilar(p.id);
+    try {
+      const mejorado = await mejorarRedaccionChecklist(p.nombre, nota);
+      setCalifs(prev => ({ ...prev, [p.id]: { ...prev[p.id], nota: mejorado } }));
+    } catch (err: any) {
+      console.error('Error mejorando redacción:', err);
+      setGenError(err?.message || 'No se pudo mejorar el texto. Intenta de nuevo.');
+    } finally {
+      setMejorandoPilar(null);
+    }
+  };
+
   const resetDownstream = (level: 'torneo' | 'categoria' | 'equipo') => {
     if (level === 'torneo') {
       setCategoria(''); setEquipo(''); setJornada('');
@@ -200,10 +276,19 @@ const GenerarReportesPage: React.FC = () => {
     setIsGenerating(true);
     setGenError(null);
     try {
-      const pilares = pilaresTexto.split('\n').map((s) => s.trim()).filter(Boolean);
-      const checklistLimpio = checklist
+      let pilares = pilaresTexto.split('\n').map((s) => s.trim()).filter(Boolean);
+      let checklistLimpio = checklist
         .map((r) => ({ ...r, label: r.label.trim(), nota: r.nota.trim() }))
         .filter((r) => r.label && r.nota);
+      if (usaModeloGuardado && pilaresEquipo) {
+        // Mejora 3: pilares y calificación salen del modelo guardado del equipo, y se guardan.
+        const ordenados = agruparPorFase<ModeloPilar>(pilaresEquipo).flatMap(g => g.pilares);
+        pilares = ordenados.map(p => p.nombre);
+        checklistLimpio = ordenados
+          .map(p => ({ label: p.nombre, fase: p.fase, signal: califs[p.id]?.semaforo || 'verde', nota: (califs[p.id]?.nota || '').trim() }))
+          .filter(r => r.nota);
+        await handleGuardarCalif(true);
+      }
       const modeloDeJuego = (pilares.length > 0 || checklistLimpio.length > 0)
         ? { pilares, checklist: checklistLimpio }
         : undefined;
@@ -329,6 +414,70 @@ const GenerarReportesPage: React.FC = () => {
             Esto lo define el cuerpo técnico, no se calcula de los tags. Si lo dejas vacío, ese slide no aparece en el reporte.
           </p>
 
+          {cargandoModelo && <p className="text-xs text-gray-400 mb-3">Cargando el modelo de juego del equipo…</p>}
+          {usaModeloGuardado && pilaresEquipo ? (
+            <div className="space-y-4">
+              <p className="text-xs text-gray-400">
+                Pilares guardados del equipo (se editan en <Link to="/modelo-juego" className="text-cyan-400 underline">Modelo de juego</Link>).
+                Deja la nota vacía en los que no revisaste: esos no salen en el reporte ni cuentan en el mes.
+              </p>
+              {agruparPorFase<ModeloPilar>(pilaresEquipo).map(g => (
+                <div key={g.fase}>
+                  <p className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">{g.fase}</p>
+                  <div className="space-y-2">
+                    {g.pilares.map(p => (
+                      <div key={p.id} className="flex flex-col md:flex-row gap-2 items-start md:items-center bg-gray-700/50 p-2 rounded">
+                        <span className="md:w-56 text-sm text-white">{p.nombre}{p.zona && <span className="text-xs text-gray-400"> · {p.zona}</span>}</span>
+                        <select
+                          value={califs[p.id]?.semaforo || 'verde'}
+                          onChange={(e) => setCalifs(prev => ({ ...prev, [p.id]: { ...(prev[p.id] || { nota: '' }), semaforo: e.target.value as SemaforoModelo } }))}
+                          className="bg-gray-700 text-white p-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                        >
+                          <option value="verde">🟢 Verde</option>
+                          <option value="ambar">🟡 Ámbar</option>
+                          <option value="rojo">🔴 Rojo</option>
+                        </select>
+                        <input
+                          type="text"
+                          value={califs[p.id]?.nota || ''}
+                          onChange={(e) => setCalifs(prev => ({ ...prev, [p.id]: { ...(prev[p.id] || { semaforo: 'verde' }), nota: e.target.value } }))}
+                          placeholder="Nota (ej: efectiva en el primer tiempo, bajó tras el min 30)"
+                          className="flex-[2] w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => handleMejorarPilar(p)}
+                          disabled={!califs[p.id]?.nota?.trim() || mejorandoPilar === p.id}
+                          className="text-cyan-400 hover:text-cyan-300 disabled:text-gray-500 disabled:cursor-not-allowed text-sm px-2 whitespace-nowrap"
+                          title="Reescribe la nota en tono de director técnico"
+                        >
+                          {mejorandoPilar === p.id ? 'Mejorando…' : '✨ Mejorar'}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+              <div className="flex items-center gap-3 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => handleGuardarCalif()}
+                  disabled={guardandoCalif || !selectedMatch}
+                  className="px-4 py-2 rounded bg-gray-600 hover:bg-gray-500 text-sm text-white disabled:opacity-50"
+                >
+                  {guardandoCalif ? 'Guardando…' : 'Guardar calificación'}
+                </button>
+                <span className="text-xs text-gray-500">Generar el PowerPoint también la guarda.</span>
+                {califMsg && <span className={`text-xs ${califMsg.ok ? 'text-green-400' : 'text-red-400'}`}>{califMsg.text}</span>}
+              </div>
+            </div>
+          ) : (
+          <>
+          {selectedMatch && !cargandoModelo && (
+            <p className="text-xs text-yellow-300 mb-3">
+              Este equipo todavía no tiene su modelo guardado. Guárdalo en <Link to="/modelo-juego" className="underline">Modelo de juego</Link> para que la calificación de cada partido se guarde y aparezca en el seguimiento mensual. Mientras tanto funciona como antes.
+            </p>
+          )}
           <label className="block text-xs text-gray-400 mb-1">Pilares de identidad (uno por línea)</label>
           <textarea
             value={pilaresTexto}
@@ -393,6 +542,8 @@ const GenerarReportesPage: React.FC = () => {
           >
             + Agregar fila
           </button>
+          </>
+          )}
         </div>
 
         <div className="mt-6 flex items-center gap-3">

@@ -10,6 +10,11 @@ import { blobToBase64 } from '../utils/blob';
 import AISuggestionsModal from '../components/ai/AISuggestionsModal';
 import { fetchVideosForMatch, createVideoForMatch, Video as VideoMeta } from '../services/videosService';
 import { fetchTeams, getOrCreateTeam, type Team } from '../services/teamsService';
+import { ACCIONES_CON_ZONA, TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona, etiquetaZona, zonaDesdeVoz } from '../utils/zonas';
+import { esJugadorFicticio } from '../utils/efectividad';
+import { ACCIONES_GOL, TIPOS_GOL, TIPO_GOL_LABEL, GOLPEOS, GOLPEO_LABEL, detalleGolDe, detalleGolDesdeVoz, resumenGol, etiquetaPorteria, type DetalleGol } from '../utils/goles';
+import PorteriaEstadio from '../components/charts/PorteriaEstadio';
+import { ACCIONES_ABP, ACCIONES_ABP_SET, ACCIONES_PENAL, ACCIONES_EN_CONTRA, ENVIOS, ENVIO_LABEL, RESULTADOS_COBRO, RESULTADO_COBRO_LABEL, MARCAJES, MARCAJE_LABEL, RESULTADOS_PENAL, RESULTADO_PENAL_LABEL, detalleAbpDe, resumenAbp, accionAbpDesdeVoz, detalleAbpDesdeVoz, type DetalleAbp } from '../utils/balonParado';
 
 declare var XLSX: any;
 
@@ -82,6 +87,18 @@ const VideoTaggerPage: React.FC = () => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const [currentTime, setCurrentTime] = useState(0);
     const [showShortcutsGuide, setShowShortcutsGuide] = useState(false);
+
+    // Estado solo visual (no cambia datos ni lógica): video encogido y paneles plegables
+    const [videoCompacto, setVideoCompacto] = useState(false);
+    const [gestionAbierta, setGestionAbierta] = useState(false);
+    const [cargaAbierta, setCargaAbierta] = useState(false);
+    const [iaAbierta, setIaAbierta] = useState(false);
+
+    // Mejora 1 — zona de la jugada. Después de etiquetar una recuperación o una pérdida,
+    // el panel "Detalle de la jugada" pregunta dónde fue. No bloquea: si sigues etiquetando,
+    // la jugada queda "sin zona". Guardamos datos para ubicar la etiqueta aunque ya se haya
+    // guardado en la base (el guardado cambia su id temporal por el real).
+    const [detallePendiente, setDetallePendiente] = useState<{ id: string | number; match_id: string; player_id: string; accion: string; timestamp: number } | null>(null);
 
     // Voice Commands State
     const [isVoiceActive, setIsVoiceActive] = useState(false);
@@ -463,11 +480,39 @@ const VideoTaggerPage: React.FC = () => {
             ai_suggested: pendingAiSuggestion !== null
         };
         setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
+
+        // Mejora 1: si es recuperación o pérdida de un jugador real, pedir la zona en el panel de detalle.
+        const jugadorDelTag = players.find(p => p.id === selectedPlayerId);
+        if ((ACCIONES_CON_ZONA.has(accion) || ACCIONES_GOL.has(accion) || ACCIONES_ABP_SET.has(accion)) && !esJugadorFicticio(jugadorDelTag?.nombre)) {
+            setDetallePendiente({ id: newTag.id, match_id: newTag.match_id, player_id: newTag.player_id, accion: newTag.accion, timestamp: newTag.timestamp });
+        } else {
+            setDetallePendiente(null);
+        }
         
         // Si había una sugerencia de IA pendiente, removerla
         if (pendingAiSuggestion) {
             setAiSuggestions(prev => prev.filter(s => s !== pendingAiSuggestion));
             setPendingAiSuggestion(null);
+        }
+    };
+
+    // Tocar el minuto de una jugada de la lista: el video salta 3 segundos antes y queda en pausa,
+    // en el video de esta pantalla y/o en la ventana nueva. No guarda nada.
+    // Si la jugada se etiquetó con otro nombre de video, avisa (sin bloquear).
+    const [avisoVideo, setAvisoVideo] = useState<string | null>(null);
+    const saltarAJugada = (tag: Tag) => {
+        const t = Math.max(0, (tag.timestamp || 0) - 3);
+        const sw = secondaryWindowRef.current;
+        const hayVentana = !!(sw && !sw.closed);
+        if (hayVentana) sw!.postMessage({ type: 'gol_videocontrol', action: 'seekTo', time: t }, '*');
+        const v = videoRef.current;
+        if (v) { v.currentTime = t; v.pause(); }
+        if (!hayVentana && !v) { setAvisoVideo('Carga el video del partido para poder saltar a la jugada.'); return; }
+        const cargado = currentVideoFile?.name || selectedVideo?.video_file || null;
+        if (tag.video_file && cargado && tag.video_file !== cargado) {
+            setAvisoVideo(`Esta jugada se etiquetó con el video "${tag.video_file}" y tienes cargado "${cargado}". Si es el mismo video con otro nombre, ignora este aviso.`);
+        } else {
+            setAvisoVideo(null);
         }
     };
 
@@ -488,6 +533,72 @@ const VideoTaggerPage: React.FC = () => {
         } else {
             setTags(prev => prev.filter(t => t.id !== tagToDelete.id));
         }
+    };
+
+    // Mejora 1: pone (o quita, con null) la zona de la jugada pendiente.
+    // Si la jugada aún no se guarda, solo cambia en pantalla y se guarda con "Guardar".
+    // Si ya estaba guardada, actualiza solo la columna `zona` de esa etiqueta.
+    const aplicarZona = async (zona: string | null): Promise<string> => {
+        const pend = detallePendiente;
+        if (!pend) return '⚠ No hay jugada esperando zona';
+        const tag = tags.find(t => t.id === pend.id)
+            || tags.find(t => t.match_id === pend.match_id && t.player_id === pend.player_id && t.accion === pend.accion && t.timestamp === pend.timestamp);
+        setDetallePendiente(null);
+        if (!tag) return '⚠ No encontré la jugada';
+        if (zona === null) return 'Jugada sin zona';
+        const esTemporal = String(tag.id).startsWith('temp-');
+        if (!esTemporal) {
+            const { error } = await supabase.from('tags').update({ zona }).eq('id', tag.id);
+            if (error) {
+                console.error('Error al guardar la zona', error);
+                return '⚠ No se pudo guardar la zona';
+            }
+        }
+        setTags(prev => prev.map(t => (t.id === tag.id ? { ...t, zona } : t)));
+        return `📍 Zona: ${etiquetaZona(zona)}`;
+    };
+
+    // Mejora 6: agrega datos del gol (tipo, área, portería, golpeo) a la jugada pendiente.
+    // El panel sigue abierto para completar; se cierra con "listo", "saltar" o al etiquetar otra jugada.
+    const aplicarDetalleGol = async (parcial: DetalleGol): Promise<string> => {
+        const pend = detallePendiente;
+        if (!pend) return '⚠ No hay gol esperando detalle';
+        const tag = tags.find(t => t.id === pend.id)
+            || tags.find(t => t.match_id === pend.match_id && t.player_id === pend.player_id && t.accion === pend.accion && t.timestamp === pend.timestamp);
+        if (!tag) { setDetallePendiente(null); return '⚠ No encontré la jugada'; }
+        const nuevo = { ...(tag.detalle || {}), ...parcial };
+        const esTemporal = String(tag.id).startsWith('temp-');
+        if (!esTemporal) {
+            const { error } = await supabase.from('tags').update({ detalle: nuevo }).eq('id', tag.id);
+            if (error) {
+                console.error('Error al guardar el detalle del gol', error);
+                return '⚠ No se pudo guardar el detalle del gol';
+            }
+        }
+        setTags(prev => prev.map(t => (t.id === tag.id ? { ...t, detalle: nuevo } : t)));
+        return `⚽ ${resumenGol(detalleGolDe({ detalle: nuevo })) || 'Detalle guardado'}`;
+    };
+
+    // Mejoras 4 y 5: agrega el detalle de balón parado o penal (zona de envío, resultado,
+    // marcaje; o portería y resultado del penal). Igual que el gol: el panel sigue abierto
+    // hasta "listo", "saltar" o la siguiente jugada.
+    const aplicarDetalleAbp = async (parcial: DetalleAbp): Promise<string> => {
+        const pend = detallePendiente;
+        if (!pend) return '⚠ No hay jugada esperando detalle';
+        const tag = tags.find(t => t.id === pend.id)
+            || tags.find(t => t.match_id === pend.match_id && t.player_id === pend.player_id && t.accion === pend.accion && t.timestamp === pend.timestamp);
+        if (!tag) { setDetallePendiente(null); return '⚠ No encontré la jugada'; }
+        const nuevo = { ...(tag.detalle || {}), ...parcial };
+        const esTemporal = String(tag.id).startsWith('temp-');
+        if (!esTemporal) {
+            const { error } = await supabase.from('tags').update({ detalle: nuevo }).eq('id', tag.id);
+            if (error) {
+                console.error('Error al guardar el detalle de balón parado', error);
+                return '⚠ No se pudo guardar el detalle';
+            }
+        }
+        setTags(prev => prev.map(t => (t.id === tag.id ? { ...t, detalle: nuevo } : t)));
+        return `🚩 ${resumenAbp(tag.accion, detalleAbpDe({ accion: tag.accion, detalle: nuevo })) || 'Detalle guardado'}`;
     };
 
     // Handler for saving all tags (jugadas) to DB
@@ -1187,6 +1298,59 @@ const VideoTaggerPage: React.FC = () => {
             return;
         }
 
+        // ── Mejora 1: zona de la jugada ("creación centro", "zona inicio izquierda") y "saltar" ──
+        // Solo actúa si hay una recuperación o pérdida esperando zona; si no, sigue con los demás comandos.
+        // Mejora 6: detalle del gol ("contraataque dentro del área abajo izquierda", "cabeza", "listo")
+        // Mejoras 4 y 5: decir una acción de balón parado la selecciona ("córner a favor",
+        // "tiro libre en contra", "penal a favor"). Va antes del detalle para no confundirla con él.
+        const accionAbpDicha = accionAbpDesdeVoz(text);
+        if (accionAbpDicha) {
+            setSelectedAction(accionAbpDicha);
+            show(`🎯 Acción: ${accionAbpDicha}`);
+            return;
+        }
+        // Detalle de balón parado o penal: "primer palo remate en zona", "abajo izquierda gol", "listo".
+        // No se lee como detalle si la frase es otra acción, un jugador, "etiquetar" o "guardar".
+        if (detallePendiente && ACCIONES_ABP_SET.has(detallePendiente.accion)) {
+            if (/\blisto\b|\bsaltar\b|\bterminar\b/.test(text)) {
+                setDetallePendiente(null);
+                show('✅ Detalle cerrado');
+                return;
+            }
+            const esOtroComando = /\bjugador\b|\betiquetar\b|\betiqueta\b|\bguardar\b|\btecla\b|\bletra\b/.test(text)
+                || METRICS.some(m => text.includes(m.toLowerCase()));
+            if (!esOtroComando) {
+                const dicho = detalleAbpDesdeVoz(detallePendiente.accion, text);
+                if (Object.keys(dicho).length > 0) {
+                    aplicarDetalleAbp(dicho).then(show);
+                    return;
+                }
+            }
+        }
+        if (detallePendiente && ACCIONES_GOL.has(detallePendiente.accion)) {
+            if (/\blisto\b|\bsaltar\b|\bterminar\b/.test(text)) {
+                setDetallePendiente(null);
+                show('✅ Detalle del gol cerrado');
+                return;
+            }
+            const dicho = detalleGolDesdeVoz(text);
+            if (Object.keys(dicho).length > 0) {
+                aplicarDetalleGol(dicho).then(show);
+                return;
+            }
+        }
+        if (detallePendiente && ACCIONES_CON_ZONA.has(detallePendiente.accion)) {
+            if (/\bsaltar\b|\bsin zona\b/.test(text)) {
+                aplicarZona(null).then(show);
+                return;
+            }
+            const zonaDicha = zonaDesdeVoz(text);
+            if (zonaDicha) {
+                aplicarZona(zonaDicha).then(show);
+                return;
+            }
+        }
+
         // ── Player selection ──────────────────────────────────────────────
         // Acepta: "jugador 11", "jugador once", "jugador noventa y cinco"
         // También acepta: "jugador Jesus", "jugador Diego"
@@ -1477,7 +1641,22 @@ const VideoTaggerPage: React.FC = () => {
             <div className="flex-1 flex flex-col gap-4 overflow-y-auto">
                 <div className="bg-gray-800 rounded-lg p-4 flex flex-col">
                     {/* VIDEO, altura fija */}
-                    <div className="min-h-[300px] max-h-[450px] flex items-center justify-center bg-black rounded-md relative group">
+                    {videoCompacto && (
+                        <div className="flex items-center gap-3 bg-black border border-dashed border-gray-600 rounded-md px-3 py-2 text-sm">
+                            <span className="text-gray-300 truncate">
+                                Video: <strong className="text-white">{currentVideoFile?.name || selectedVideo?.video_file || 'sin video'}</strong>
+                                <span className="text-gray-400"> · se reproduce en otra ventana</span>
+                            </span>
+                            <button
+                                onClick={() => setVideoCompacto(false)}
+                                className="ml-auto whitespace-nowrap text-xs text-cyan-400 hover:text-cyan-300 underline"
+                            >
+                                Mostrar video aquí
+                            </button>
+                        </div>
+                    )}
+                    {/* El video sigue montado aunque esté encogido (la voz, la IA y la sincronía lo necesitan) */}
+                    <div className={videoCompacto ? "h-0 min-h-0 overflow-hidden relative" : "min-h-[300px] max-h-[450px] flex items-center justify-center bg-black rounded-md relative group"}>
                         {activeVideoUrl ? (
                             <>
                                 <video
@@ -1554,6 +1733,7 @@ const VideoTaggerPage: React.FC = () => {
     else if (e.data.action === 'play') vid.play();
     else if (e.data.action === 'back') vid.currentTime = Math.max(0, vid.currentTime - 5);
     else if (e.data.action === 'forward') vid.currentTime += 5;
+    else if (e.data.action === 'seekTo') { vid.currentTime = Math.max(0, e.data.time || 0); vid.pause(); }
   });
 </script>
 </body></html>`;
@@ -1561,6 +1741,7 @@ const VideoTaggerPage: React.FC = () => {
                                             const url = URL.createObjectURL(blob);
                                             const sw = window.open(url, '_blank', 'width=1280,height=720');
                                             secondaryWindowRef.current = sw;
+                                            setVideoCompacto(true);
                                         }}
                                         className="bg-cyan-700/80 hover:bg-cyan-600 text-white px-2 py-1 rounded text-xs font-bold border border-cyan-400/40 shadow"
                                         title="Abrir video en nueva ventana (segunda pantalla)"
@@ -1581,6 +1762,15 @@ const VideoTaggerPage: React.FC = () => {
                             <p className="text-gray-400">Seleccione un partido y cargue videos para empezar</p>
                         )}
                     </div>
+                    {!videoCompacto && (activeVideoUrl || selectedVideo) && (
+                        <button
+                            onClick={() => setVideoCompacto(true)}
+                            className="self-end mt-1 text-xs text-gray-400 hover:text-cyan-300 underline"
+                            title="Encoge el cuadro del video cuando lo ves en otra pantalla"
+                        >
+                            Encoger video
+                        </button>
+                    )}
                     
                     {/* PANEL DE ETIQUETADO RAPIDO - Siempre visible debajo del video */}
                     <div className="mt-3 bg-gradient-to-r from-gray-700 to-gray-800 rounded-lg p-3 border border-cyan-600/30">
@@ -1656,6 +1846,9 @@ const VideoTaggerPage: React.FC = () => {
                                 className="flex-1 min-w-[150px] bg-gray-600 p-2 rounded text-sm"
                             >
                                 {METRICS.map(m => <option key={m} value={m}>{m}</option>)}
+                                <optgroup label="Balón parado y penales (solo se cuentan)">
+                                    {ACCIONES_ABP.map(m => <option key={m} value={m}>{m}</option>)}
+                                </optgroup>
                             </select>
                             <button 
                                 onClick={addTag} 
@@ -1674,45 +1867,7 @@ const VideoTaggerPage: React.FC = () => {
                             </button>
                         </div>
                         
-                        {/* Fila 2: Menu desplegable de atajos */}
-                        <div className="mt-2">
-                            <button 
-                                onClick={() => setShowShortcutsGuide(!showShortcutsGuide)}
-                                className="flex items-center gap-2 text-xs text-cyan-400 hover:text-cyan-300"
-                            >
-                                <span>{showShortcutsGuide ? '▼' : '▶'}</span>
-                                <span>Ver atajos de teclado</span>
-                            </button>
-                            
-                            {showShortcutsGuide && (
-                                <div className="mt-2 grid grid-cols-4 gap-1 text-xs">
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">1</span> Pase corto def logrado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">2</span> Pase corto def fallado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">3</span> Pase corto of logrado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">4</span> Pase corto of fallado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">5</span> Pase largo def logrado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">6</span> Pase largo def fallado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">7</span> Pase largo of logrado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">8</span> Pase largo of fallado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">9</span> 1v1 def logrado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">0</span> 1v1 def fallado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">Q</span> 1v1 of logrado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">W</span> 1v1 of fallado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">E</span> Aereo def logrado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">R</span> Aereo def fallado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">T</span> Aereo of logrado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">Y</span> Aereo of fallado</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">U</span> Trans of lograda</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">I</span> Trans of no lograda</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">A</span> Atajadas</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">S</span> Goles a favor</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">D</span> Goles recibidos</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">F</span> Perdida de balon</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">G</span> Tiros a porteria</div>
-                                    <div className="bg-gray-600 p-1.5 rounded"><span className="text-cyan-400 font-mono">H</span> Recuperacion</div>
-                                </div>
-                            )}
-                        </div>
+                        {/* Los atajos de teclado se muestran una sola vez, en el panel de la derecha */}
                         
                         {/* Indicador de accion seleccionada */}
                         {selectedAction && (
@@ -1744,6 +1899,12 @@ const VideoTaggerPage: React.FC = () => {
                     {/* LISTA DE JUGADAS debajo, scroll propio */}
                     <div className="h-[200px] overflow-y-auto mt-4 bg-gray-900 rounded p-2">
                         <h3 className="text-lg font-semibold mb-2 text-white">Jugadas Etiquetadas</h3>
+                        {avisoVideo && (
+                            <div className="mb-2 p-2 rounded bg-yellow-900/60 border border-yellow-600 text-xs text-yellow-200 flex justify-between gap-2">
+                                <span>{avisoVideo}</span>
+                                <button type="button" onClick={() => setAvisoVideo(null)} className="text-yellow-300 hover:text-white" aria-label="Cerrar aviso">✕</button>
+                            </div>
+                        )}
                         {tags.length > 0 ? tags.map(tag => {
                             const isSuccess = tag.resultado === 'logrado';
                             const isFailure = tag.resultado === 'fallado';
@@ -1756,8 +1917,48 @@ const VideoTaggerPage: React.FC = () => {
                                 >
                                     <div className="flex-1">
                                         <span className="font-semibold">{players.find(p => p.id === tag.player_id)?.nombre || "Jugador"}</span>
-                                        <span className="text-xs text-gray-300 ml-2">{formatTime(tag.timestamp)}</span>
+                                        <button
+                                            type="button"
+                                            onClick={() => saltarAJugada(tag)}
+                                            className="ml-2 px-1.5 py-0.5 rounded bg-cyan-900/60 border border-cyan-500 text-xs text-white hover:bg-cyan-700"
+                                            title="Ir a esta jugada en el video (3 segundos antes)"
+                                        >
+                                            ▶ {formatTime(tag.timestamp)}
+                                        </button>
                                         <div className="text-xs text-gray-300">{tag.accion} {tag.resultado && <span className={isSuccess ? 'text-green-300' : 'text-red-300'}>{tag.resultado}</span>}</div>
+                                        {ACCIONES_CON_ZONA.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (
+                                            <button
+                                                onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
+                                                className={`text-xs mt-1 underline ${tag.zona ? 'text-cyan-300' : 'text-gray-400'}`}
+                                                title="Marcar o cambiar la zona de esta jugada"
+                                            >
+                                                {tag.zona ? `Zona: ${etiquetaZona(tag.zona)}` : '+ zona'}
+                                            </button>
+                                        )}
+                                        {ACCIONES_GOL.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (() => {
+                                            const resumen = resumenGol(detalleGolDe(tag));
+                                            return (
+                                                <button
+                                                    onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
+                                                    className={`block text-xs mt-1 underline text-left ${resumen ? 'text-cyan-300' : 'text-gray-400'}`}
+                                                    title="Marcar o cambiar el detalle de este gol"
+                                                >
+                                                    {resumen ? `Gol: ${resumen}` : '+ detalle del gol'}
+                                                </button>
+                                            );
+                                        })()}
+                                        {ACCIONES_ABP_SET.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (() => {
+                                            const resumen = resumenAbp(tag.accion, detalleAbpDe(tag));
+                                            return (
+                                                <button
+                                                    onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
+                                                    className={`block text-xs mt-1 underline text-left ${resumen ? 'text-cyan-300' : 'text-gray-400'}`}
+                                                    title="Marcar o cambiar el detalle de esta jugada"
+                                                >
+                                                    {resumen ? `Detalle: ${resumen}` : '+ detalle'}
+                                                </button>
+                                            );
+                                        })()}
                                         {tag.video_file && <div className="text-xs text-gray-400 mt-1">Video: {tag.video_file} — ts_abs: {tag.timestamp_absolute ?? 'N/A'}</div>}
                                     </div>
                                     <div className="flex items-center gap-2">
@@ -1783,7 +1984,26 @@ const VideoTaggerPage: React.FC = () => {
             <div className="w-1/3 flex flex-col gap-4 overflow-y-auto pr-2">
                 {/* 1. Gestión del Partido */}
                 <div className="bg-gray-800 rounded-lg p-4">
-                    <h3 className="text-lg font-semibold mb-2 text-white">1. Gestión del Partido</h3>
+                    {(() => {
+                        const abierta = gestionAbierta || !selectedMatchId || isCreatingMatch;
+                        const m = matches.find(mm => mm.id === selectedMatchId);
+                        return (
+                            <button
+                                onClick={() => setGestionAbierta(!abierta)}
+                                className="w-full flex items-center justify-between text-left gap-2"
+                                title={abierta ? 'Encoger' : 'Abrir'}
+                            >
+                                <span className="min-w-0">
+                                    <span className="block text-lg font-semibold text-white">1. Gestión del Partido</span>
+                                    {!abierta && m && (
+                                        <span className="block text-sm text-gray-300 truncate">{m.nombre_equipo} vs {m.rival} · J{m.jornada} · {m.torneo}</span>
+                                    )}
+                                </span>
+                                <span className="text-cyan-400 flex-shrink-0">{abierta ? '▼' : '▶'}</span>
+                            </button>
+                        );
+                    })()}
+                    <div className={(gestionAbierta || !selectedMatchId || isCreatingMatch) ? 'mt-2' : 'hidden'}>
                     <select value={selectedMatchId} onChange={e => setSelectedMatchId(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-2">
                         {matches.length === 0 && <option>Cree un partido para empezar</option>}
                         {matches.map(m => (
@@ -1828,11 +2048,32 @@ const VideoTaggerPage: React.FC = () => {
                             {matchCreationError && <div className="text-red-400 text-xs">{matchCreationError}</div>}
                         </div>
                     )}
+                    </div>
                 </div>
 
                 {/* 2. Carga de Archivos */}
                 <div className="bg-gray-800 rounded-lg p-4">
-                    <h3 className="text-lg font-semibold mb-2 text-white">2. Carga de Archivos</h3>
+                    {(() => {
+                        const falta = filteredPlayers.length === 0 || (!activeVideoUrl && !selectedVideo);
+                        const abierta = cargaAbierta || falta;
+                        const videoNombre = currentVideoFile?.name || selectedVideo?.video_file || 'sin video';
+                        return (
+                            <button
+                                onClick={() => setCargaAbierta(!abierta)}
+                                className="w-full flex items-center justify-between text-left gap-2"
+                                title={abierta ? 'Encoger' : 'Abrir'}
+                            >
+                                <span className="min-w-0">
+                                    <span className="block text-lg font-semibold text-white">2. Carga de Archivos</span>
+                                    {!abierta && (
+                                        <span className="block text-sm text-gray-300 truncate">{filteredPlayers.length} jugadores · video: {videoNombre}</span>
+                                    )}
+                                </span>
+                                <span className="text-cyan-400 flex-shrink-0">{abierta ? '▼' : '▶'}</span>
+                            </button>
+                        );
+                    })()}
+                    <div className={(cargaAbierta || filteredPlayers.length === 0 || (!activeVideoUrl && !selectedVideo)) ? 'mt-2' : 'hidden'}>
                     <label className="block text-sm text-gray-400 mb-1">Jugadores (Excel)</label>
                     <div className="flex items-center gap-2">
                         <input type="file" accept=".xlsx,.xls" onChange={handlePlayerFileChange} className="w-full text-sm text-gray-400 file:mr-4 file:py-1 file:px-2 file:rounded-full file:border-0 file:font-semibold file:bg-gray-600 file:text-white hover:file:bg-gray-500 disabled:opacity-50" disabled={playerUploadStatus === 'loading'} />
@@ -1862,38 +2103,164 @@ const VideoTaggerPage: React.FC = () => {
                     <input type="file" accept="image/*" onChange={e => setTeamUniformFile(e.target.files?.[0] || null)} className="w-full text-sm file:mr-4 file:py-1 file:px-2 file:rounded-full file:border-0 file:font-semibold file:bg-gray-600 file:text-white hover:file:bg-gray-500" />
                     <label className="block text-sm text-gray-400 mt-4 mb-1">Equipo Rival (uniforme)</label>
                     <input type="file" accept="image/*" onChange={e => setOpponentUniformFile(e.target.files?.[0] || null)} className="w-full text-sm file:mr-4 file:py-1 file:px-2 file:rounded-full file:border-0 file:font-semibold file:bg-gray-600 file:text-white hover:file:bg-gray-500" />
+                    </div>
                 </div>
 
-                {/* 3. Etiquetar Jugada */}
-                <div className="bg-gray-800 rounded-lg p-4">
-                    <h3 className="text-lg font-semibold mb-2 text-white">3. Etiquetar Jugada</h3>
-                    <label className="block text-sm text-gray-400 mb-1">Jugador</label>
-                    <select value={selectedPlayerId} onChange={e => setSelectedPlayerId(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-2" disabled={filteredPlayers.length === 0}>
-                        {filteredPlayers.length > 0 ? filteredPlayers.map(p => (
-                            <option key={p.id} value={p.id}>{p.numero} - {p.nombre}</option>
-                        )) : <option>Sin jugadores del equipo</option>}
-                    </select>
-                    <label className="block text-sm text-gray-400 mb-1">Acción</label>
-                    <select value={selectedAction} onChange={e => setSelectedAction(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-4">
-                        {METRICS.map(m => <option key={m} value={m}>{m}</option>)}
-                    </select>
-                    <button onClick={addTag} disabled={!selectedPlayerId || !selectedAction || (!activeVideoUrl && !selectedVideo)} className="w-full bg-green-600 hover:bg-green-500 p-2 rounded font-semibold text-white flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
-                        Etiquetar Jugada
-                    </button>
-                    <button onClick={saveTags} disabled={isSaving || tags.filter(t => String(t.id).startsWith('temp-')).length === 0} className="mt-2 w-full bg-blue-600 hover:bg-blue-500 p-2 rounded font-semibold text-white flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
-                        Guardar Jugadas
-                        {isSaving && <Spinner size="h-4 w-4" />}
-                    </button>
-                    {saveStatus && (
-                        <div className={`mt-3 p-2 rounded text-center text-sm ${saveStatus.type === 'success' ? 'bg-green-800 text-green-200' : 'bg-red-800 text-red-200'}`}>
-                            {saveStatus.message}
-                        </div>
+                {/* "3. Etiquetar Jugada" se quitó en la entrega 2: repetía lo que ya está en el panel central. */}
+                {/* Detalle de la jugada (mejora 1: zona de recuperaciones y pérdidas) */}
+                <div className={`bg-gray-800 rounded-lg p-4 ${detallePendiente ? 'border-2 border-cyan-500' : ''}`}>
+                    <h3 className="text-lg font-semibold mb-2 text-white">Detalle de la jugada</h3>
+                    {detallePendiente && ACCIONES_ABP_SET.has(detallePendiente.accion) ? (() => {
+                        const jug = players.find(p => p.id === detallePendiente.player_id);
+                        const tagActual = tags.find(t => t.id === detallePendiente.id)
+                            || tags.find(t => t.match_id === detallePendiente.match_id && t.player_id === detallePendiente.player_id && t.accion === detallePendiente.accion && t.timestamp === detallePendiente.timestamp);
+                        const d = tagActual ? detalleAbpDe(tagActual) : {} as DetalleAbp;
+                        const aplicar = (parcial: DetalleAbp) => { aplicarDetalleAbp(parcial).then(msg => { setVoiceStatus(msg); setTimeout(() => setVoiceStatus(''), 2500); }); };
+                        const chip = (activo: boolean) => `px-2.5 py-1.5 rounded text-sm ${activo ? 'bg-cyan-700 border-2 border-cyan-300 text-white font-semibold' : 'bg-gray-700 hover:bg-gray-600 text-gray-200 border-2 border-transparent'}`;
+                        const esPenal = ACCIONES_PENAL.has(detallePendiente.accion);
+                        const enContra = ACCIONES_EN_CONTRA.has(detallePendiente.accion);
+                        const rol = esPenal ? (enContra ? 'portero' : 'tirador') : (enContra ? 'marcaba o despejó' : 'lanzador');
+                        return (
+                            <div className="space-y-2">
+                                <p className="text-sm text-gray-200">
+                                    {detallePendiente.accion} · {jug ? `#${jug.numero} ${jug.nombre.trim().split(/\s+/)[0]}` : 'Jugador'} <span className="text-gray-400">({rol})</span>
+                                </p>
+                                {esPenal ? (
+                                    <>
+                                        <p className="text-xs text-gray-400">¿A dónde tiró? (portería vista de frente)</p>
+                                        <PorteriaEstadio rgb={enContra ? '251,146,60' : '34,211,238'} seleccion={d.porteria || null} onSelect={k => aplicar({ porteria: k })} />
+                                        {d.porteria && <p className="text-xs text-cyan-300">Tiró: {(etiquetaPorteria(d.porteria) || '').toLowerCase()}</p>}
+                                        <p className="text-xs text-gray-400">Resultado</p>
+                                        <div className="grid grid-cols-4 gap-1">
+                                            {RESULTADOS_PENAL.map(r => <button key={r} onClick={() => aplicar({ resultado: r })} className={chip(d.resultado === r)}>{RESULTADO_PENAL_LABEL[r]}</button>)}
+                                        </div>
+                                    </>
+                                ) : (
+                                    <>
+                                        <p className="text-xs text-gray-400">Zona de envío</p>
+                                        <div className="flex flex-wrap gap-1">
+                                            {ENVIOS.map(e => <button key={e} onClick={() => aplicar({ envio: e })} className={chip(d.envio === e)}>{ENVIO_LABEL[e]}</button>)}
+                                        </div>
+                                        <p className="text-xs text-gray-400">Resultado</p>
+                                        <div className="flex gap-1">
+                                            {RESULTADOS_COBRO.map(r => <button key={r} onClick={() => aplicar({ resultado: r })} className={`flex-1 ${chip(d.resultado === r)}`}>{RESULTADO_COBRO_LABEL[r]}</button>)}
+                                        </div>
+                                        {(
+                                            <>
+                                                <p className="text-xs text-gray-400">{enContra ? 'Tipo de marcaje' : 'Marcaje del rival (opcional)'}</p>
+                                                <div className="flex gap-1">
+                                                    {MARCAJES.map(m => <button key={m} onClick={() => aplicar({ marcaje: m })} className={`flex-1 ${chip(d.marcaje === m)}`}>{MARCAJE_LABEL[m]}</button>)}
+                                                </div>
+                                            </>
+                                        )}
+                                    </>
+                                )}
+                                <div className="flex items-center gap-2">
+                                    <p className="flex-1 text-sm bg-gray-900 rounded px-2 py-1.5 text-gray-200">
+                                        Di: <span className="text-cyan-300">{esPenal ? '"abajo izquierda gol"' : enContra ? '"segundo palo remate en zona"' : '"primer palo remate en zona"'}</span> · <span className="text-cyan-300">"listo"</span> para cerrar
+                                    </p>
+                                    <button
+                                        onClick={() => setDetallePendiente(null)}
+                                        className="px-3 py-2 rounded bg-gray-600 hover:bg-gray-500 text-sm whitespace-nowrap"
+                                    >
+                                        Listo
+                                    </button>
+                                </div>
+                                <p className="text-xs text-gray-500">Solo se cuenta: no cambia la efectividad. Sigue etiquetando el tiro, gol o atajada como siempre.</p>
+                            </div>
+                        );
+                    })() : detallePendiente && ACCIONES_GOL.has(detallePendiente.accion) ? (() => {
+                        const jug = players.find(p => p.id === detallePendiente.player_id);
+                        const tagActual = tags.find(t => t.id === detallePendiente.id)
+                            || tags.find(t => t.match_id === detallePendiente.match_id && t.player_id === detallePendiente.player_id && t.accion === detallePendiente.accion && t.timestamp === detallePendiente.timestamp);
+                        const d = tagActual ? detalleGolDe(tagActual) : {};
+                        const aplicar = (parcial: DetalleGol) => { aplicarDetalleGol(parcial).then(msg => { setVoiceStatus(msg); setTimeout(() => setVoiceStatus(''), 2500); }); };
+                        const chip = (activo: boolean) => `px-2.5 py-1.5 rounded text-sm ${activo ? 'bg-cyan-700 border-2 border-cyan-300 text-white font-semibold' : 'bg-gray-700 hover:bg-gray-600 text-gray-200 border-2 border-transparent'}`;
+                        return (
+                            <div className="space-y-2">
+                                <p className="text-sm text-gray-200">
+                                    {detallePendiente.accion} · {jug ? `#${jug.numero} ${jug.nombre.trim().split(/\s+/)[0]}` : 'Jugador'} · <span className="text-gray-400">¿cómo fue?</span>
+                                </p>
+                                <p className="text-xs text-gray-400">Tipo</p>
+                                <div className="flex flex-wrap gap-1">
+                                    {TIPOS_GOL.map(tg => <button key={tg} onClick={() => aplicar({ tipo_gol: tg })} className={chip(d.tipo_gol === tg)}>{TIPO_GOL_LABEL[tg]}</button>)}
+                                </div>
+                                <p className="text-xs text-gray-400">Disparo</p>
+                                <div className="flex gap-1">
+                                    <button onClick={() => aplicar({ area: 'dentro' })} className={`flex-1 ${chip(d.area === 'dentro')}`}>Dentro del área</button>
+                                    <button onClick={() => aplicar({ area: 'fuera' })} className={`flex-1 ${chip(d.area === 'fuera')}`}>Fuera del área</button>
+                                </div>
+                                <p className="text-xs text-gray-400">¿Dónde entró? (portería vista de frente)</p>
+                                <PorteriaEstadio rgb="34,211,238" seleccion={d.porteria || null} onSelect={k => aplicar({ porteria: k })} />
+                                {d.porteria && <p className="text-xs text-cyan-300">Entró: {(etiquetaPorteria(d.porteria) || '').toLowerCase()}</p>}
+                                <p className="text-xs text-gray-400">Golpeo (opcional)</p>
+                                <div className="flex gap-1">
+                                    {GOLPEOS.map(g => <button key={g} onClick={() => aplicar({ golpeo: g })} className={`flex-1 ${chip(d.golpeo === g)}`}>{GOLPEO_LABEL[g]}</button>)}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <p className="flex-1 text-sm bg-gray-900 rounded px-2 py-1.5 text-gray-200">
+                                        Di: <span className="text-cyan-300">"contraataque dentro del área abajo izquierda"</span> · <span className="text-cyan-300">"listo"</span> para cerrar
+                                    </p>
+                                    <button
+                                        onClick={() => setDetallePendiente(null)}
+                                        className="px-3 py-2 rounded bg-gray-600 hover:bg-gray-500 text-sm whitespace-nowrap"
+                                    >
+                                        Listo
+                                    </button>
+                                </div>
+                            </div>
+                        );
+                    })() : detallePendiente ? (() => {
+                        const jug = players.find(p => p.id === detallePendiente.player_id);
+                        return (
+                            <div className="space-y-2">
+                                <p className="text-sm text-gray-200">
+                                    {detallePendiente.accion} · {jug ? `#${jug.numero} ${jug.nombre.trim().split(/\s+/)[0]}` : 'Jugador'} · <span className="text-gray-400">¿dónde fue?</span>
+                                </p>
+                                <div className="grid grid-cols-3 gap-1 text-xs text-gray-400 text-center">
+                                    {TERCIOS.map(t => <span key={t}>{TERCIO_LABEL[t]}</span>)}
+                                </div>
+                                <div className="grid grid-cols-3 gap-1 border-2 border-gray-600 rounded p-1">
+                                    {CARRILES.map(c => TERCIOS.map(t => (
+                                        <button
+                                            key={`${t}-${c}`}
+                                            onClick={() => { aplicarZona(codigoZona(t, c)).then(msg => { setVoiceStatus(msg); setTimeout(() => setVoiceStatus(''), 2500); }); }}
+                                            className="min-h-[44px] rounded bg-gray-700 hover:bg-cyan-700 text-sm text-gray-100 font-semibold"
+                                            title={`${TERCIO_LABEL[t]} · ${CARRIL_LABEL[c].toLowerCase()}`}
+                                        >
+                                            {CARRIL_LABEL[c] === 'Izquierda' ? 'Izq' : CARRIL_LABEL[c] === 'Derecha' ? 'Der' : 'Centro'}
+                                        </button>
+                                    )))}
+                                </div>
+                                <p className="text-xs text-gray-400">Tu equipo ataca hacia la derecha →</p>
+                                <div className="flex items-center gap-2">
+                                    <p className="flex-1 text-sm bg-gray-900 rounded px-2 py-1.5 text-gray-200">
+                                        Di: <span className="text-cyan-300">"creación centro"</span> · o toca la zona · <span className="text-cyan-300">"saltar"</span> la deja sin zona
+                                    </p>
+                                    <button
+                                        onClick={() => { aplicarZona(null).then(msg => { setVoiceStatus(msg); setTimeout(() => setVoiceStatus(''), 2500); }); }}
+                                        className="px-3 py-2 rounded bg-gray-600 hover:bg-gray-500 text-sm whitespace-nowrap"
+                                    >
+                                        Saltar
+                                    </button>
+                                </div>
+                            </div>
+                        );
+                    })() : (
+                        <p className="text-sm text-gray-400">Aparece al etiquetar una recuperación o una pérdida (zona), un gol (tipo, área y portería) o un balón parado o penal.</p>
                     )}
                 </div>
 
                 {/* 4. Analisis Asistido por IA */}
                 <div className="bg-gray-800 rounded-lg p-4">
-                    <h3 className="text-lg font-semibold mb-2 text-white">Análisis Asistido por IA (Beta)</h3>
+                    <button
+                        onClick={() => setIaAbierta(!(iaAbierta || isAnyAnalysisRunning))}
+                        className="w-full flex items-center justify-between text-lg font-semibold text-white"
+                    >
+                        <span>Análisis Asistido por IA (Beta)</span>
+                        <span className="text-cyan-400">{(iaAbierta || isAnyAnalysisRunning) ? '▼' : '▶'}</span>
+                    </button>
+                    <div className={(iaAbierta || isAnyAnalysisRunning) ? 'mt-2' : 'hidden'}>
                     <p className="text-xs text-gray-400 mb-4">La IA puede sugerir jugadas. Puedes aceptar o rechazar las sugerencias.</p>
                     
                     {/* Segment Analysis Button (Gemini) - RECOMMENDED */}
@@ -1941,6 +2308,7 @@ const VideoTaggerPage: React.FC = () => {
                     >
                         {isCustomAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Modelo Personalizado (74% Top-3)</>}
                     </button>
+                    </div>
                 </div>
 
                 {/* 5. Atajos de Teclado */}

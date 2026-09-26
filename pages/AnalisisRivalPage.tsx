@@ -3,7 +3,14 @@ import { supabase } from '../services/supabaseClient';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
-import type { RivalAnalysis, RivalAnalysisInsert, RivalMomento, RivalNotas, RivalTipo, RivalZona } from '../types';
+import type { RivalAnalysis, RivalAnalysisInsert, RivalMomento, RivalNotas, RivalTipo, RivalZona, Match, Tag, Player, DafoRival } from '../types';
+import {
+  CORNER_FAVOR, CORNER_CONTRA, TL_FAVOR, TL_CONTRA, PENAL_FAVOR, PENAL_CONTRA,
+  ENVIO_LABEL, RESULTADO_COBRO_LABEL, MARCAJE_LABEL, detalleAbpDe, contarCobros, contarPenales,
+} from '../utils/balonParado';
+import { detalleGolDe, resumenGol } from '../utils/goles';
+import { esJugadorFicticio } from '../utils/efectividad';
+import { generarDafoRival } from '../services/dafoRivalService';
 import { fetchTeams, type Team } from '../services/teamsService';
 import { exportRivalAnalysisToPDF } from '../services/pdfExportService';
 
@@ -12,18 +19,49 @@ const ATTR_CONFIG: Record<RivalTipo, { lbl1: string; opts1: [string, string][]; 
   Ofensiva:   { lbl1: 'Estilo', opts1: [['Combinativo', '1'], ['Directo', '2']], lbl2: 'Carril', opts2: [['Izquierda', '1'], ['Centro', '2'], ['Derecha', '3']] },
   Defensiva:  { lbl1: 'Altura de presión', opts1: [['Alta', '1'], ['Media', '2'], ['Baja', '3']], lbl2: 'Número de hombres', opts2: [['Muchos', '1'], ['Pocos', '2']] },
   Transicion: { lbl1: 'Planteamiento', opts1: [['Contraataque', '1'], ['Ataque organizado', '2']], lbl2: 'Carril', opts2: [['Izquierda', '1'], ['Centro', '2'], ['Derecha', '3']] },
+  // Balón parado usa su propio panel (abajo); estas opciones genéricas no se muestran.
+  BalonParado: { lbl1: 'Detalle', opts1: [], lbl2: 'Resultado', opts2: [] },
 };
-const TIPOS: RivalTipo[] = ['Ofensiva', 'Defensiva', 'Transicion'];
+const TIPOS: RivalTipo[] = ['Ofensiva', 'Defensiva', 'Transicion', 'BalonParado'];
+const TIPO_LABEL: Record<RivalTipo, string> = { Ofensiva: 'Ofensiva', Defensiva: 'Defensiva', Transicion: 'Transición', BalonParado: 'Balón parado' };
+
+// ─── Balón parado (tipo 4, mejora 4): el rival cobra o defiende ──────────────
+type BpLado = 'cobra' | 'defiende';
+type BpCobro = 'Córner' | 'Tiro libre';
+const BP_COBROS: BpCobro[] = ['Córner', 'Tiro libre'];
+const BP_ENVIOS = ['1er palo', '2º palo', 'Área chica', 'Punto penal', 'Frontal', 'En corto'];
+const BP_RES_COBRA = ['Gol', 'Remate', 'Nada'];
+const BP_MARCAJES = ['En zona', 'Al hombre', 'Mixto'];
+const BP_RES_DEFIENDE = ['Gol', 'Remate', 'Despejado'];
+const sinAcentosBp = (t: string) => t.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+// ¿El rival de un partido se llama parecido al rival analizado? (para preseleccionar partidos)
+const nombreCoincide = (rivalPartido: string, rivalAnalisis: string) => {
+  const a = sinAcentosBp(rivalPartido || '').trim();
+  const b = sinAcentosBp(rivalAnalisis || '').trim();
+  if (!a || !b) return false;
+  if (a.includes(b) || b.includes(a)) return true;
+  return b.split(/\s+/).filter(w => w.length >= 4).some(w => a.includes(w));
+};
+// Zona guardada en las etiquetas ("finalizacion-centro"), vista desde el lado del rival.
+const TERCIO_PARA_RIVAL: Record<string, string> = {
+  inicio: 'nuestro Inicio (cerca de nuestra portería, su zona de Finalización)',
+  creacion: 'medio campo (Creación)',
+  finalizacion: 'nuestra Finalización (su salida, cerca de su portería)',
+};
+const ACCIONES_COBRO_RIVAL = new Set([CORNER_CONTRA, TL_CONTRA]);   // cuando el rival cobra
+const ACCIONES_DEFIENDE_RIVAL = new Set([CORNER_FAVOR, TL_FAVOR]);  // cuando el rival defiende
+const RES_DEFIENDE_LABEL: Record<string, string> = { gol: 'Gol', remate: 'Remate', nada: 'Despejado' };
 // El reporte y la impresión solo muestran Ofensiva y Defensiva — Transición sigue
 // disponible para etiquetar (por si se usa con otro rival), pero no en el reporte.
-const REPORT_TIPOS: RivalTipo[] = ['Ofensiva', 'Defensiva'];
+const REPORT_TIPOS: RivalTipo[] = ['Ofensiva', 'Defensiva', 'BalonParado'];
 const REPORT_QUESTION: Partial<Record<RivalTipo, string>> = {
   Ofensiva: '¿Cómo ataca el rival cuando tiene el balón?',
   Defensiva: '¿Cómo presiona el rival cuando no tiene el balón?',
+  BalonParado: '¿Cómo cobra y cómo defiende el rival el balón parado?',
 };
 const ZONAS: RivalZona[] = ['Inicio', 'Creacion', 'Finalizacion'];
 const ZONA_LABEL: Record<RivalZona, string> = { Inicio: 'Inicio', Creacion: 'Creación', Finalizacion: 'Finalización' };
-const EYEBROW: Record<RivalTipo, string> = { Ofensiva: 'FASE OFENSIVA', Defensiva: 'FASE DEFENSIVA', Transicion: 'TRANSICIÓN OFENSIVA' };
+const EYEBROW: Record<RivalTipo, string> = { Ofensiva: 'FASE OFENSIVA', Defensiva: 'FASE DEFENSIVA', Transicion: 'TRANSICIÓN OFENSIVA', BalonParado: 'BALÓN PARADO' };
 const ZONA_COLOR: Record<RivalZona, string> = { Inicio: '#D85A30', Creacion: '#EF9F27', Finalizacion: '#378ADD' };
 
 let idCounter = 0;
@@ -58,6 +96,12 @@ const AnalisisRivalPage: React.FC = () => {
   const [selAttr1, setSelAttr1] = useState<string | null>(null);
   const [selAttr2, setSelAttr2] = useState<string | null>(null);
   const [tagError, setTagError] = useState<string | null>(null);
+  // Balón parado (tipo 4)
+  const [bpLado, setBpLado] = useState<BpLado | null>(null);
+  const [bpCobro, setBpCobro] = useState<BpCobro | null>(null);
+  const [bpDetalle, setBpDetalle] = useState<string | null>(null);   // envío (cobra) o marcaje (defiende)
+  const [bpResultado, setBpResultado] = useState<string | null>(null);
+  const resetBp = () => { setBpLado(null); setBpCobro(null); setBpDetalle(null); setBpResultado(null); };
 
   // ── Borrador (sin guardar) y guardado ──
   const [draftMomentos, setDraftMomentos] = useState<RivalMomento[]>([]);
@@ -77,6 +121,14 @@ const AnalisisRivalPage: React.FC = () => {
   // ── Vista de reporte (auxiliar y preview de admin) ──
   const [repTipo, setRepTipo] = useState<RivalTipo>('Ofensiva');
   const [repZona, setRepZona] = useState<RivalZona>('Inicio');
+  const [tabDafo, setTabDafo] = useState(false);
+
+  // ── Partidos propios contra este rival (para Balón parado y DAFO) ──
+  const [matchesEquipo, setMatchesEquipo] = useState<Match[]>([]);
+  const [tagsPartidos, setTagsPartidos] = useState<Tag[]>([]);
+  const [playersEquipo, setPlayersEquipo] = useState<Player[]>([]);
+  const [generandoDafo, setGenerandoDafo] = useState(false);
+  const [dafoError, setDafoError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -104,7 +156,7 @@ const AnalisisRivalPage: React.FC = () => {
   // ─── Momentos combinados (guardados + borrador) para conteos en pantalla ──────
   const allMomentos = useMemo(() => [...(selected?.momentos || []), ...draftMomentos], [selected, draftMomentos]);
   const countsByTipo = useMemo(() => {
-    const c: Record<RivalTipo, number> = { Ofensiva: 0, Defensiva: 0, Transicion: 0 };
+    const c: Record<RivalTipo, number> = { Ofensiva: 0, Defensiva: 0, Transicion: 0, BalonParado: 0 };
     allMomentos.forEach(m => { c[m.tipo]++; });
     return c;
   }, [allMomentos]);
@@ -113,11 +165,11 @@ const AnalisisRivalPage: React.FC = () => {
   const openAnalysis = (a: RivalAnalysis) => {
     setSelected(a);
     setDraftMomentos([]); setDraftNotes({});
-    setSelTipo(null); setSelZona(null); setSelAttr1(null); setSelAttr2(null);
+    setSelTipo(null); setSelZona(null); setSelAttr1(null); setSelAttr2(null); resetBp();
     setVideoUrl(null); setVideoFileName('');
     setSaveMsg(null);
     setMode(isAdmin ? 'tag' : 'report');
-    setRepTipo('Ofensiva'); setRepZona('Inicio');
+    setRepTipo('Ofensiva'); setRepZona('Inicio'); setTabDafo(false); setDafoError(null);
     setView('workspace');
   };
 
@@ -127,7 +179,7 @@ const AnalisisRivalPage: React.FC = () => {
     setNewTeamId(teams[0]?.id || '');
     setNewRivalName('');
     setDraftMomentos([]); setDraftNotes({});
-    setSelTipo(null); setSelZona(null); setSelAttr1(null); setSelAttr2(null);
+    setSelTipo(null); setSelZona(null); setSelAttr1(null); setSelAttr2(null); resetBp();
     setVideoUrl(null); setVideoFileName('');
     setSaveMsg(null);
     setMode('tag');
@@ -201,12 +253,15 @@ const AnalisisRivalPage: React.FC = () => {
   }, []);
 
   // ─── Selección de Tipo/Zona/Atributos ───────────────────────────────────────
-  const selectTipo = (t: RivalTipo) => { setSelTipo(t); setSelAttr1(null); setSelAttr2(null); setTagError(null); };
+  const selectTipo = (t: RivalTipo) => { setSelTipo(t); setSelAttr1(null); setSelAttr2(null); resetBp(); setTagError(null); };
+  const selectBpLado = (l: BpLado) => { setBpLado(l); setBpDetalle(null); setBpResultado(null); setTagError(null); };
   const selectZona = (z: RivalZona) => { setSelZona(z); setTagError(null); };
   const selectAttr1 = (v: string) => { setSelAttr1(v); setTagError(null); };
   const selectAttr2 = (v: string) => { setSelAttr2(v); setTagError(null); };
 
-  const notaKey = selTipo && selZona ? `${selTipo}|${selZona}` : null;
+  const notaKey = selTipo === 'BalonParado'
+    ? (bpLado ? `BalonParado|${bpLado}` : null)
+    : (selTipo && selZona ? `${selTipo}|${selZona}` : null);
   useEffect(() => {
     if (notaKey) {
       setNotaTexto(draftNotes[notaKey] ?? selected?.notas?.[notaKey] ?? '');
@@ -222,6 +277,21 @@ const AnalisisRivalPage: React.FC = () => {
   };
 
   const registrarMomento = useCallback(() => {
+    if (selTipo === 'BalonParado') {
+      if (!bpLado) { setTagError('Elige si el rival cobra o defiende'); return; }
+      if (bpLado === 'cobra' && (!bpCobro || !bpDetalle)) { setTagError('Elige el cobro (córner o tiro libre) y la zona de envío'); return; }
+      if (bpLado === 'defiende' && !bpDetalle) { setTagError('Elige el tipo de marcaje'); return; }
+      setTagError(null);
+      const momentoBp: RivalMomento = {
+        id: newLocalId(), tipo: 'BalonParado', lado: bpLado, cobro: bpLado === 'cobra' ? (bpCobro || undefined) : undefined,
+        attr1: bpDetalle as string, attr2: bpResultado || undefined,
+        timestamp_video: videoRef.current ? Math.floor(videoRef.current.currentTime) : undefined,
+      };
+      setDraftMomentos(prev => [...prev, momentoBp]);
+      setSaveMsg(null);
+      setBpCobro(null); setBpDetalle(null); setBpResultado(null);
+      return;
+    }
     if (!selTipo || !selZona || !selAttr1) { setTagError('Selecciona tipo, zona y el primer atributo'); return; }
     setTagError(null);
     const momento: RivalMomento = {
@@ -231,7 +301,7 @@ const AnalisisRivalPage: React.FC = () => {
     setDraftMomentos(prev => [...prev, momento]);
     setSaveMsg(null);
     setSelZona(null); setSelAttr1(null); setSelAttr2(null);
-  }, [selTipo, selZona, selAttr1, selAttr2]);
+  }, [selTipo, selZona, selAttr1, selAttr2, bpLado, bpCobro, bpDetalle, bpResultado]);
 
   const eliminarMomento = (id: string) => setDraftMomentos(prev => prev.filter(m => m.id !== id));
 
@@ -299,6 +369,40 @@ const AnalisisRivalPage: React.FC = () => {
 
     if (/guardar/.test(text)) { guardarAnalisis(); show('💾 Guardando análisis...'); return; }
     if (/registrar|registra\b|agregar momento/.test(text)) { registrarMomento(); show('✅ Momento registrado'); return; }
+
+    // Balón parado (tipo 4): "balón parado", "cobra" / "defiende", "córner", "primer palo", "remate", "en zona"…
+    const tBp = sinAcentosBp(text);
+    if (/\bbalon parado\b|\bpelota parada\b/.test(tBp)) { selectTipo('BalonParado'); show('🎯 Tipo: Balón parado'); return; }
+    if (selTipo === 'BalonParado') {
+      if (/\bcobra\b|\bcobro\b/.test(tBp)) { selectBpLado('cobra'); show('🎯 El rival cobra'); return; }
+      if (/\bdefiende\b|\bdefensa\b/.test(tBp)) { selectBpLado('defiende'); show('🎯 El rival defiende'); return; }
+      const dichos: string[] = [];
+      if (bpLado === 'cobra') {
+        if (/\bcorner\b|\btiro de esquina\b|\bsaque de esquina\b/.test(tBp)) { setBpCobro('Córner'); dichos.push('Córner'); }
+        else if (/\btiro libre\b|\bfalta\b/.test(tBp)) { setBpCobro('Tiro libre'); dichos.push('Tiro libre'); }
+        let envio: string | null = null;
+        if (/\bprimer palo\b|\b1er palo\b/.test(tBp)) envio = '1er palo';
+        else if (/\bsegundo palo\b|\b2do palo\b/.test(tBp)) envio = '2º palo';
+        else if (/\barea chica\b/.test(tBp)) envio = 'Área chica';
+        else if (/\bpunto penal\b|\bpunto de penal\b/.test(tBp)) envio = 'Punto penal';
+        else if (/\bfrontal\b|\bborde del area\b/.test(tBp)) envio = 'Frontal';
+        else if (/\ben corto\b|\bcorto\b/.test(tBp)) envio = 'En corto';
+        if (envio) { setBpDetalle(envio); dichos.push(envio); }
+        let res: string | null = null;
+        if (/\bgol\b/.test(tBp)) res = 'Gol'; else if (/\bremate\b|\bremato\b/.test(tBp)) res = 'Remate'; else if (/\bnada\b|\bsin remate\b/.test(tBp)) res = 'Nada';
+        if (res) { setBpResultado(res); dichos.push(res); }
+      } else if (bpLado === 'defiende') {
+        let marc: string | null = null;
+        if (/\ben zona\b|\bzonal\b/.test(tBp)) marc = 'En zona';
+        else if (/\bal hombre\b|\bhombre a hombre\b|\bindividual\b/.test(tBp)) marc = 'Al hombre';
+        else if (/\bmixto\b|\bmixta\b/.test(tBp)) marc = 'Mixto';
+        if (marc) { setBpDetalle(marc); dichos.push(marc); }
+        let res: string | null = null;
+        if (/\bgol\b/.test(tBp)) res = 'Gol'; else if (/\bremate\b|\bremato\b/.test(tBp)) res = 'Remate'; else if (/\bdespejad[oa]\b|\bdespeje\b|\bdespejo\b/.test(tBp)) res = 'Despejado';
+        if (res) { setBpResultado(res); dichos.push(res); }
+      }
+      if (dichos.length > 0) { setTagError(null); show(`🎯 ${dichos.join(' · ')}`); return; }
+    }
 
     if (/ofensiva/.test(text)) { selectTipo('Ofensiva'); show('🎯 Tipo: Ofensiva'); return; }
     if (/defensiva/.test(text)) { selectTipo('Defensiva'); show('🎯 Tipo: Defensiva'); return; }
@@ -393,8 +497,10 @@ const AnalisisRivalPage: React.FC = () => {
         if (e.key === '1') selectTipo('Ofensiva');
         else if (e.key === '2') selectTipo('Defensiva');
         else if (e.key === '3') selectTipo('Transicion');
+        else if (e.key === '4') selectTipo('BalonParado');
         return;
       }
+      if (selTipo === 'BalonParado') return; // Balón parado se llena con voz o mouse
       if (!selZona) {
         if (e.key === '1') selectZona('Inicio');
         else if (e.key === '2') selectZona('Creacion');
@@ -466,6 +572,184 @@ const AnalisisRivalPage: React.FC = () => {
     return `${text}.`;
   };
 
+  // ─── Balón parado: conteos y lectura automática (se calcula de los momentos) ─
+  // Partidos y jugadores del equipo de este análisis
+  useEffect(() => {
+    const teamId = selected?.team_id;
+    if (!teamId) { setMatchesEquipo([]); setPlayersEquipo([]); return; }
+    (async () => {
+      const [m, p] = await Promise.all([
+        supabase.from('matches').select('*').eq('team_id', teamId).order('fecha', { ascending: true }),
+        supabase.from('players').select('*').eq('team_id', teamId),
+      ]);
+      if (m.error) console.error(m.error);
+      if (p.error) console.error(p.error);
+      setMatchesEquipo((m.data || []) as Match[]);
+      setPlayersEquipo((p.data || []) as Player[]);
+    })();
+  }, [selected?.id, selected?.team_id]);
+
+  // Partidos elegidos: los guardados, o si nunca se eligieron, los que coinciden por nombre.
+  const partidosElegidos = useMemo(() => {
+    if (!selected) return [] as string[];
+    if (Array.isArray(selected.partidos)) return selected.partidos;
+    return matchesEquipo.filter(m => nombreCoincide(m.rival, selected.rival_name)).map(m => m.id);
+  }, [selected, matchesEquipo]);
+
+  useEffect(() => {
+    if (partidosElegidos.length === 0) { setTagsPartidos([]); return; }
+    (async () => {
+      const { data, error: te } = await supabase.from('tags').select('*').in('match_id', partidosElegidos);
+      if (te) console.error(te);
+      setTagsPartidos((data || []) as Tag[]);
+    })();
+  }, [partidosElegidos.join(',')]);
+
+  const idsFicticios = useMemo(() => new Set(playersEquipo.filter(p => esJugadorFicticio(p.nombre)).map(p => p.id)), [playersEquipo]);
+  const tagsReales = useMemo(() => tagsPartidos.filter(t => !idsFicticios.has(t.player_id)), [tagsPartidos, idsFicticios]);
+
+  const togglePartido = async (matchId: string) => {
+    if (!selected || !isAdmin) return;
+    const nuevos = partidosElegidos.includes(matchId) ? partidosElegidos.filter(id => id !== matchId) : [...partidosElegidos, matchId];
+    const { data, error: ue } = await supabase.from('rival_analysis').update({ partidos: nuevos }).eq('id', selected.id).select().single();
+    if (ue) { console.error(ue); setError('No se pudo guardar la selección de partidos. ¿Ya corriste el SQL de esta entrega?'); return; }
+    setSelected(data); setAnalyses(prev => prev.map(a => a.id === data.id ? data : a));
+  };
+
+  const contarLista = (valores: string[], opciones: string[]) => opciones.map(o => ({ label: o, n: valores.filter(v => v === o).length }));
+  // Balón parado del rival = momentos tipo 4 de esta página + lo etiquetado en tus partidos contra él:
+  //   cuando cobra   ← tus "Córner en contra" y "Tiro libre en contra"
+  //   cuando defiende ← tus "Córner a favor" y "Tiro libre a favor" (marcaje del rival, si lo marcaste)
+  const bpReport = () => {
+    const nota = (lado: BpLado) => draftNotes[`BalonParado|${lado}`] ?? selected?.notas?.[`BalonParado|${lado}`] ?? '';
+    type ItemCobra = { cobro?: string; envio: string | null; res: string | null };
+    type ItemDef = { marc: string | null; res: string | null };
+    const cobra: ItemCobra[] = [
+      ...allMomentos.filter(m => m.tipo === 'BalonParado' && m.lado === 'cobra').map(m => ({ cobro: m.cobro, envio: m.attr1 || null, res: m.attr2 || null })),
+      ...tagsReales.filter(t => ACCIONES_COBRO_RIVAL.has(t.accion)).map(t => {
+        const d = detalleAbpDe(t);
+        return { cobro: t.accion === CORNER_CONTRA ? 'Córner' : 'Tiro libre', envio: d.envio ? ENVIO_LABEL[d.envio] : null, res: d.resultado ? RESULTADO_COBRO_LABEL[d.resultado as 'gol' | 'remate' | 'nada'] : null };
+      }),
+    ];
+    const defiende: ItemDef[] = [
+      ...allMomentos.filter(m => m.tipo === 'BalonParado' && m.lado === 'defiende').map(m => ({ marc: m.attr1 || null, res: m.attr2 || null })),
+      ...tagsReales.filter(t => ACCIONES_DEFIENDE_RIVAL.has(t.accion)).map(t => {
+        const d = detalleAbpDe(t);
+        return { marc: d.marcaje ? MARCAJE_LABEL[d.marcaje] : null, res: d.resultado ? RES_DEFIENDE_LABEL[d.resultado] : null };
+      }),
+    ];
+    const deTusPartidos = tagsReales.filter(t => ACCIONES_COBRO_RIVAL.has(t.accion) || ACCIONES_DEFIENDE_RIVAL.has(t.accion)).length;
+
+    const conEnvio = cobra.filter(c => c.envio);
+    const envios = contarLista(conEnvio.map(c => c.envio as string), BP_ENVIOS);
+    const corners = cobra.filter(c => c.cobro === 'Córner').length;
+    const tirosLibres = cobra.filter(c => c.cobro === 'Tiro libre').length;
+    const golesCobra = cobra.filter(c => c.res === 'Gol').length;
+    const rematesCobra = cobra.filter(c => c.res === 'Remate' || c.res === 'Gol').length;
+    const conResCobra = cobra.filter(c => !!c.res).length;
+    const partes: string[] = [];
+    if (conEnvio.length > 0) {
+      const top = [...envios].sort((a, b) => b.n - a.n)[0];
+      const frecuencia = top.n / conEnvio.length >= 0.6 ? 'casi siempre' : 'más seguido';
+      const destino = top.label === 'En corto' ? 'en corto' : `al ${top.label.toLowerCase()}`;
+      partes.push(`Cobra ${frecuencia} ${destino} (${top.n} de ${conEnvio.length})`);
+    }
+    if (conResCobra > 0) partes.push(`${rematesCobra} de ${conResCobra} terminaron en remate${golesCobra > 0 ? ` y ${golesCobra} en gol` : ''}`);
+    const mayus = (x: string) => x ? x.charAt(0).toUpperCase() + x.slice(1) : x;
+    const lecturaCobra = mayus(partes.length ? `${partes.join('; ')}.` : '');
+
+    const conMarc = defiende.filter(d => d.marc);
+    const marcajes = contarLista(conMarc.map(d => d.marc as string), BP_MARCAJES);
+    const golesDef = defiende.filter(d => d.res === 'Gol').length;
+    const rematesDef = defiende.filter(d => d.res === 'Remate' || d.res === 'Gol').length;
+    const conResDef = defiende.filter(d => !!d.res).length;
+    const partesD: string[] = [];
+    if (conMarc.length > 0) {
+      const top = [...marcajes].sort((a, b) => b.n - a.n)[0];
+      partesD.push(`Defiende ${top.label.toLowerCase()} en ${top.n} de ${conMarc.length} cobros`);
+    }
+    if (conResDef > 0) partesD.push(`le remataron ${rematesDef} ${rematesDef === 1 ? 'vez' : 'veces'} y le anotaron ${golesDef}`);
+    const lecturaDefiende = mayus(partesD.length ? `${partesD.join('; ')}.` : '');
+    return {
+      deTusPartidos,
+      cobra: { n: cobra.length, corners, tirosLibres, envios, sinEnvio: cobra.length - conEnvio.length, lectura: lecturaCobra, nota: nota('cobra') },
+      defiende: { n: defiende.length, marcajes, sinMarcaje: defiende.length - conMarc.length, lectura: lecturaDefiende, nota: nota('defiende') },
+    };
+  };
+
+  // ─── DAFO del rival (IA) ────────────────────────────────────────────────────
+  const armarResumenRival = (): string => {
+    const lineas: string[] = [];
+    (['Ofensiva', 'Defensiva'] as RivalTipo[]).forEach(tipo => {
+      ZONAS.forEach(z => {
+        const n = allMomentos.filter(m => m.tipo === tipo && m.zona === z).length;
+        if (n > 0) lineas.push(`- ${tipo === 'Ofensiva' ? 'Cómo ataca' : 'Cómo presiona'} en ${ZONA_LABEL[z]} (${n} momentos): ${summarizeZone(tipo, z)}`);
+      });
+    });
+    const bp = bpReport();
+    if (bp.cobra.n > 0) lineas.push(`- Balón parado, cuando cobra (${bp.cobra.n} cobros: ${bp.cobra.corners} córners, ${bp.cobra.tirosLibres} tiros libres): ${bp.cobra.lectura || 'sin detalle'}`);
+    if (bp.defiende.n > 0) lineas.push(`- Balón parado, cuando defiende (${bp.defiende.n} cobros): ${bp.defiende.lectura || 'sin detalle'}`);
+    const notas = { ...(selected?.notas || {}), ...draftNotes };
+    Object.entries(notas).forEach(([k, v]) => { if (String(v || '').trim()) lineas.push(`- Nota del analista (${k.replace('|', ' · ')}): ${v}`); });
+    return lineas.join('\n');
+  };
+
+  const armarResumenPartidos = (): string => {
+    const lineas: string[] = [];
+    const partidos = matchesEquipo.filter(m => partidosElegidos.includes(m.id));
+    partidos.forEach(m => {
+      const t = tagsReales.filter(x => x.match_id === m.id);
+      const gf = t.filter(x => x.accion === 'Goles a favor');
+      const gc = t.filter(x => x.accion === 'Goles recibidos');
+      lineas.push(`Partido J${m.jornada} vs ${m.rival}: marcador ${gf.length}-${gc.length} (nosotros-ellos).`);
+      gc.forEach(g => lineas.push(`  - Gol del rival: ${resumenGol(detalleGolDe(g)) || 'sin detalle'}`));
+      gf.forEach(g => lineas.push(`  - Gol nuestro: ${resumenGol(detalleGolDe(g)) || 'sin detalle'}`));
+      const porTercio = (accion: string) => {
+        const c: Record<string, number> = {};
+        t.filter(x => x.accion === accion && x.zona).forEach(x => { const k = String(x.zona).split('-')[0]; c[k] = (c[k] || 0) + 1; });
+        const total = t.filter(x => x.accion === accion).length;
+        const conZona = Object.values(c).reduce((a, b) => a + b, 0);
+        const txt = Object.entries(c).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n} en ${TERCIO_PARA_RIVAL[k] || k}`).join(', ');
+        return { total, conZona, txt };
+      };
+      const rec = porTercio('Recuperación de balón');
+      if (rec.total > 0) lineas.push(`  - Le recuperamos el balón ${rec.total} veces${rec.conZona ? ` (con zona: ${rec.txt})` : ''}. Esto muestra dónde pierde el balón el rival.`);
+      const per = porTercio('Pérdida de balón');
+      if (per.total > 0) lineas.push(`  - Perdimos el balón ${per.total} veces${per.conZona ? ` (con zona: ${per.txt})` : ''}. Esto muestra dónde nos presiona o recupera el rival.`);
+      const cc = contarCobros(t, CORNER_CONTRA), tc = contarCobros(t, TL_CONTRA), cf = contarCobros(t, CORNER_FAVOR), tf = contarCobros(t, TL_FAVOR);
+      if (cc.cobros + tc.cobros > 0) lineas.push(`  - Balón parado del rival: córners ${cc.cobros} → ${cc.remates} remates → ${cc.goles} goles; tiros libres ${tc.cobros} → ${tc.remates} → ${tc.goles}.`);
+      if (cf.cobros + tf.cobros > 0) lineas.push(`  - Nuestro balón parado contra él: córners ${cf.cobros} → ${cf.remates} remates → ${cf.goles} goles; tiros libres ${tf.cobros} → ${tf.remates} → ${tf.goles}.`);
+      const pf = contarPenales(t, PENAL_FAVOR), pc = contarPenales(t, PENAL_CONTRA);
+      if (pf.tirados + pc.tirados > 0) lineas.push(`  - Penales: a favor ${pf.goles} de ${pf.tirados}; en contra nos anotó ${pc.goles} de ${pc.tirados}.`);
+    });
+    if (lineas.length) lineas.push('Nota: las zonas de la cancha están vistas desde nuestro ataque (atacamos hacia su portería).');
+    return lineas.join('\n');
+  };
+
+  const handleGenerarDafo = async () => {
+    if (!selected) return;
+    setGenerandoDafo(true);
+    setDafoError(null);
+    try {
+      const dafo = await generarDafoRival({
+        equipo: teamName(selected.team_id),
+        rival: selected.rival_name,
+        resumenRival: armarResumenRival(),
+        resumenPartidos: armarResumenPartidos(),
+        partidos: partidosElegidos.length,
+        momentos: allMomentos.length,
+      });
+      const { data, error: ue } = await supabase.from('rival_analysis').update({ dafo }).eq('id', selected.id).select().single();
+      if (ue) throw new Error('Se generó el DAFO pero no se pudo guardar. ¿Ya corriste el SQL de esta entrega?');
+      setSelected(data); setAnalyses(prev => prev.map(a => a.id === data.id ? data : a));
+    } catch (err: any) {
+      console.error(err);
+      setDafoError(err?.message || 'No se pudo generar el DAFO.');
+    } finally {
+      setGenerandoDafo(false);
+    }
+  };
+
   const handleExportPDF = async () => {
     if (!selected) return;
     try {
@@ -478,6 +762,21 @@ const AnalisisRivalPage: React.FC = () => {
           rivalName: selected.rival_name,
           ofensiva: buildFase('Ofensiva', REPORT_QUESTION.Ofensiva || ''),
           defensiva: buildFase('Defensiva', REPORT_QUESTION.Defensiva || ''),
+          balonParado: (() => {
+            const bp = bpReport();
+            if (bp.cobra.n === 0 && bp.defiende.n === 0) return undefined;
+            return {
+              pregunta: REPORT_QUESTION.BalonParado || '',
+              cobra: bp.cobra.n > 0 ? `${bp.cobra.lectura} (${bp.cobra.n} cobros: ${bp.cobra.corners} córners, ${bp.cobra.tirosLibres} tiros libres)` : 'Sin cobros registrados todavía.',
+              notaCobra: bp.cobra.nota || undefined,
+              defiende: bp.defiende.n > 0 ? bp.defiende.lectura : 'Sin cobros del otro equipo registrados todavía.',
+              notaDefiende: bp.defiende.nota || undefined,
+            };
+          })(),
+          dafo: selected.dafo ? {
+            fortalezas: selected.dafo.fortalezas, debilidades: selected.dafo.debilidades,
+            oportunidades: selected.dafo.oportunidades, amenazas: selected.dafo.amenazas,
+          } : undefined,
         },
         { userName: profile?.username || 'Usuario', teamName: teamName(selected.team_id) }
       );
@@ -620,11 +919,12 @@ const AnalisisRivalPage: React.FC = () => {
             <div className="flex gap-2 mb-4">
               {TIPOS.map((t, i) => (
                 <button key={t} onClick={() => selectTipo(t)} className={`flex-1 px-3 py-2 rounded-lg text-sm border-2 transition-colors ${selTipo === t ? 'bg-cyan-900/40 border-cyan-500 text-cyan-300' : 'bg-gray-700 border-transparent text-gray-300 hover:bg-gray-600'}`}>
-                  <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-gray-900 text-[10px] mr-1.5 text-gray-400">{i + 1}</span>{t === 'Transicion' ? 'Transición' : t}
+                  <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-gray-900 text-[10px] mr-1.5 text-gray-400">{i + 1}</span>{TIPO_LABEL[t]}
                 </button>
               ))}
             </div>
 
+            {selTipo !== 'BalonParado' && (<>
             <p className="text-xs text-gray-500 mb-2">Zona</p>
             <div className="flex gap-2 mb-4">
               {ZONAS.map((z, i) => (
@@ -633,8 +933,51 @@ const AnalisisRivalPage: React.FC = () => {
                 </button>
               ))}
             </div>
+            </>)}
 
-            {selTipo && (
+            {selTipo === 'BalonParado' && (() => {
+              const chip = (activo: boolean) => `px-2.5 py-1.5 rounded-lg text-xs border-2 transition-colors ${activo ? 'bg-cyan-900/40 border-cyan-500 text-cyan-300' : 'bg-gray-700 border-transparent text-gray-300 hover:bg-gray-600'}`;
+              return (
+                <div className="space-y-3 mb-4">
+                  <div className="flex gap-2">
+                    <button onClick={() => selectBpLado('cobra')} className={`flex-1 px-3 py-2 rounded-lg text-sm border-2 transition-colors ${bpLado === 'cobra' ? 'bg-cyan-900/40 border-cyan-500 text-cyan-300' : 'bg-gray-700 border-transparent text-gray-300 hover:bg-gray-600'}`}>El rival cobra</button>
+                    <button onClick={() => selectBpLado('defiende')} className={`flex-1 px-3 py-2 rounded-lg text-sm border-2 transition-colors ${bpLado === 'defiende' ? 'bg-cyan-900/40 border-cyan-500 text-cyan-300' : 'bg-gray-700 border-transparent text-gray-300 hover:bg-gray-600'}`}>El rival defiende</button>
+                  </div>
+                  {bpLado === 'cobra' && (
+                    <>
+                      <div>
+                        <p className="text-xs text-gray-500 mb-2">Cobro</p>
+                        <div className="flex gap-2 flex-wrap">{BP_COBROS.map(c => <button key={c} onClick={() => { setBpCobro(c); setTagError(null); }} className={chip(bpCobro === c)}>{c}</button>)}</div>
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500 mb-2">Zona de envío</p>
+                        <div className="flex gap-2 flex-wrap">{BP_ENVIOS.map(v => <button key={v} onClick={() => { setBpDetalle(v); setTagError(null); }} className={chip(bpDetalle === v)}>{v}</button>)}</div>
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500 mb-2">Resultado</p>
+                        <div className="flex gap-2 flex-wrap">{BP_RES_COBRA.map(v => <button key={v} onClick={() => setBpResultado(v)} className={chip(bpResultado === v)}>{v}</button>)}</div>
+                      </div>
+                      <p className="text-xs text-gray-500">Por voz: "córner primer palo remate", luego "registrar"</p>
+                    </>
+                  )}
+                  {bpLado === 'defiende' && (
+                    <>
+                      <div>
+                        <p className="text-xs text-gray-500 mb-2">Tipo de marcaje</p>
+                        <div className="flex gap-2 flex-wrap">{BP_MARCAJES.map(v => <button key={v} onClick={() => { setBpDetalle(v); setTagError(null); }} className={chip(bpDetalle === v)}>{v}</button>)}</div>
+                      </div>
+                      <div>
+                        <p className="text-xs text-gray-500 mb-2">Resultado del cobro del otro equipo</p>
+                        <div className="flex gap-2 flex-wrap">{BP_RES_DEFIENDE.map(v => <button key={v} onClick={() => setBpResultado(v)} className={chip(bpResultado === v)}>{v}</button>)}</div>
+                      </div>
+                      <p className="text-xs text-gray-500">Por voz: "en zona despejado", luego "registrar"</p>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
+
+            {selTipo && selTipo !== 'BalonParado' && (
               <div className="grid grid-cols-2 gap-3 mb-4">
                 <div>
                   <p className="text-xs text-gray-500 mb-2">{ATTR_CONFIG[selTipo].lbl1}</p>
@@ -667,14 +1010,14 @@ const AnalisisRivalPage: React.FC = () => {
 
           <div className="bg-gray-800 rounded-xl p-4 border border-gray-700">
             <p className="text-xs text-gray-500 mb-1">Nota del analista (opcional)</p>
-            <p className="text-xs text-gray-600 mb-2">Se guarda para: <span className="text-gray-300">{selTipo && selZona ? `${selTipo === 'Transicion' ? 'Transición' : selTipo} · ${ZONA_LABEL[selZona]}` : 'selecciona tipo y zona arriba'}</span></p>
+            <p className="text-xs text-gray-600 mb-2">Se guarda para: <span className="text-gray-300">{selTipo === 'BalonParado' ? (bpLado ? `Balón parado · ${bpLado === 'cobra' ? 'cuando cobra' : 'cuando defiende'}` : 'elige si el rival cobra o defiende') : selTipo && selZona ? `${TIPO_LABEL[selTipo]} · ${ZONA_LABEL[selZona]}` : 'selecciona tipo y zona arriba'}</span></p>
             <textarea value={notaTexto} onChange={e => handleNotaChange(e.target.value)} disabled={!notaKey} rows={2} placeholder="Ej. Rice y Zubimendi como ejecutores clave del primer pase tras el robo" className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none resize-y disabled:opacity-50" />
           </div>
 
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
             {TIPOS.map(t => (
               <div key={t} className="bg-gray-800 rounded-lg p-3">
-                <p className="text-xs text-gray-500">{t === 'Transicion' ? 'Transición' : t}</p>
+                <p className="text-xs text-gray-500">{TIPO_LABEL[t]}</p>
                 <p className="text-2xl font-medium text-white">{countsByTipo[t]}</p>
               </div>
             ))}
@@ -686,7 +1029,9 @@ const AnalisisRivalPage: React.FC = () => {
               <div className="space-y-1.5">
                 {draftMomentos.map(m => (
                   <div key={m.id} className="flex items-center justify-between bg-gray-800 rounded-lg px-3 py-2 text-sm">
-                    <span className="text-gray-300">{m.tipo === 'Transicion' ? 'Transición' : m.tipo} · {ZONA_LABEL[m.zona]} · {m.attr1}{m.attr2 ? ` · ${m.attr2}` : ''}</span>
+                    <span className="text-gray-300">{m.tipo === 'BalonParado'
+                      ? `Balón parado · ${m.lado === 'cobra' ? `Cobra${m.cobro ? ` · ${m.cobro}` : ''}` : 'Defiende'} · ${m.attr1}${m.attr2 ? ` · ${m.attr2}` : ''}`
+                      : `${TIPO_LABEL[m.tipo]} · ${m.zona ? ZONA_LABEL[m.zona] : ''} · ${m.attr1}${m.attr2 ? ` · ${m.attr2}` : ''}`}</span>
                     <button onClick={() => eliminarMomento(m.id)} aria-label="Eliminar momento" className="w-6 h-6 flex items-center justify-center text-gray-500 hover:text-red-400 transition-colors">
                       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M6 18L18 6M6 6l12 12" /></svg>
                     </button>
@@ -705,13 +1050,128 @@ const AnalisisRivalPage: React.FC = () => {
       ) : (
         // ═══════════════ REPORTE (auxiliar siempre, admin en modo "Ver reporte") ═══════════════
         <div className="space-y-4">
+          {selected && (
+            <div className="bg-gray-800 rounded-xl p-4 border border-gray-700">
+              <p className="text-xs text-gray-400 mb-2">Tus partidos contra este rival <span className="text-gray-500">— se usan en Balón parado y DAFO{Array.isArray(selected.partidos) ? '' : ' (preseleccionados por nombre)'}</span></p>
+              {matchesEquipo.length === 0 ? (
+                <p className="text-xs text-gray-500">Este equipo no tiene partidos registrados.</p>
+              ) : (
+                <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto">
+                  {matchesEquipo.filter(m => isAdmin || partidosElegidos.includes(m.id)).map(m => {
+                    const on = partidosElegidos.includes(m.id);
+                    return (
+                      <label key={m.id} className={`flex items-center gap-2 text-sm rounded-lg px-3 py-1.5 ${on ? 'bg-gray-900 text-white' : 'text-gray-400'} ${isAdmin ? 'cursor-pointer hover:bg-gray-700' : ''}`}>
+                        {isAdmin && <input type="checkbox" checked={on} onChange={() => togglePartido(m.id)} className="accent-cyan-500" />}
+                        J{m.jornada} · {m.nombre_equipo} vs {m.rival}{m.torneo ? ` · ${m.torneo}` : ''}
+                      </label>
+                    );
+                  })}
+                  {!isAdmin && partidosElegidos.length === 0 && <p className="text-xs text-gray-500">No hay partidos elegidos.</p>}
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="flex gap-2">
             {REPORT_TIPOS.map(t => (
-              <button key={t} onClick={() => setRepTipo(t)} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${repTipo === t ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>{t}</button>
+              <button key={t} onClick={() => { setRepTipo(t); setTabDafo(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${!tabDafo && repTipo === t ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>{TIPO_LABEL[t]}</button>
             ))}
+            <button onClick={() => setTabDafo(true)} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabDafo ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>DAFO</button>
           </div>
-          {REPORT_QUESTION[repTipo] && <p className="text-sm text-gray-400 italic">{REPORT_QUESTION[repTipo]}</p>}
+          {!tabDafo && REPORT_QUESTION[repTipo] && <p className="text-sm text-gray-400 italic">{REPORT_QUESTION[repTipo]}</p>}
 
+          {tabDafo ? (
+            <div className="space-y-4">
+              {isAdmin && (
+                <div className="flex items-center gap-3 flex-wrap">
+                  <button onClick={handleGenerarDafo} disabled={generandoDafo || !selected} className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-medium disabled:opacity-50">
+                    {generandoDafo ? 'Generando…' : selected?.dafo ? '✨ Volver a generar DAFO' : '✨ Generar DAFO'}
+                  </button>
+                  <span className="text-xs text-gray-500">Usa {allMomentos.length} momentos del rival y {partidosElegidos.length} partido{partidosElegidos.length === 1 ? '' : 's'} tuyo{partidosElegidos.length === 1 ? '' : 's'} · solo con el botón (cuota de Gemini)</span>
+                </div>
+              )}
+              {dafoError && <p className="text-sm text-red-400">{dafoError}</p>}
+              {!selected?.dafo ? (
+                <p className="text-sm text-gray-500">Todavía no se ha generado el DAFO de este rival.</p>
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {([
+                      ['Fortalezas del rival', selected.dafo.fortalezas, 'border-green-600', 'text-green-400'],
+                      ['Debilidades del rival', selected.dafo.debilidades, 'border-red-600', 'text-red-400'],
+                      ['Oportunidades para nosotros', selected.dafo.oportunidades, 'border-cyan-500', 'text-cyan-300'],
+                      ['Amenazas para nosotros', selected.dafo.amenazas, 'border-orange-400', 'text-orange-300'],
+                    ] as [string, string[], string, string][]).map(([titulo, items, borde, color]) => (
+                      <div key={titulo} className={`bg-gray-800 rounded-xl p-4 border-t-4 ${borde}`}>
+                        <p className={`font-semibold mb-2 ${color}`}>{titulo}</p>
+                        <ul className="space-y-1.5">{(items || []).map((it, i) => <li key={i} className="text-sm text-gray-200">• {it}</li>)}</ul>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="text-xs text-gray-500">
+                    Generado el {new Date(selected.dafo.generado).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' })} · con {selected.dafo.momentos} momentos del rival y {selected.dafo.partidos} partido{selected.dafo.partidos === 1 ? '' : 's'} · sale en el PDF
+                  </p>
+                </>
+              )}
+            </div>
+          ) : repTipo === 'BalonParado' ? (() => {
+            const bp = bpReport();
+            const maxEnvio = Math.max(1, ...bp.cobra.envios.map(e => e.n));
+            return (
+              <div className="space-y-2">
+              {bp.deTusPartidos > 0 && <p className="text-xs text-gray-500">Incluye {bp.deTusPartidos} cobros etiquetados en tus partidos contra este rival (Etiquetador).</p>}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <div className="bg-gray-800 rounded-xl p-4 border border-gray-700 space-y-3">
+                  <p className="text-base font-medium text-white">Cuando cobra</p>
+                  {bp.cobra.n === 0 ? <p className="text-sm text-gray-500">Sin cobros registrados todavía.</p> : (
+                    <>
+                      <p className="text-xs text-gray-500">Zona de envío · {bp.cobra.n} cobro{bp.cobra.n === 1 ? '' : 's'} ({bp.cobra.corners} córner{bp.cobra.corners === 1 ? '' : 's'} · {bp.cobra.tirosLibres} tiro{bp.cobra.tirosLibres === 1 ? '' : 's'} libre{bp.cobra.tirosLibres === 1 ? '' : 's'})</p>
+                      {bp.cobra.envios.map(e => (
+                        <div key={e.label} className="grid items-center gap-2 text-xs" style={{ gridTemplateColumns: '90px minmax(0,1fr) 24px' }}>
+                          <span className="text-gray-300">{e.label}</span>
+                          <div className="h-2 bg-gray-700 rounded-full overflow-hidden"><div className="h-full bg-cyan-500 rounded-full" style={{ width: `${(e.n / maxEnvio) * 100}%` }} /></div>
+                          <span className="text-gray-200 font-semibold text-right">{e.n}</span>
+                        </div>
+                      ))}
+                      {bp.cobra.lectura && <p className="text-sm text-gray-200 bg-gray-900 rounded-lg p-2.5"><span className="font-semibold">Lectura automática:</span> {bp.cobra.lectura}</p>}
+                      {bp.cobra.sinEnvio > 0 && <p className="text-xs text-yellow-300">{bp.cobra.sinEnvio} cobro{bp.cobra.sinEnvio === 1 ? '' : 's'} sin zona de envío marcada.</p>}
+                    </>
+                  )}
+                  {bp.cobra.nota && (
+                    <div className="border-t border-gray-700 pt-2">
+                      <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">Nota del analista</p>
+                      <p className="text-sm italic text-gray-300">{bp.cobra.nota}</p>
+                    </div>
+                  )}
+                </div>
+                <div className="bg-gray-800 rounded-xl p-4 border border-gray-700 space-y-3">
+                  <p className="text-base font-medium text-white">Cuando defiende</p>
+                  {bp.defiende.n === 0 ? <p className="text-sm text-gray-500">Sin cobros del otro equipo registrados todavía.</p> : (
+                    <>
+                      <p className="text-xs text-gray-500">Tipo de marcaje · {bp.defiende.n} cobros contra este rival</p>
+                      <div className="grid grid-cols-3 gap-2 text-center">
+                        {bp.defiende.marcajes.map(m => (
+                          <div key={m.label} className="bg-gray-900 rounded-lg p-3">
+                            <p className="text-2xl font-bold text-white">{m.n}</p>
+                            <p className="text-xs text-gray-400">{m.label}</p>
+                          </div>
+                        ))}
+                      </div>
+                      {bp.defiende.lectura && <p className="text-sm text-gray-200 bg-gray-900 rounded-lg p-2.5"><span className="font-semibold">Lectura automática:</span> {bp.defiende.lectura}</p>}
+                      {bp.defiende.sinMarcaje > 0 && <p className="text-xs text-yellow-300">{bp.defiende.sinMarcaje} cobro{bp.defiende.sinMarcaje === 1 ? '' : 's'} sin marcaje del rival marcado{isAdmin ? ' (agrégalo en el Etiquetador con ▶ y "Detalle")' : ''}.</p>}
+                    </>
+                  )}
+                  {bp.defiende.nota && (
+                    <div className="border-t border-gray-700 pt-2">
+                      <p className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">Nota del analista</p>
+                      <p className="text-sm italic text-gray-300">{bp.defiende.nota}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+              </div>
+            );
+          })() : (<>
           <div className="flex gap-5 flex-wrap items-start">
             <div className="flex-1 min-w-[200px]" style={{ flexBasis: 220 }}>
               <p className="text-xs text-gray-500 mb-2 text-center">Toca una zona de la cancha para ver su detalle</p>
@@ -792,6 +1252,7 @@ const AnalisisRivalPage: React.FC = () => {
               ))}
             </div>
           </div>
+          </>)}
 
           <button onClick={handleExportPDF} className="w-full flex items-center justify-center gap-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg py-2.5 text-sm font-medium transition-colors">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" /></svg>Descargar PDF

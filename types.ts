@@ -35,6 +35,10 @@ export interface Tag {
   created_at?: string;
   // Campo para tracking de sugerencias de IA (entrenamiento de modelo)
   ai_suggested?: boolean;
+  // Zona de la cancha donde ocurrió la acción (ej. "creacion-centro"). Ver utils/zonas.ts.
+  zona?: string | null;
+  // Datos extra de la jugada (tipo de gol, balón parado, penal). Se usará en entregas siguientes.
+  detalle?: Record<string, any> | null;
 }
 
 export interface AISuggestion {
@@ -199,21 +203,27 @@ export interface TacticalAnalysisInsert {
 
 // ─── Análisis del Rival ───────────────────────────────────────────────────────
 
-export type RivalTipo = 'Ofensiva' | 'Defensiva' | 'Transicion';
+export type RivalTipo = 'Ofensiva' | 'Defensiva' | 'Transicion' | 'BalonParado';
 export type RivalZona = 'Inicio' | 'Creacion' | 'Finalizacion';
 
 export interface RivalMomento {
   id: string;                   // identificador local (no es fila de BD, vive dentro del JSON)
   tipo: RivalTipo;
-  zona: RivalZona;
+  // Zona de la cancha. No aplica en Balón parado (tipo 4), por eso es opcional.
+  zona?: RivalZona;
   // attr1: Estilo (Ofensiva) · Altura de presión (Defensiva) · Planteamiento (Transición)
   attr1: string;
   // attr2: Carril (Ofensiva/Transición) · Número de hombres (Defensiva) — opcional
   attr2?: string;
   timestamp_video?: number;     // segundo del video donde ocurrió, si se registró viendo el video
+  // Solo Balón parado (tipo 4): el rival cobra o defiende, y qué cobro fue.
+  // En Balón parado: attr1 = zona de envío (cobra) o tipo de marcaje (defiende); attr2 = resultado.
+  lado?: 'cobra' | 'defiende';
+  cobro?: 'Córner' | 'Tiro libre';
 }
 
 // Notas del analista por combinación Tipo+Zona. Clave: "Tipo|Zona", ej. "Ofensiva|Inicio"
+// Balón parado usa "BalonParado|cobra" y "BalonParado|defiende".
 export type RivalNotas = Record<string, string>;
 
 export interface RivalAnalysis {
@@ -223,8 +233,23 @@ export interface RivalAnalysis {
   video_path?: string | null;
   momentos: RivalMomento[];
   notas: RivalNotas;
+  // Partidos propios contra este rival que se usan en Balón parado y DAFO (ids de matches).
+  // null = todavía no se eligió; se preseleccionan por nombre.
+  partidos?: string[] | null;
+  dafo?: DafoRival | null;
   created_by?: string | null;
   created_at: string;
+}
+
+// DAFO del rival, generado con IA y guardado junto al análisis.
+export interface DafoRival {
+  fortalezas: string[];
+  debilidades: string[];
+  oportunidades: string[];
+  amenazas: string[];
+  generado: string;       // fecha ISO
+  partidos: number;       // cuántos partidos propios se usaron
+  momentos: number;       // cuántos momentos del rival se usaron
 }
 
 export interface RivalAnalysisInsert {

@@ -9,6 +9,10 @@ import { analyzePlayerPerformance, type PerformanceAnalysis } from '../services/
 import { getCachedAnalysis, saveAnalysis, getPlayerAnalysisHistory, formatHistoryDate } from '../services/analysisHistoryService';
 import { exportPlayerAnalysisToPDF } from '../services/pdfExportService';
 import { cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios, esJugadorFicticio, calcularPorcentajeAtajadas, ACCIONES_FUERA_DE_EFECTIVIDAD } from '../utils/efectividad';
+import MapaZonas from '../components/charts/MapaZonas';
+import GolesPorTipo from '../components/charts/GolesPorTipo';
+import MapaPorteria from '../components/charts/MapaPorteria';
+import { esAccionBalonParado, contarPenales, PENAL_FAVOR, PENAL_CONTRA } from '../utils/balonParado';
 
 const RendimientoPage: React.FC = () => {
     const { profile } = useAuth();
@@ -190,7 +194,8 @@ const RendimientoPage: React.FC = () => {
             };
         }
 
-        const totalAcciones = playerTags.length;
+        // Balón parado y penales no suman en "Acciones Totales" (solo se cuentan en su línea).
+        const totalAcciones = playerTags.filter(t => !esAccionBalonParado(t.accion)).length;
         const accionesLogradas = efectividadTags.filter(esAccionLograda).length;
         const efectividadGlobal = efectividadTags.length > 0 ? Math.round((accionesLogradas / efectividadTags.length) * 100) : 0;
 
@@ -530,6 +535,12 @@ const RendimientoPage: React.FC = () => {
             };
         }).sort((a, b) => b.total - a.total);
     }, [playerTags]);
+
+    // Mejora 5: penales del jugador (a favor como tirador; en contra como portero).
+    const penalesJugador = useMemo(() => ({
+        favor: contarPenales(playerTags, PENAL_FAVOR),
+        contra: contarPenales(playerTags, PENAL_CONTRA),
+    }), [playerTags]);
 
     // % de atajadas del jugador seleccionado (solo aplica a porteros).
     const porteriaJugador = useMemo(() => {
@@ -1024,6 +1035,18 @@ const RendimientoPage: React.FC = () => {
                                 )}
                             </div>
 
+                            {/* Sus goles por tipo (mejora 6) */}
+                            <GolesPorTipo
+                                titulo="Sus goles por tipo"
+                                aFavor={playerTags.filter(t => t.accion === 'Goles a favor')}
+                                pie={penalesJugador.favor.tirados > 0 ? (
+                                    <p className="border-t border-gray-700 pt-2 text-sm text-violet-300">
+                                        Penales: <span className="font-bold">{penalesJugador.favor.goles} anotados de {penalesJugador.favor.tirados}</span>
+                                        {penalesJugador.favor.conResultado < penalesJugador.favor.tirados && <span className="text-xs text-gray-500"> · {penalesJugador.favor.tirados - penalesJugador.favor.conResultado} sin resultado marcado</span>}
+                                    </p>
+                                ) : undefined}
+                            />
+
                             {/* Recuperaciones de Balón */}
                             <div className="bg-gray-800 rounded-lg p-6">
                                 <h3 className="text-lg font-semibold mb-4 text-white">Recuperaciones de Balón</h3>
@@ -1046,6 +1069,32 @@ const RendimientoPage: React.FC = () => {
                                 )}
                             </div>
 
+                            {/* Dónde recupera (mejora 1) */}
+                            <MapaZonas titulo="Dónde recupera" tags={playerTags.filter(t => t.accion === 'Recuperación de balón')} color="verde" matches={matches} nombreAccion="recuperaciones" />
+
+                            {/* Pérdida de Balón */}
+                            <div className="bg-gray-800 rounded-lg p-6">
+                                <h3 className="text-lg font-semibold mb-4 text-white">Pérdida de Balón</h3>
+                                {perdidasBalonData.length === 0 ? (
+                                    <p className="text-gray-400 text-center py-8">Sin datos de pérdidas de balón</p>
+                                ) : (
+                                    <ResponsiveContainer width="100%" height={300}>
+                                        <BarChart data={perdidasBalonData}>
+                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
+                                            <YAxis stroke="#9CA3AF" />
+                                            <Tooltip
+                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
+                                                labelStyle={{ color: '#F3F4F6' }}
+                                            />
+                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
+                                            <Bar dataKey="total" fill="#EF4444" name="Pérdidas" />
+                                        </BarChart>
+                                    </ResponsiveContainer>
+                                )}
+                            </div>
+                            {/* Dónde pierde (mejora 1) */}
+                            <MapaZonas titulo="Dónde pierde" tags={playerTags.filter(t => t.accion === 'Pérdida de balón')} color="rojo" matches={matches} nombreAccion="pérdidas" />
                             {/* Transiciones Ofensivas */}
                             <div className="bg-gray-800 rounded-lg p-6">
                                 <h3 className="text-lg font-semibold mb-4 text-white">Transiciones Ofensivas</h3>
@@ -1069,27 +1118,6 @@ const RendimientoPage: React.FC = () => {
                                 )}
                             </div>
 
-                            {/* Pérdida de Balón */}
-                            <div className="bg-gray-800 rounded-lg p-6">
-                                <h3 className="text-lg font-semibold mb-4 text-white">Pérdida de Balón</h3>
-                                {perdidasBalonData.length === 0 ? (
-                                    <p className="text-gray-400 text-center py-8">Sin datos de pérdidas de balón</p>
-                                ) : (
-                                    <ResponsiveContainer width="100%" height={300}>
-                                        <BarChart data={perdidasBalonData}>
-                                            <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                            <XAxis dataKey="jornada" stroke="#9CA3AF" />
-                                            <YAxis stroke="#9CA3AF" />
-                                            <Tooltip
-                                                contentStyle={{ backgroundColor: '#1F2937', border: 'none', borderRadius: '8px' }}
-                                                labelStyle={{ color: '#F3F4F6' }}
-                                            />
-                                            <Legend wrapperStyle={{ color: '#F3F4F6' }} />
-                                            <Bar dataKey="total" fill="#EF4444" name="Pérdidas" />
-                                        </BarChart>
-                                    </ResponsiveContainer>
-                                )}
-                            </div>
                         </div>
                     </div>
 
@@ -1167,6 +1195,22 @@ const RendimientoPage: React.FC = () => {
                                 )}
                             </div>
                         </div>
+                        {/* Dónde le anotan (mejora 6): solo si el jugador recibió goles, es decir, es portero */}
+                        {(porteriaJugador.golesRecibidos > 0 || penalesJugador.contra.tirados > 0) && (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+                                <MapaPorteria
+                                    titulo="Dónde le anotan"
+                                    tags={playerTags.filter(t => t.accion === 'Goles recibidos')}
+                                    matches={matches}
+                                    pie={penalesJugador.contra.tirados > 0 ? (
+                                        <p className="border-t border-gray-700 pt-2 text-sm text-violet-300">
+                                            Penales en contra: <span className="font-bold">{penalesJugador.contra.atajados} atajado{penalesJugador.contra.atajados === 1 ? '' : 's'} de {penalesJugador.contra.tirados}</span>
+                                            {penalesJugador.contra.conResultado < penalesJugador.contra.tirados && <span className="text-xs text-gray-500"> · {penalesJugador.contra.tirados - penalesJugador.contra.conResultado} sin resultado marcado</span>}
+                                        </p>
+                                    ) : undefined}
+                                />
+                            </div>
+                        )}
                     </div>
 
                     {/* Performance Table */}

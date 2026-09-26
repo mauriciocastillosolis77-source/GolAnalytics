@@ -8,6 +8,10 @@ import { saveTeamAnalysis, getCachedTeamAnalysis, getTeamAnalysisHistory } from 
 import { exportTeamAnalysisToPDF } from '../services/pdfExportService';
 import { useAuth } from '../contexts/AuthContext';
 import { cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios, esTagDeJugadorFicticio, calcularPorcentajeAtajadas } from '../utils/efectividad';
+import MapaZonas from '../components/charts/MapaZonas';
+import GolesPorTipo from '../components/charts/GolesPorTipo';
+import BalonParadoCard from '../components/charts/BalonParadoCard';
+import { esAccionBalonParado } from '../utils/balonParado';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LineChart, Line, Cell, Treemap, ScatterChart, Scatter } from 'recharts';
 
 type Filters = {
@@ -249,6 +253,30 @@ const DashboardPage: React.FC = () => {
     // Ids del jugador ficticio "Perdida" (no cuenta en efectividad ni en acciones totales).
     const idsJugadoresFicticios = useMemo(() => obtenerIdsJugadoresFicticios(players), [players]);
 
+    // Mejora 1: recuperaciones y pérdidas de jugadores reales (sin el ficticio "Perdida") para los mapas de zonas.
+    const tagsRecuperacionConJugadorReal = useMemo(
+        () => filteredTags.filter(t => t.accion === 'Recuperación de balón' && !esTagDeJugadorFicticio(t, idsJugadoresFicticios)),
+        [filteredTags, idsJugadoresFicticios]
+    );
+    // Mejora 6: goles a favor y recibidos (sin el jugador ficticio) para "Goles por tipo".
+    const golesAFavorTags = useMemo(
+        () => filteredTags.filter(t => t.accion === 'Goles a favor' && !esTagDeJugadorFicticio(t, idsJugadoresFicticios)),
+        [filteredTags, idsJugadoresFicticios]
+    );
+    const golesRecibidosTags = useMemo(
+        () => filteredTags.filter(t => t.accion === 'Goles recibidos' && !esTagDeJugadorFicticio(t, idsJugadoresFicticios)),
+        [filteredTags, idsJugadoresFicticios]
+    );
+    // Mejoras 4 y 5: córners, tiros libres y penales (a favor y en contra) de jugadores reales.
+    const tagsBalonParado = useMemo(
+        () => filteredTags.filter(t => esAccionBalonParado(t.accion) && !esTagDeJugadorFicticio(t, idsJugadoresFicticios)),
+        [filteredTags, idsJugadoresFicticios]
+    );
+    const tagsPerdidaConJugadorReal = useMemo(
+        () => filteredTags.filter(t => t.accion === 'Pérdida de balón' && !esTagDeJugadorFicticio(t, idsJugadoresFicticios)),
+        [filteredTags, idsJugadoresFicticios]
+    );
+
     const filterOptions = useMemo(() => {
         const torneo = [...new Set(matches.map(m => m.torneo).filter(Boolean))];
         const categoria = [...new Set(matches.map(m => m.categoria).filter(Boolean))];
@@ -262,7 +290,8 @@ const DashboardPage: React.FC = () => {
 
     const summaryData = useMemo(() => {
         // "Acciones Totales" cuenta todas las acciones de jugadores reales (sin el jugador ficticio).
-        const total = filteredTags.filter(t => !esTagDeJugadorFicticio(t, idsJugadoresFicticios)).length;
+        // Balón parado y penales no suman aquí: solo se cuentan en su propia tarjeta.
+        const total = filteredTags.filter(t => !esTagDeJugadorFicticio(t, idsJugadoresFicticios) && !esAccionBalonParado(t.accion)).length;
         // "Efectividad General" sigue las reglas de utils/efectividad.ts.
         const eligibleTags = filteredTags.filter(t => cuentaEnEfectividad(t, idsJugadoresFicticios));
         const logrados = eligibleTags.filter(esAccionLograda).length;
@@ -301,7 +330,7 @@ const DashboardPage: React.FC = () => {
 
         try {
             // "Total de acciones" reportado a la IA = mismo número que la tarjeta "Acciones Totales".
-            const totalAcciones = filteredTags.filter(t => !esTagDeJugadorFicticio(t, idsJugadoresFicticios)).length;
+            const totalAcciones = filteredTags.filter(t => !esTagDeJugadorFicticio(t, idsJugadoresFicticios) && !esAccionBalonParado(t.accion)).length;
             // "Efectividad global" = mismo cálculo que la tarjeta "Efectividad General".
             const eligibleTags = filteredTags.filter(t => cuentaEnEfectividad(t, idsJugadoresFicticios));
             const totalLogradas = eligibleTags.filter(esAccionLograda).length;
@@ -625,7 +654,8 @@ const DashboardPage: React.FC = () => {
                 name: players.find(p => p.id === playerId)?.nombre || 'Desconocido',
                 value: count,
             }))
-            .sort((a, b) => b.value - a.value);
+            .sort((a, b) => b.value - a.value)
+            .slice(0, 10);
     }, [filteredTags, players]);
 
     const scatterTransicionesData = useMemo(() => {
@@ -939,7 +969,13 @@ const DashboardPage: React.FC = () => {
                         </div>
                     </div>
 
-                    {/* TRANSICIONES Y RECUPERACION BALON */}
+                    {/* GOLES POR TIPO (mejora 6) + BALÓN PARADO (mejoras 4 y 5), debajo de las tarjetas de portería */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <GolesPorTipo titulo="Goles por tipo" aFavor={golesAFavorTags} enContra={golesRecibidosTags} conPorterias />
+                        <BalonParadoCard tags={tagsBalonParado} />
+                    </div>
+
+                    {/* TRANSICIONES: cantidad y tiempo, juntas */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <div className="bg-gray-800 p-6 rounded-lg h-80">
                             <h3 className="text-lg font-semibold text-white mb-4">Transiciones Ofensivas (Logradas vs No Logradas)</h3>
@@ -960,22 +996,6 @@ const DashboardPage: React.FC = () => {
                                 </BarChart>
                             </ResponsiveContainer>
                         </div>
-                        <div className="bg-gray-800 p-6 rounded-lg h-80">
-                            <h3 className="text-lg font-semibold text-white mb-4">Recuperación de Balón por Jornada</h3>
-                            <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={recuperacionBalonPorJornada} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                                    <XAxis dataKey="name" stroke="#9CA3AF" />
-                                    <YAxis stroke="#9CA3AF" allowDecimals={false} />
-                                    <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
-                                    <Bar dataKey="value" fill="#16A34A" />
-                                </BarChart>
-                            </ResponsiveContainer>
-                        </div>
-                    </div>
-
-                    {/* SCATTER PLOTS */}
-                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <div className="bg-gray-800 p-6 rounded-lg h-80">
                             <h3 className="text-lg font-semibold text-white mb-4">Tiempo de Transiciones Ofensivas Logradas</h3>
                             <ResponsiveContainer width="100%" height="100%">
@@ -1023,6 +1043,27 @@ const DashboardPage: React.FC = () => {
                               {`Puntos encontrados: ${scatterTransicionesData.length}`}
                             </div>
                         </div>
+                    </div>
+
+                    {/* RECUPERACIONES: por jornada y dónde (mejora 1) */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div className="bg-gray-800 p-6 rounded-lg h-80">
+                            <h3 className="text-lg font-semibold text-white mb-4">Recuperación de Balón por Jornada</h3>
+                            <ResponsiveContainer width="100%" height="100%">
+                                <BarChart data={recuperacionBalonPorJornada} margin={{ top: 5, right: 20, left: -10, bottom: 5 }}>
+                                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                                    <XAxis dataKey="name" stroke="#9CA3AF" />
+                                    <YAxis stroke="#9CA3AF" allowDecimals={false} />
+                                    <Tooltip contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #4B5563' }} />
+                                    <Bar dataKey="value" fill="#16A34A" />
+                                </BarChart>
+                            </ResponsiveContainer>
+                        </div>
+                        <MapaZonas titulo="Dónde recuperamos" tags={tagsRecuperacionConJugadorReal} color="verde" nombreAccion="recuperaciones" />
+                    </div>
+
+                    {/* PÉRDIDAS: tiempo de recuperación y dónde perdemos (mejora 1) */}
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                         <div className="bg-gray-800 p-6 rounded-lg h-80">
                             <h3 className="text-lg font-semibold text-white mb-4">Tiempo de Recuperación de Balón</h3>
                             <ResponsiveContainer width="100%" height="100%">
@@ -1071,6 +1112,7 @@ const DashboardPage: React.FC = () => {
                               {`Puntos encontrados: ${scatterRecuperacionesData.length}`}
                             </div>
                         </div>
+                        <MapaZonas titulo="Dónde perdemos" tags={tagsPerdidaConJugadorReal} color="rojo" nombreAccion="pérdidas" />
                     </div>
                 </div>
             )}
