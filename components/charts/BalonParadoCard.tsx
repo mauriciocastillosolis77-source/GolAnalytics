@@ -61,7 +61,7 @@ const BalonParadoCard: React.FC<Props> = ({ tags }) => {
                     <div className="grid gap-1.5 text-sm" style={{ gridTemplateColumns: 'minmax(0,1fr) repeat(3, 64px)' }}>
                         <span />
                         <span className="text-xs text-gray-400 text-center">Cobros</span>
-                        <span className="text-xs text-gray-400 text-center">Remates</span>
+                        <span className="text-xs text-gray-400 text-center" title="Incluye los que terminaron en gol">Remates</span>
                         <span className="text-xs text-gray-400 text-center">Goles</span>
                     </div>
                     {filas.map(f => (
@@ -83,10 +83,7 @@ const BalonParadoCard: React.FC<Props> = ({ tags }) => {
                         </div>
                     </div>
                     {lectura && <p className="text-sm text-gray-200"><span className="font-semibold">Lectura:</span> {lectura}</p>}
-                    <p className="text-xs text-gray-500">
-                        Remates incluye los que terminaron en gol. Solo se cuenta: no cambia la efectividad.
-                        {sinResultado > 0 && ` ${sinResultado} jugada${sinResultado === 1 ? '' : 's'} sin resultado marcado.`}
-                    </p>
+                    {sinResultado > 0 && <p className="text-xs text-gray-500">{sinResultado} jugada{sinResultado === 1 ? '' : 's'} sin resultado marcado.</p>}
                 </>
             )}
         </div>
