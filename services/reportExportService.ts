@@ -3,6 +3,7 @@ import { supabase } from './supabaseClient';
 import { analyzeTeamPerformance } from './geminiTeamAnalysisService';
 import { LOGO_BASE64 } from '../constants/logoBase64';
 import { PITCH_BASE64 } from '../constants/pitchBase64';
+import { PORTERIA_ESTADIO_BASE64 } from '../constants/porteriaEstadioBase64';
 import type { Match, Tag, Player, RivalAnalysis, RivalTipo, RivalZona } from '../types';
 import { TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona, etiquetaZona } from '../utils/zonas';
 import { esJugadorFicticio } from '../utils/efectividad';
@@ -768,25 +769,32 @@ export async function generateMatchReportPptx(
       if (golesFav.length > 0) yy = lista(yy, 'A FAVOR', golesFav, '0E7490', true);
       if (golesCon.length > 0) lista(yy, 'EN CONTRA', golesCon, 'C2410C', false);
 
+      // Portería de estadio: la MISMA imagen que dibuja components/charts/PorteriaEstadio.tsx
+      // (vacía) y encima, en cada zona con goles, el círculo con el número — igual que en la plataforma.
       const porteria = (x: number, y: number, titulo: string, arr: Tag[], fillColor: string) => {
-        const w = 4.2; const cw = w / 3; const ch = 0.5;
+        const w = 3.6; const h = (w * 200) / 320; const s = w / 320; // 320x200 = tamaño del dibujo original
+        const F = { x1: 46, x2: 274, y1: 34, y2: 132 };             // cara de la portería en ese dibujo
+        const cw = (F.x2 - F.x1) / 3; const ch = (F.y2 - F.y1) / 3;
         slide.addText(titulo, { x, y, w, h: 0.3, fontFace: FONT_BODY, fontSize: 11, bold: true, color: COLOR.ink, align: 'center', isTextBox: true, margin: 0 });
         const conteo: Record<string, number> = {};
         arr.forEach((t) => { const k = detalleGolDe(t).porteria; if (k) conteo[k] = (conteo[k] || 0) + 1; });
-        const max = Math.max(0, ...Object.values(conteo));
-        const gy = y + 0.38;
-        // Marco de la portería (postes y travesaño)
-        slide.addShape(pres.ShapeType.rect, { x: x - 0.06, y: gy - 0.06, w: w + 0.12, h: 3 * ch + 0.06, fill: { color: 'F3F4F6' }, line: { color: '1B1B1B', width: 3 } });
+        const max = Math.max(1, ...Object.values(conteo));
+        const gy = y + 0.34;
+        slide.addImage({ data: PORTERIA_ESTADIO_BASE64, x, y: gy, w, h });
         ALTURAS.forEach((a, r) => LADOS.forEach((l, i) => {
-          const k = codigoPorteria(a, l);
-          const v = conteo[k] || 0;
-          slide.addShape(pres.ShapeType.rect, { x: x + i * cw, y: gy + r * ch, w: cw, h: ch, fill: { color: fillColor, transparency: max > 0 && v > 0 ? Math.round(75 - 60 * (v / max)) : 100 }, line: { color: 'D1D5DB', width: 0.5, dashType: 'dash' } });
-          if (v > 0) slide.addText(String(v), { x: x + i * cw, y: gy + r * ch, w: cw, h: ch, fontFace: FONT_HEAD, fontSize: 14, bold: true, color: COLOR.ink, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
+          const v = conteo[codigoPorteria(a, l)] || 0;
+          if (v <= 0) return;
+          const cx = x + (F.x1 + i * cw + cw / 2) * s;
+          const cy = gy + (F.y1 + r * ch + ch / 2) * s;
+          const rad = (11 + 6 * (v / max)) * s;
+          const glow = rad + 9 * s;
+          slide.addShape(pres.ShapeType.ellipse, { x: cx - glow, y: cy - glow, w: 2 * glow, h: 2 * glow, fill: { color: fillColor, transparency: 75 }, line: { type: 'none' } });
+          slide.addShape(pres.ShapeType.ellipse, { x: cx - rad, y: cy - rad, w: 2 * rad, h: 2 * rad, fill: { color: fillColor }, line: { color: 'FFFFFF', width: 1.5 } });
+          slide.addText(String(v), { x: cx - rad, y: cy - rad, w: 2 * rad, h: 2 * rad, fontFace: FONT_HEAD, fontSize: 10, bold: true, color: '0B1220', align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
         }));
-        slide.addText('Vista de frente', { x, y: gy + 3 * ch + 0.08, w, h: 0.25, fontFace: FONT_BODY, fontSize: 9, color: COLOR.gray, align: 'center', isTextBox: true, margin: 0 });
       };
-      porteria(8.4, 1.55, 'Dónde metimos los goles', golesFav, '22D3EE');
-      porteria(8.4, 4.15, 'Dónde nos metieron los goles', golesCon, 'FB923C');
+      porteria(8.65, 1.5, 'Dónde metimos los goles', golesFav, '22D3EE');
+      porteria(8.65, 4.2, 'Dónde nos metieron los goles', golesCon, 'FB923C');
 
       footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
     }
