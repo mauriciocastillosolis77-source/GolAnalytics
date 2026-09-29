@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { supabase } from '../services/supabaseClient';
 import type { Match } from '../types';
 import { Spinner } from '../components/ui/Spinner';
-import { generateMatchReportPptx, mejorarRedaccionChecklist } from '../services/reportExportService';
+import { generateMatchReportPptx, mejorarRedaccionChecklist, previewEstiloDeJuego } from '../services/reportExportService';
 import { Link } from 'react-router-dom';
 import { fetchPilares, fetchCalificacionesPartido, guardarCalificaciones } from '../services/modeloJuegoService';
 import { agruparPorFase, type ModeloPilar, type Semaforo as SemaforoModelo } from '../utils/modeloJuego';
@@ -159,6 +159,68 @@ const GenerarReportesPage: React.FC = () => {
 
   const allSelected = !!(torneo && categoria && jornada && equipo);
 
+  // Cómo jugamos (estilo de este partido) — el carril y el bloque de presión
+  // se precargan con el mismo cálculo real que usa el PowerPoint; el usuario
+  // los puede corregir (selector) y reescribir el texto (con lo que vio en
+  // vivo) antes de generar. Si él edita algo, eso es lo que se usa — no se
+  // vuelve a calcular al generar.
+  type Carril = 'izquierda' | 'derecha' | 'centro' | null;
+  type Bloque = 'alto' | 'medio' | 'bajo' | null;
+  const [estiloLabel, setEstiloLabel] = useState('');
+  const [carrilSide, setCarrilSide] = useState<Carril>(null);
+  const [carrilTexto, setCarrilTexto] = useState('');
+  const [bloqueAltura, setBloqueAltura] = useState<Bloque>(null);
+  const [bloqueTexto, setBloqueTexto] = useState('');
+  const [cargandoEstilo, setCargandoEstilo] = useState(false);
+  const [mejorandoCarril, setMejorandoCarril] = useState(false);
+  const [mejorandoBloque, setMejorandoBloque] = useState(false);
+
+  useEffect(() => {
+    let cancelado = false;
+    if (!selectedMatch) { setEstiloLabel(''); setCarrilSide(null); setCarrilTexto(''); setBloqueAltura(null); setBloqueTexto(''); return; }
+    setCargandoEstilo(true);
+    (async () => {
+      try {
+        const r = await previewEstiloDeJuego(selectedMatch, positionsMap || undefined);
+        if (cancelado) return;
+        setEstiloLabel(r.estiloLabel);
+        setCarrilSide(r.carrilSide);
+        setCarrilTexto(r.carrilLabel);
+        setBloqueAltura(r.bloqueAltura);
+        setBloqueTexto(r.bloqueLabel);
+      } catch (err) {
+        console.error('No se pudo calcular el estilo de juego:', err);
+      } finally {
+        if (!cancelado) setCargandoEstilo(false);
+      }
+    })();
+    return () => { cancelado = true; };
+  }, [selectedMatch, positionsMap]);
+
+  const handleMejorarCarril = async () => {
+    if (!carrilTexto.trim()) return;
+    setMejorandoCarril(true);
+    try {
+      setCarrilTexto(await mejorarRedaccionChecklist('Carril dominante — fase ofensiva', carrilTexto.trim()));
+    } catch (err: any) {
+      setGenError(err?.message || 'No se pudo mejorar el texto. Intenta de nuevo.');
+    } finally {
+      setMejorandoCarril(false);
+    }
+  };
+  const handleMejorarBloque = async () => {
+    if (!bloqueTexto.trim()) return;
+    setMejorandoBloque(true);
+    try {
+      setBloqueTexto(await mejorarRedaccionChecklist('Bloque de presión — fase defensiva', bloqueTexto.trim()));
+    } catch (err: any) {
+      setGenError(err?.message || 'No se pudo mejorar el texto. Intenta de nuevo.');
+    } finally {
+      setMejorandoBloque(false);
+    }
+  };
+
+
   useEffect(() => {
     let cancelado = false;
     setCalifMsg(null);
@@ -293,7 +355,8 @@ const GenerarReportesPage: React.FC = () => {
         ? { pilares, checklist: checklistLimpio }
         : undefined;
 
-      await generateMatchReportPptx(selectedMatch, authorName.trim() || undefined, positionsMap || undefined, modeloDeJuego);
+      const estiloOverride = { carrilSide, carrilLabel: carrilTexto.trim(), bloqueAltura, bloqueLabel: bloqueTexto.trim() };
+      await generateMatchReportPptx(selectedMatch, authorName.trim() || undefined, positionsMap || undefined, modeloDeJuego, estiloOverride);
     } catch (err: any) {
       console.error('Error generating report:', err);
       setGenError(err?.message || 'Error al generar el reporte. Intenta de nuevo.');
@@ -404,6 +467,89 @@ const GenerarReportesPage: React.FC = () => {
             <p className="text-xs text-green-400 mt-2">✅ {positionsFileName} — {positionsMap?.size} jugadores con posición cargados en memoria.</p>
           )}
           {positionsError && <p className="text-xs text-red-400 mt-2">{positionsError}</p>}
+        </div>
+
+        <div className="mt-6 pt-6 border-t border-gray-700">
+          <label className="block text-sm font-medium mb-1 text-gray-300">Cómo jugamos — estilo de este partido</label>
+          <p className="text-xs text-gray-500 mb-3">
+            Precargado con lo que dicen tus tags. Tú lo comparas con lo que viste en vivo y lo corriges si hace falta.
+          </p>
+          {cargandoEstilo && <p className="text-xs text-gray-400 mb-3">Calculando…</p>}
+          {!cargandoEstilo && selectedMatch && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="bg-gray-700/50 p-3 rounded">
+                <p className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">Fase ofensiva — cómo atacamos</p>
+                <p className="text-xs text-gray-400 mb-2">Estilo: {estiloLabel}</p>
+                <label className="block text-xs text-gray-400 mb-1">Carril dominante</label>
+                <select
+                  value={carrilSide || ''}
+                  onChange={(e) => setCarrilSide((e.target.value || null) as Carril)}
+                  className="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500 mb-2"
+                >
+                  <option value="izquierda">Izquierda</option>
+                  <option value="centro">Centro</option>
+                  <option value="derecha">Derecha</option>
+                </select>
+                <textarea
+                  value={carrilTexto}
+                  onChange={(e) => setCarrilTexto(e.target.value)}
+                  rows={2}
+                  className="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500 mb-2"
+                />
+                <button type="button" onClick={handleMejorarCarril} disabled={!carrilTexto.trim() || mejorandoCarril}
+                  className="text-cyan-400 hover:text-cyan-300 disabled:text-gray-500 disabled:cursor-not-allowed text-sm mb-3">
+                  {mejorandoCarril ? 'Mejorando…' : '✨ Mejorar redacción'}
+                </button>
+                <svg viewBox="0 0 240 90" className="w-full rounded border border-gray-600">
+                  <rect width="240" height="90" fill="#3a7d3f" />
+                  <rect x="0" y="0" width="80" height="90" fill="none" stroke="#fff" strokeWidth="1" strokeDasharray="3,3" />
+                  <rect x="80" y="0" width="80" height="90" fill="none" stroke="#fff" strokeWidth="1" strokeDasharray="3,3" />
+                  <text x="40" y="14" textAnchor="middle" fontSize="8" fill="#fff">Inicio</text>
+                  <text x="120" y="14" textAnchor="middle" fontSize="8" fill="#fff">Creación</text>
+                  <text x="200" y="14" textAnchor="middle" fontSize="8" fill="#fff">Finalización</text>
+                  <line x1="10" y1={carrilSide === 'izquierda' ? 22 : carrilSide === 'derecha' ? 76 : 49} x2="230"
+                    y2={carrilSide === 'izquierda' ? 22 : carrilSide === 'derecha' ? 76 : 49}
+                    stroke="#EF9F27" strokeWidth="3" markerEnd="url(#arrowPreview)" />
+                  <defs><marker id="arrowPreview" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#EF9F27" /></marker></defs>
+                </svg>
+                <p className="text-xs text-gray-500 mt-1">Una sola flecha — el dato de hoy es del partido completo, no por zona.</p>
+              </div>
+
+              <div className="bg-gray-700/50 p-3 rounded">
+                <p className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">Fase defensiva — cómo presionamos</p>
+                <label className="block text-xs text-gray-400 mb-1">Bloque de presión</label>
+                <select
+                  value={bloqueAltura || ''}
+                  onChange={(e) => setBloqueAltura((e.target.value || null) as Bloque)}
+                  className="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500 mb-2"
+                >
+                  <option value="bajo">Bloque bajo</option>
+                  <option value="medio">Bloque medio</option>
+                  <option value="alto">Bloque alto</option>
+                </select>
+                <textarea
+                  value={bloqueTexto}
+                  onChange={(e) => setBloqueTexto(e.target.value)}
+                  rows={2}
+                  className="w-full bg-gray-700 text-white p-2 rounded border border-gray-600 focus:outline-none focus:ring-2 focus:ring-cyan-500 mb-2"
+                />
+                <button type="button" onClick={handleMejorarBloque} disabled={!bloqueTexto.trim() || mejorandoBloque}
+                  className="text-cyan-400 hover:text-cyan-300 disabled:text-gray-500 disabled:cursor-not-allowed text-sm mb-3">
+                  {mejorandoBloque ? 'Mejorando…' : '✨ Mejorar redacción'}
+                </button>
+                <svg viewBox="0 0 240 90" className="w-full rounded border border-gray-600">
+                  <rect width="240" height="90" fill="#3a7d3f" />
+                  <rect x={bloqueAltura === 'bajo' ? 4 : bloqueAltura === 'medio' ? 84 : 164} y="4" width="72" height="82"
+                    fill="none" stroke="#EF9F27" strokeWidth="2.5" strokeDasharray="5,4" />
+                  <text x="40" y="14" textAnchor="middle" fontSize="8" fill="#fff">Inicio</text>
+                  <text x="120" y="14" textAnchor="middle" fontSize="8" fill="#fff">Creación</text>
+                  <text x="200" y="14" textAnchor="middle" fontSize="8" fill="#fff">Finalización</text>
+                </svg>
+                <p className="text-xs text-gray-500 mt-1">El recuadro marca la zona equivalente al bloque elegido.</p>
+              </div>
+            </div>
+          )}
+          {!selectedMatch && <p className="text-xs text-gray-500">Selecciona un partido arriba para calcular esto.</p>}
         </div>
 
         <div className="mt-6 pt-6 border-t border-gray-700">

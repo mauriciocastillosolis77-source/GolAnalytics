@@ -478,18 +478,51 @@ export interface ModeloDeJuego {
   checklist: ModeloDeJuegoChecklistRow[];
 }
 
+export interface EstiloDeJuegoOverride {
+  carrilSide: 'izquierda' | 'derecha' | 'centro' | null;
+  carrilLabel: string;
+  bloqueAltura: 'alto' | 'medio' | 'bajo' | null;
+  bloqueLabel: string;
+}
+
+/**
+ * Calcula el estilo de juego (carril, bloque de presión) SIN generar el
+ * PowerPoint — para que la página "Generar Reportes" lo muestre precargado
+ * y el usuario lo pueda revisar/corregir antes de generar. Usa las mismas
+ * reglas que generateMatchReportPptx.
+ */
+export async function previewEstiloDeJuego(match: Match, positionsMap?: Map<string, string>): Promise<EstiloDeJuegoOverride & { estiloLabel: string }> {
+  const { data: tagsData, error: tagsError } = await supabase.from('tags').select('*').eq('match_id', match.id);
+  if (tagsError) throw tagsError;
+  const tags = ((tagsData || []) as Tag[]).filter((t) => !esAccionBalonParado(t.accion));
+
+  let players: Player[] = [];
+  if (match.team_id) {
+    const { data: playersData, error: playersError } = await supabase.from('players').select('*').eq('team_id', match.team_id);
+    if (playersError) throw playersError;
+    players = (playersData || []) as Player[];
+  }
+
+  const r = calcularEstiloDeJuego(tags, players, positionsMap);
+  return { carrilSide: r.carrilSide, carrilLabel: r.carril, bloqueAltura: r.bloqueAltura, bloqueLabel: r.bloque, estiloLabel: r.estilo };
+}
+
 /**
  * Arma el reporte de PowerPoint de UN partido específico y dispara la descarga.
  * `positionsMap`: opcional, nombre (lowercase) → posición detallada, sacado de
  * un Excel que el usuario sube en el momento — nunca se persiste en Supabase.
  * `modeloDeJuego`: opcional, contenido que escribe el cuerpo técnico a mano
  * (no se calcula de los tags) — si no se manda, ese slide no se genera.
+ * `estiloOverride`: opcional — carril/bloque tal como los dejó el usuario en
+ * la página (pudo corregir lo que calculó el sistema con lo que vio en vivo).
+ * Si no se manda, se recalcula igual que antes.
  */
 export async function generateMatchReportPptx(
   match: Match,
   authorName?: string,
   positionsMap?: Map<string, string>,
-  modeloDeJuego?: ModeloDeJuego
+  modeloDeJuego?: ModeloDeJuego,
+  estiloOverride?: EstiloDeJuegoOverride
 ): Promise<void> {
   const { data: tagsData, error: tagsError } = await supabase.from('tags').select('*').eq('match_id', match.id);
   if (tagsError) throw tagsError;
@@ -555,7 +588,10 @@ export async function generateMatchReportPptx(
     return { nombre: jd.nombre, razon: stripMd(jd.razon), acciones, efectividad };
   });
 
-  const estiloDeJuego = calcularEstiloDeJuego(tags, players, positionsMap);
+  const estiloDeJuegoCalculado = calcularEstiloDeJuego(tags, players, positionsMap);
+  const estiloDeJuego = estiloOverride
+    ? { ...estiloDeJuegoCalculado, carril: estiloOverride.carrilLabel, carrilSide: estiloOverride.carrilSide, bloque: estiloOverride.bloqueLabel, bloqueAltura: estiloOverride.bloqueAltura }
+    : estiloDeJuegoCalculado;
 
   // Análisis del Rival — reutiliza la tabla rival_analysis ya existente (no se
   // crea nada nuevo aquí, solo se conecta con lo que ya cargó el analista en
