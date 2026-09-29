@@ -12,6 +12,15 @@ export interface Match {
   created_at?: string;
 }
 
+export type EstatusPartido = 'titular' | 'suplente' | 'no_convocado' | 'lesionado' | 'falta';
+export interface PlayerMatchStatus {
+  id: string;
+  match_id: string;
+  player_id: string;
+  estatus: EstatusPartido;
+  created_at?: string;
+}
+
 export interface Player {
   id: string;
   nombre: string;
