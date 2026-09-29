@@ -36,6 +36,7 @@ export const ACCIONES_SIEMPRE_FALLADA = new Set<string>([
 
 export const ACCIONES_FUERA_DE_EFECTIVIDAD = new Set<string>([
     'Goles recibidos',
+    'Cambio',
     ...ACCIONES_ABP,
 ]);
 
