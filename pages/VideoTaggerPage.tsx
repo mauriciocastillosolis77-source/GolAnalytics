@@ -2215,7 +2215,7 @@ const VideoTaggerPage: React.FC = () => {
                             <span className="block text-lg font-semibold text-white">3. Alineación y Minutos</span>
                             {!estatusAbierta && (
                                 <span className="block text-sm text-gray-300 truncate">
-                                    {Object.values(estatusPorJugador).filter(v => v.estatus).length} de {filteredPlayers.length} jugadores marcados
+                                    {Object.values(estatusPorJugador).filter(v => v.estatus).length} de {filteredPlayers.filter(p => !esJugadorFicticio(p.nombre)).length} jugadores marcados
                                 </span>
                             )}
                         </span>
@@ -2228,7 +2228,7 @@ const VideoTaggerPage: React.FC = () => {
                                 <p className="text-xs text-gray-400">Cargando…</p>
                             ) : (
                                 <div className="space-y-1 max-h-96 overflow-y-auto pr-1">
-                                    {filteredPlayers.map(p => {
+                                    {filteredPlayers.filter(p => !esJugadorFicticio(p.nombre)).map(p => {
                                         const row = estatusPorJugador[p.id] || { estatus: '' as EstatusPartido | '' };
                                         return (
                                             <div key={p.id} className="flex items-center gap-2 bg-gray-700/50 p-2 rounded">
@@ -2371,7 +2371,7 @@ const VideoTaggerPage: React.FC = () => {
                         const tagActual = tags.find(t => t.id === detallePendiente.id)
                             || tags.find(t => t.match_id === detallePendiente.match_id && t.player_id === detallePendiente.player_id && t.accion === detallePendiente.accion && t.timestamp === detallePendiente.timestamp);
                         const d = tagActual ? detalleCambioDe(tagActual) : {};
-                        const candidatos = filteredPlayers.filter(p => p.id !== detallePendiente.player_id);
+                        const candidatos = filteredPlayers.filter(p => p.id !== detallePendiente.player_id && !esJugadorFicticio(p.nombre));
                         return (
                             <div className="space-y-2">
                                 <p className="text-sm text-gray-200">
