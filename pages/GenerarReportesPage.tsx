@@ -80,67 +80,6 @@ const GenerarReportesPage: React.FC = () => {
   const [califMsg, setCalifMsg] = useState<{ text: string; ok: boolean } | null>(null);
   const [mejorandoPilar, setMejorandoPilar] = useState<string | null>(null);
 
-  // Cómo jugamos (estilo de este partido) — el carril y el bloque de presión
-  // se precargan con el mismo cálculo real que usa el PowerPoint; el usuario
-  // los puede corregir (selector) y reescribir el texto (con lo que vio en
-  // vivo) antes de generar. Si él edita algo, eso es lo que se usa — no se
-  // vuelve a calcular al generar.
-  type Carril = 'izquierda' | 'derecha' | 'centro' | null;
-  type Bloque = 'alto' | 'medio' | 'bajo' | null;
-  const [estiloLabel, setEstiloLabel] = useState('');
-  const [carrilSide, setCarrilSide] = useState<Carril>(null);
-  const [carrilTexto, setCarrilTexto] = useState('');
-  const [bloqueAltura, setBloqueAltura] = useState<Bloque>(null);
-  const [bloqueTexto, setBloqueTexto] = useState('');
-  const [cargandoEstilo, setCargandoEstilo] = useState(false);
-  const [mejorandoCarril, setMejorandoCarril] = useState(false);
-  const [mejorandoBloque, setMejorandoBloque] = useState(false);
-
-  useEffect(() => {
-    let cancelado = false;
-    if (!selectedMatch) { setEstiloLabel(''); setCarrilSide(null); setCarrilTexto(''); setBloqueAltura(null); setBloqueTexto(''); return; }
-    setCargandoEstilo(true);
-    (async () => {
-      try {
-        const r = await previewEstiloDeJuego(selectedMatch, positionsMap || undefined);
-        if (cancelado) return;
-        setEstiloLabel(r.estiloLabel);
-        setCarrilSide(r.carrilSide);
-        setCarrilTexto(r.carrilLabel);
-        setBloqueAltura(r.bloqueAltura);
-        setBloqueTexto(r.bloqueLabel);
-      } catch (err) {
-        console.error('No se pudo calcular el estilo de juego:', err);
-      } finally {
-        if (!cancelado) setCargandoEstilo(false);
-      }
-    })();
-    return () => { cancelado = true; };
-  }, [selectedMatch, positionsMap]);
-
-  const handleMejorarCarril = async () => {
-    if (!carrilTexto.trim()) return;
-    setMejorandoCarril(true);
-    try {
-      setCarrilTexto(await mejorarRedaccionChecklist('Carril dominante — fase ofensiva', carrilTexto.trim()));
-    } catch (err: any) {
-      setGenError(err?.message || 'No se pudo mejorar el texto. Intenta de nuevo.');
-    } finally {
-      setMejorandoCarril(false);
-    }
-  };
-  const handleMejorarBloque = async () => {
-    if (!bloqueTexto.trim()) return;
-    setMejorandoBloque(true);
-    try {
-      setBloqueTexto(await mejorarRedaccionChecklist('Bloque de presión — fase defensiva', bloqueTexto.trim()));
-    } catch (err: any) {
-      setGenError(err?.message || 'No se pudo mejorar el texto. Intenta de nuevo.');
-    } finally {
-      setMejorandoBloque(false);
-    }
-  };
-
   const [mejorandoIdx, setMejorandoIdx] = useState<number | null>(null);
   const handleMejorarNota = async (i: number) => {
     const row = checklist[i];
@@ -219,6 +158,68 @@ const GenerarReportesPage: React.FC = () => {
   }, [matches, torneo, categoria, jornada, equipo]);
 
   const allSelected = !!(torneo && categoria && jornada && equipo);
+
+  // Cómo jugamos (estilo de este partido) — el carril y el bloque de presión
+  // se precargan con el mismo cálculo real que usa el PowerPoint; el usuario
+  // los puede corregir (selector) y reescribir el texto (con lo que vio en
+  // vivo) antes de generar. Si él edita algo, eso es lo que se usa — no se
+  // vuelve a calcular al generar.
+  type Carril = 'izquierda' | 'derecha' | 'centro' | null;
+  type Bloque = 'alto' | 'medio' | 'bajo' | null;
+  const [estiloLabel, setEstiloLabel] = useState('');
+  const [carrilSide, setCarrilSide] = useState<Carril>(null);
+  const [carrilTexto, setCarrilTexto] = useState('');
+  const [bloqueAltura, setBloqueAltura] = useState<Bloque>(null);
+  const [bloqueTexto, setBloqueTexto] = useState('');
+  const [cargandoEstilo, setCargandoEstilo] = useState(false);
+  const [mejorandoCarril, setMejorandoCarril] = useState(false);
+  const [mejorandoBloque, setMejorandoBloque] = useState(false);
+
+  useEffect(() => {
+    let cancelado = false;
+    if (!selectedMatch) { setEstiloLabel(''); setCarrilSide(null); setCarrilTexto(''); setBloqueAltura(null); setBloqueTexto(''); return; }
+    setCargandoEstilo(true);
+    (async () => {
+      try {
+        const r = await previewEstiloDeJuego(selectedMatch, positionsMap || undefined);
+        if (cancelado) return;
+        setEstiloLabel(r.estiloLabel);
+        setCarrilSide(r.carrilSide);
+        setCarrilTexto(r.carrilLabel);
+        setBloqueAltura(r.bloqueAltura);
+        setBloqueTexto(r.bloqueLabel);
+      } catch (err) {
+        console.error('No se pudo calcular el estilo de juego:', err);
+      } finally {
+        if (!cancelado) setCargandoEstilo(false);
+      }
+    })();
+    return () => { cancelado = true; };
+  }, [selectedMatch, positionsMap]);
+
+  const handleMejorarCarril = async () => {
+    if (!carrilTexto.trim()) return;
+    setMejorandoCarril(true);
+    try {
+      setCarrilTexto(await mejorarRedaccionChecklist('Carril dominante — fase ofensiva', carrilTexto.trim()));
+    } catch (err: any) {
+      setGenError(err?.message || 'No se pudo mejorar el texto. Intenta de nuevo.');
+    } finally {
+      setMejorandoCarril(false);
+    }
+  };
+  const handleMejorarBloque = async () => {
+    if (!bloqueTexto.trim()) return;
+    setMejorandoBloque(true);
+    try {
+      setBloqueTexto(await mejorarRedaccionChecklist('Bloque de presión — fase defensiva', bloqueTexto.trim()));
+    } catch (err: any) {
+      setGenError(err?.message || 'No se pudo mejorar el texto. Intenta de nuevo.');
+    } finally {
+      setMejorandoBloque(false);
+    }
+  };
+
 
   useEffect(() => {
     let cancelado = false;
