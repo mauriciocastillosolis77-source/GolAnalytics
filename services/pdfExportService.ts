@@ -32,6 +32,7 @@ interface PlayerAnalysisData {
 interface RivalZonaSummary {
   zona: 'Inicio' | 'Creacion' | 'Finalizacion';
   resumen: string;
+  nota?: string;
 }
 
 interface RivalFaseData {
@@ -362,7 +363,14 @@ function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: 
     doc.setTextColor(...COLORS.text);
     const lines = doc.splitTextToSize(zonaData?.resumen || 'Sin momentos registrados todavía.', textWidth);
     doc.text(lines, textX + 6, textY);
-    textY += lines.length * 4.5 + 4;
+    textY += lines.length * 4.5 + 1;
+    if (zonaData?.nota && zonaData.nota.trim()) {
+      doc.setFont('helvetica', 'italic');
+      const notaLines = doc.splitTextToSize(`Nota del analista: ${zonaData.nota.trim()}`, textWidth);
+      doc.text(notaLines, textX + 6, textY);
+      textY += notaLines.length * 4.5 + 1;
+    }
+    textY += 4;
   });
 
   return Math.max(y + pitchHeight, textY) + 8;
