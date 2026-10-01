@@ -13,6 +13,7 @@ import { esJugadorFicticio } from '../utils/efectividad';
 import { generarDafoRival } from '../services/dafoRivalService';
 import { fetchTeams, type Team } from '../services/teamsService';
 import { exportRivalAnalysisToPDF } from '../services/pdfExportService';
+import { mejorarRedaccionChecklist } from '../services/reportExportService';
 
 // ─── Configuración de atributos por Tipo (contextual, igual que el mockup aprobado) ──
 const ATTR_CONFIG: Record<RivalTipo, { lbl1: string; opts1: [string, string][]; lbl2: string; opts2: [string, string][] }> = {
@@ -274,6 +275,23 @@ const AnalisisRivalPage: React.FC = () => {
   const handleNotaChange = (v: string) => {
     setNotaTexto(v);
     if (notaKey) setDraftNotes(prev => ({ ...prev, [notaKey]: v }));
+  };
+
+  const [mejorandoNotaRival, setMejorandoNotaRival] = useState(false);
+  const handleMejorarNotaRival = async () => {
+    if (!notaKey || !notaTexto.trim()) return;
+    const pilar = selTipo === 'BalonParado'
+      ? `Balón parado — ${bpLado === 'cobra' ? 'cuando cobra' : 'cuando defiende'}`
+      : `${TIPO_LABEL[selTipo as RivalTipo]} — ${selZona ? ZONA_LABEL[selZona] : ''}`;
+    setMejorandoNotaRival(true);
+    try {
+      handleNotaChange(await mejorarRedaccionChecklist(pilar, notaTexto.trim()));
+    } catch (err: any) {
+      console.error('Error mejorando nota del rival:', err);
+      setError(err?.message || 'No se pudo mejorar el texto. Intenta de nuevo.');
+    } finally {
+      setMejorandoNotaRival(false);
+    }
   };
 
   const registrarMomento = useCallback(() => {
@@ -650,7 +668,7 @@ const AnalisisRivalPage: React.FC = () => {
     const partes: string[] = [];
     if (conEnvio.length > 0) {
       const top = [...envios].sort((a, b) => b.n - a.n)[0];
-      const frecuencia = top.n / conEnvio.length >= 0.6 ? 'casi siempre' : 'más seguido';
+      const frecuencia = top.n === conEnvio.length ? 'siempre' : top.n / conEnvio.length >= 0.6 ? 'casi siempre' : 'más seguido';
       const destino = top.label === 'En corto' ? 'en corto' : `al ${top.label.toLowerCase()}`;
       partes.push(`Cobra ${frecuencia} ${destino} (${top.n} de ${conEnvio.length})`);
     }
@@ -755,7 +773,10 @@ const AnalisisRivalPage: React.FC = () => {
     try {
       const buildFase = (tipo: RivalTipo, pregunta: string) => ({
         pregunta,
-        zonas: ZONAS.map(z => ({ zona: z, resumen: summarizeZone(tipo, z) })),
+        zonas: ZONAS.map(z => {
+          const nota = draftNotes[`${tipo}|${z}`] ?? selected?.notas?.[`${tipo}|${z}`] ?? '';
+          return { zona: z, resumen: summarizeZone(tipo, z), nota: nota || undefined };
+        }),
       });
       await exportRivalAnalysisToPDF(
         {
@@ -1012,6 +1033,14 @@ const AnalisisRivalPage: React.FC = () => {
             <p className="text-xs text-gray-500 mb-1">Nota del analista (opcional)</p>
             <p className="text-xs text-gray-600 mb-2">Se guarda para: <span className="text-gray-300">{selTipo === 'BalonParado' ? (bpLado ? `Balón parado · ${bpLado === 'cobra' ? 'cuando cobra' : 'cuando defiende'}` : 'elige si el rival cobra o defiende') : selTipo && selZona ? `${TIPO_LABEL[selTipo]} · ${ZONA_LABEL[selZona]}` : 'selecciona tipo y zona arriba'}</span></p>
             <textarea value={notaTexto} onChange={e => handleNotaChange(e.target.value)} disabled={!notaKey} rows={2} placeholder="Ej. Rice y Zubimendi como ejecutores clave del primer pase tras el robo" className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none resize-y disabled:opacity-50" />
+            <button
+              type="button"
+              onClick={handleMejorarNotaRival}
+              disabled={!notaKey || !notaTexto.trim() || mejorandoNotaRival}
+              className="mt-2 text-cyan-400 hover:text-cyan-300 disabled:text-gray-500 disabled:cursor-not-allowed text-xs"
+            >
+              {mejorandoNotaRival ? 'Mejorando…' : '✨ Mejorar redacción'}
+            </button>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
