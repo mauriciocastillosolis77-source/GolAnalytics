@@ -7,6 +7,7 @@ import type { RivalAnalysis, RivalAnalysisInsert, RivalMomento, RivalNotas, Riva
 import {
   CORNER_FAVOR, CORNER_CONTRA, TL_FAVOR, TL_CONTRA, PENAL_FAVOR, PENAL_CONTRA,
   ENVIO_LABEL, RESULTADO_COBRO_LABEL, MARCAJE_LABEL, detalleAbpDe, contarCobros, contarPenales,
+  RESULTADOS_PENAL, RESULTADO_PENAL_LABEL,
 } from '../utils/balonParado';
 import { detalleGolDe, resumenGol } from '../utils/goles';
 import { esJugadorFicticio } from '../utils/efectividad';
