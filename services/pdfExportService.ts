@@ -579,7 +579,7 @@ function addDafoSection(doc: jsPDF, dafo: NonNullable<RivalReportData['dafo']>, 
 
   const gutter = 5;
   const colW = (pageWidth - 30 - gutter) / 2;
-  const padX = 3, padTop = 9;
+  const padX = 3, padTop = 13.5;
 
   // Mide cuánto alto necesita una caja (título + viñetas envueltas) sin dibujar nada.
   const medir = (items: string[]) => {
