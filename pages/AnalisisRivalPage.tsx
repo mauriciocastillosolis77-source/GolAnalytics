@@ -1334,6 +1334,7 @@ const AnalisisRivalPage: React.FC = () => {
             <button onClick={() => { setTabJugadoresClave(true); setTabDafo(false); setTabPlanPartido(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabJugadoresClave ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>Jugadores clave</button>
             <button onClick={() => { setTabPlanPartido(true); setTabDafo(false); setTabJugadoresClave(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabPlanPartido ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>Plan de partido</button>
           </div>
+          {saveMsg && <p className={`text-center text-sm ${saveMsg.ok ? 'text-green-400' : 'text-red-400'}`}>{saveMsg.text}</p>}
           {!tabDafo && !tabJugadoresClave && !tabPlanPartido && REPORT_QUESTION[repTipo] && <p className="text-sm text-gray-400 italic">{REPORT_QUESTION[repTipo]}</p>}
 
           {tabPlanPartido ? (
