@@ -1,5 +1,6 @@
 import jsPDF from 'jspdf';
 import { LOGO_BASE64 } from '../constants/logoBase64';
+import { PITCH_BASE64 } from '../constants/pitchBase64';
 
 interface TeamAnalysisData {
   tendencia: string;
@@ -50,11 +51,18 @@ interface RivalBalonParadoData {
   notaDefiende?: string;
 }
 
+interface RivalJugadorClave {
+  numero: string;
+  posicion: string;
+  motivo: string;
+}
+
 interface RivalReportData {
   rivalName: string;
   ofensiva: RivalFaseData;
   defensiva: RivalFaseData;
   balonParado?: RivalBalonParadoData; // tipo 4 (solo si hay momentos de balón parado)
+  jugadoresClave?: RivalJugadorClave[];
   dafo?: { fortalezas: string[]; debilidades: string[]; oportunidades: string[]; amenazas: string[] };
 }
 
@@ -111,63 +119,54 @@ function loadLogo(): string | undefined {
 
 function addHeader(doc: jsPDF, options: ExportOptions, title: string, logoBase64?: string): number {
   const pageWidth = doc.internal.pageSize.getWidth();
-  
+
   if (logoBase64) {
     try {
-      doc.addImage(logoBase64, 'PNG', 15, 10, 30, 30);
+      doc.addImage(logoBase64, 'PNG', 15, 8, 17, 17);
     } catch (e) {
       console.warn('Could not add logo to PDF');
     }
   }
-  
-  doc.setFontSize(20);
+
+  const textX = logoBase64 ? 36 : 15;
+  doc.setFontSize(14);
   doc.setTextColor(...COLORS.primary);
   doc.setFont('helvetica', 'bold');
-  doc.text('GOLANALYTICS', logoBase64 ? 50 : 15, 22);
-  
-  doc.setFontSize(10);
+  doc.text('GOLANALYTICS', textX, 15);
+
+  doc.setFontSize(8);
   doc.setTextColor(...COLORS.secondary);
   doc.setFont('helvetica', 'normal');
-  doc.text('Midiendo el Progreso', logoBase64 ? 50 : 15, 30);
-  
+  doc.text('Midiendo el Progreso', textX, 21);
+
   doc.setDrawColor(...COLORS.primary);
   doc.setLineWidth(0.5);
-  doc.line(15, 45, pageWidth - 15, 45);
-  
-  doc.setFontSize(16);
+  doc.line(15, 29, pageWidth - 15, 29);
+
+  doc.setFontSize(13);
   doc.setTextColor(...COLORS.dark);
   doc.setFont('helvetica', 'bold');
-  doc.text(title, 15, 58);
-  
-  doc.setFontSize(10);
+  doc.text(title, 15, 38);
+
+  doc.setFontSize(9);
   doc.setTextColor(...COLORS.text);
   doc.setFont('helvetica', 'normal');
-  
+
   const now = new Date();
-  const dateStr = now.toLocaleDateString('es-MX', { 
-    weekday: 'long', 
-    year: 'numeric', 
-    month: 'long', 
-    day: 'numeric' 
-  });
-  const timeStr = now.toLocaleTimeString('es-MX', { 
-    hour: '2-digit', 
-    minute: '2-digit' 
-  });
-  
-  doc.text(`Equipo: ${options.teamName}`, 15, 68);
-  doc.text(`Generado por: ${options.userName}`, 15, 75);
-  doc.text(`Fecha: ${dateStr} - ${timeStr}`, pageWidth - 15, 68, { align: 'right' });
-  
+  const dateStr = now.toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
+  const timeStr = now.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+
+  doc.text(`Equipo: ${options.teamName}  ·  Generado por: ${options.userName}`, 15, 45);
+  doc.text(`${dateStr} - ${timeStr}`, pageWidth - 15, 45, { align: 'right' });
+
   if (options.playerName) {
-    doc.text(`Jugador: ${options.playerName} (#${options.playerNumber || '-'})`, 15, 82);
-    if (options.playerPosition) {
-      doc.text(`Posicion: ${options.playerPosition}`, pageWidth - 15, 75, { align: 'right' });
-    }
-    return 92;
+    let line2 = `Jugador: ${options.playerName} (#${options.playerNumber || '-'})`;
+    if (options.playerPosition) line2 += `  ·  Posicion: ${options.playerPosition}`;
+    doc.text(line2, 15, 51);
+    return 57;
   }
-  
-  return 85;
+
+  return 50;
 }
 
 function addSection(doc: jsPDF, title: string, yPos: number, pageWidth: number): number {
@@ -176,12 +175,12 @@ function addSection(doc: jsPDF, title: string, yPos: number, pageWidth: number):
     yPos = 20;
   }
   doc.setFillColor(...COLORS.primary);
-  doc.roundedRect(15, yPos, pageWidth - 30, 8, 2, 2, 'F');
-  doc.setFontSize(11);
+  doc.roundedRect(15, yPos, pageWidth - 30, 7, 2, 2, 'F');
+  doc.setFontSize(10.5);
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
-  doc.text(title, 20, yPos + 6);
-  return yPos + 14;
+  doc.text(title, 20, yPos + 5.2);
+  return yPos + 11;
 }
 
 function addBulletList(doc: jsPDF, items: string[], startY: number, maxWidth: number): number {
@@ -306,28 +305,26 @@ function addTendenciaBox(doc: jsPDF, tendencia: string, descripcion: string, sta
   return startY + 32;
 }
 
-// Dibuja una mini-cancha de 3 zonas (Inicio/Creación/Finalización) con los mismos
-// colores que se ven en pantalla — para que el reporte impreso se sienta como una
-// extensión visual de la app, no un documento de texto plano.
+// Cancha real (la misma imagen que usa el PowerPoint) con las 3 zonas
+// etiquetadas encima — para que el reporte impreso se vea igual que el
+// PowerPoint y la app, no una cancha esquemática aparte.
 function drawMiniPitch(doc: jsPDF, x: number, y: number, width: number, height: number) {
   const zonas: Array<'Inicio' | 'Creacion' | 'Finalizacion'> = ['Inicio', 'Creacion', 'Finalizacion'];
+  try {
+    doc.addImage(PITCH_BASE64, 'PNG', x, y, width, height);
+  } catch (e) {
+    console.warn('Could not add pitch image to PDF');
+  }
   const zoneWidth = width / 3;
+  const pillW = Math.min(zoneWidth - 1, 18), pillH = 4;
   zonas.forEach((z, i) => {
-    doc.setFillColor(...ZONA_COLOR_RGB[z]);
-    doc.rect(x + i * zoneWidth, y, zoneWidth, height, 'F');
-  });
-  doc.setDrawColor(60, 60, 60);
-  doc.setLineWidth(0.4);
-  doc.rect(x, y, width, height, 'S');
-  // Círculo central y línea divisoria, como referencia visual de cancha
-  doc.line(x + width / 2, y, x + width / 2, y + height);
-  doc.circle(x + width / 2, y + height / 2, height * 0.22, 'S');
-  // Nombre de cada zona escrito encima de su color
-  doc.setFontSize(8);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(255, 255, 255);
-  zonas.forEach((z, i) => {
-    doc.text(ZONA_LABEL_PDF[z], x + i * zoneWidth + zoneWidth / 2, y + height / 2, { align: 'center' });
+    const cx = x + i * zoneWidth + zoneWidth / 2;
+    doc.setFillColor(10, 11, 20);
+    doc.roundedRect(cx - pillW / 2, y + 1.5, pillW, pillH, 1, 1, 'F');
+    doc.setFontSize(6);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(255, 255, 255);
+    doc.text(ZONA_LABEL_PDF[z], cx, y + 1.5 + pillH / 2 + 1, { align: 'center' });
   });
 }
 
@@ -339,15 +336,15 @@ function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: 
   if (y > pageHeight - 90) { doc.addPage(); y = 20; }
   y = addSection(doc, title, y, pageWidth);
 
-  doc.setFontSize(9);
+  doc.setFontSize(8.5);
   doc.setTextColor(...COLORS.secondary);
   doc.setFont('helvetica', 'italic');
   const preguntaLines = doc.splitTextToSize(fase.pregunta, pageWidth - 30);
   doc.text(preguntaLines, 15, y);
-  y += preguntaLines.length * 5 + 6;
+  y += preguntaLines.length * 4.5 + 3;
 
-  const pitchWidth = 55;
-  const pitchHeight = 32;
+  const pitchWidth = 48;
+  const pitchHeight = 28;
   drawMiniPitch(doc, 15, y, pitchWidth, pitchHeight);
 
   const textX = 15 + pitchWidth + 8;
@@ -365,33 +362,33 @@ function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: 
     const zonaData = fase.zonas.find(f => f.zona === z);
     const lines = doc.splitTextToSize(zonaData?.resumen || 'Sin momentos registrados todavía.', textWidth);
     const notaLines = zonaData?.nota && zonaData.nota.trim() ? doc.splitTextToSize(`Nota del analista: ${zonaData.nota.trim()}`, textWidth) : [];
-    const alturaBloque = 4.5 + lines.length * 4.5 + (notaLines.length ? notaLines.length * 4.5 + 1 : 0) + 5;
+    const alturaBloque = 4.2 + lines.length * 4.2 + (notaLines.length ? notaLines.length * 4.2 + 1 : 0) + 4;
     // Si este bloque (título + resumen + nota) no cabe completo, se salta de
     // página ANTES de empezar a dibujarlo — así nunca lo corta a la mitad.
     if (textY + alturaBloque > pageHeight - 30) { doc.addPage(); textY = 20; saltoDePagina = true; }
 
     doc.setFillColor(...ZONA_COLOR_RGB[z]);
     doc.rect(textX, textY - 3, 3, 3, 'F');
-    doc.setFontSize(9.5);
+    doc.setFontSize(9);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(...COLORS.dark);
     doc.text(ZONA_LABEL_PDF[z], textX + 6, textY);
-    textY += 4.5;
-    doc.setFontSize(9);
+    textY += 4.2;
+    doc.setFontSize(8.5);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(...COLORS.text);
     doc.text(lines, textX + 6, textY);
-    textY += lines.length * 4.5 + 1;
+    textY += lines.length * 4.2 + 0.5;
     if (zonaData?.nota && zonaData.nota.trim()) {
       doc.setFont('helvetica', 'italic');
       const notaLines = doc.splitTextToSize(`Nota del analista: ${zonaData.nota.trim()}`, textWidth);
       doc.text(notaLines, textX + 6, textY);
-      textY += notaLines.length * 4.5 + 1;
+      textY += notaLines.length * 4.2 + 0.5;
     }
-    textY += 4;
+    textY += 2;
   });
 
-  return (saltoDePagina ? textY : Math.max(y + pitchHeight, textY)) + 8;
+  return (saltoDePagina ? textY : Math.max(y + pitchHeight, textY)) + 4;
 }
 
 // Balón parado del rival (tipo 4): dos bloques de texto, cuando cobra y cuando defiende.
@@ -401,37 +398,37 @@ function addBalonParadoSection(doc: jsPDF, bp: RivalBalonParadoData, startY: num
   if (y > pageHeight - 80) { doc.addPage(); y = 20; }
   y = addSection(doc, 'BALÓN PARADO', y, pageWidth);
 
-  doc.setFontSize(9);
+  doc.setFontSize(8.5);
   doc.setTextColor(...COLORS.secondary);
   doc.setFont('helvetica', 'italic');
   const preguntaLines = doc.splitTextToSize(bp.pregunta, pageWidth - 30);
   doc.text(preguntaLines, 15, y);
-  y += preguntaLines.length * 5 + 4;
+  y += preguntaLines.length * 4.2 + 2;
 
   const bloque = (titulo: string, texto: string, nota?: string) => {
     const lines = doc.splitTextToSize(texto, pageWidth - 36);
     const notaLines = nota && nota.trim() ? doc.splitTextToSize(`Nota del analista: ${nota.trim()}`, pageWidth - 36) : [];
-    const altura = 4.5 + lines.length * 4.5 + (notaLines.length ? notaLines.length * 4.5 + 1 : 0) + 4;
+    const altura = 4.2 + lines.length * 4.2 + (notaLines.length ? notaLines.length * 4.2 + 1 : 0) + 3;
     if (y + altura > pageHeight - 30) { doc.addPage(); y = 20; }
 
     doc.setFillColor(...COLORS.secondary);
     doc.rect(15, y - 3, 3, 3, 'F');
-    doc.setFontSize(9.5);
+    doc.setFontSize(9);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(...COLORS.dark);
     doc.text(titulo, 21, y);
-    y += 4.5;
-    doc.setFontSize(9);
+    y += 4.2;
+    doc.setFontSize(8.5);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(...COLORS.text);
     doc.text(lines, 21, y);
-    y += lines.length * 4.5 + 1;
+    y += lines.length * 4.2 + 0.5;
     if (nota && nota.trim()) {
       doc.setFont('helvetica', 'italic');
       doc.text(notaLines, 21, y);
-      y += notaLines.length * 4.5 + 1;
+      y += notaLines.length * 4.2 + 0.5;
     }
-    y += 4;
+    y += 2.5;
   };
   if (bp.corner) bloque('Córners — cuando cobra', bp.corner);
   if (bp.tiroLibre) bloque('Tiros libres — cuando cobra', bp.tiroLibre);
@@ -441,40 +438,121 @@ function addBalonParadoSection(doc: jsPDF, bp: RivalBalonParadoData, startY: num
   }
   if (!bp.corner && !bp.tiroLibre && !bp.penal) bloque('Cuando cobra', 'Sin cobros registrados todavía.');
   bloque('Cuando defiende', bp.defiende, bp.notaDefiende);
-  return y + 4;
+  return y + 2;
 }
 
-// DAFO del rival: 4 bloques de viñetas.
+// Jugadores clave del rival: tarjetas chicas en fila (número, posición,
+// motivo) — compacto a propósito para que quepa junto a lo demás en vez de
+// forzar una página aparte. Si no caben todas en la fila/página actual,
+// se reparte en más filas o salta de página, nunca corta una tarjeta a la mitad.
+function addJugadoresClaveSection(doc: jsPDF, jugadores: RivalJugadorClave[], startY: number, pageWidth: number): number {
+  if (!jugadores || jugadores.length === 0) return startY;
+  const pageHeight = doc.internal.pageSize.getHeight();
+  let y = startY;
+  if (y > pageHeight - 50) { doc.addPage(); y = 20; }
+  y = addSection(doc, 'JUGADORES CLAVE DEL RIVAL', y, pageWidth);
+
+  const cols = 3, gutter = 4;
+  const cardW = (pageWidth - 30 - gutter * (cols - 1)) / cols;
+  const padX = 3;
+
+  const medir = (j: RivalJugadorClave) => {
+    doc.setFontSize(7.5);
+    const lines = doc.splitTextToSize(j.motivo || 'Sin motivo capturado.', cardW - padX * 2);
+    return 11 + lines.length * 3.4 + 3;
+  };
+  const dibujar = (x: number, yTop: number, h: number, j: RivalJugadorClave) => {
+    doc.setFillColor(...COLORS.lightGray);
+    doc.roundedRect(x, yTop, cardW, h, 2, 2, 'F');
+    doc.setFontSize(8.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...COLORS.primary);
+    const encabezado = `${j.numero ? '#' + j.numero : ''}${j.numero && j.posicion ? '  ·  ' : ''}${j.posicion || ''}`.trim() || 'Jugador clave';
+    doc.text(encabezado, x + padX, yTop + 6);
+    doc.setFontSize(7.5);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(...COLORS.text);
+    const lines = doc.splitTextToSize(j.motivo || 'Sin motivo capturado.', cardW - padX * 2);
+    doc.text(lines, x + padX, yTop + 10.5);
+  };
+
+  for (let i = 0; i < jugadores.length; i += cols) {
+    const fila = jugadores.slice(i, i + cols);
+    const h = Math.max(...fila.map(medir));
+    if (y + h > pageHeight - 20) { doc.addPage(); y = 20; }
+    fila.forEach((j, k) => dibujar(15 + k * (cardW + gutter), y, h, j));
+    y += h + gutter;
+  }
+  return y + 2;
+}
+
+// DAFO del rival: cuadrante 2x2 (mismo texto completo, mismos colores, pero
+// en 4 cajas lado a lado como en el PowerPoint, no 4 listas apiladas a lo
+// largo de toda la hoja — así cabe en mucho menos espacio.
 function addDafoSection(doc: jsPDF, dafo: NonNullable<RivalReportData['dafo']>, startY: number, pageWidth: number): number {
   const pageHeight = doc.internal.pageSize.getHeight();
   let y = startY;
-  if (y > pageHeight - 90) { doc.addPage(); y = 20; }
+  if (y > pageHeight - 60) { doc.addPage(); y = 20; }
   y = addSection(doc, 'DAFO DEL RIVAL', y, pageWidth);
-  const bloque = (titulo: string, items: string[], color: [number, number, number]) => {
-    if (y > pageHeight - 40) { doc.addPage(); y = 20; }
+
+  const gutter = 5;
+  const colW = (pageWidth - 30 - gutter) / 2;
+  const padX = 3, padTop = 9;
+
+  // Mide cuánto alto necesita una caja (título + viñetas envueltas) sin dibujar nada.
+  const medir = (items: string[]) => {
+    doc.setFontSize(7.5);
+    let h = padTop;
+    (items || []).forEach(it => {
+      const lines = doc.splitTextToSize(`• ${it}`, colW - padX * 2);
+      h += lines.length * 3.6 + 0.8;
+    });
+    return h + 2;
+  };
+
+  // Dibuja una caja (fondo de color suave + título + viñetas) de una altura ya decidida.
+  const dibujar = (x: number, yTop: number, h: number, titulo: string, items: string[], color: [number, number, number]) => {
+    const tint: [number, number, number] = [
+      Math.round(255 - (255 - color[0]) * 0.12),
+      Math.round(255 - (255 - color[1]) * 0.12),
+      Math.round(255 - (255 - color[2]) * 0.12),
+    ];
+    doc.setFillColor(...tint);
+    doc.roundedRect(x, yTop, colW, h, 2, 2, 'F');
     doc.setFillColor(...color);
-    doc.rect(15, y - 3, 3, 3, 'F');
-    doc.setFontSize(9.5);
+    doc.rect(x + padX, yTop + 4.5, 3, 3, 'F');
+    doc.setFontSize(8.5);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(...COLORS.dark);
-    doc.text(titulo, 21, y);
-    y += 4.5;
-    doc.setFontSize(9);
+    doc.text(titulo, x + padX + 5, yTop + 7);
+    let ty = yTop + padTop;
+    doc.setFontSize(7.5);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(...COLORS.text);
     (items || []).forEach(it => {
-      const lines = doc.splitTextToSize(`• ${it}`, pageWidth - 36);
-      if (y + lines.length * 4.5 > pageHeight - 30) { doc.addPage(); y = 20; }
-      doc.text(lines, 21, y);
-      y += lines.length * 4.5 + 1;
+      const lines = doc.splitTextToSize(`• ${it}`, colW - padX * 2);
+      doc.text(lines, x + padX, ty);
+      ty += lines.length * 3.6 + 0.8;
     });
-    y += 4;
   };
-  bloque('Fortalezas del rival', dafo.fortalezas, COLORS.success);
-  bloque('Debilidades del rival', dafo.debilidades, COLORS.danger);
-  bloque('Oportunidades para nosotros', dafo.oportunidades, COLORS.secondary);
-  bloque('Amenazas para nosotros', dafo.amenazas, COLORS.warning);
-  return y + 4;
+
+  const fila = (izq: { t: string; items: string[]; c: [number, number, number] }, der: { t: string; items: string[]; c: [number, number, number] }) => {
+    const h = Math.max(medir(izq.items), medir(der.items));
+    if (y + h > pageHeight - 20) { doc.addPage(); y = 20; }
+    dibujar(15, y, h, izq.t, izq.items, izq.c);
+    dibujar(15 + colW + gutter, y, h, der.t, der.items, der.c);
+    y += h + gutter;
+  };
+
+  fila(
+    { t: 'Fortalezas del rival', items: dafo.fortalezas, c: COLORS.success },
+    { t: 'Debilidades del rival', items: dafo.debilidades, c: COLORS.danger }
+  );
+  fila(
+    { t: 'Oportunidades para nosotros', items: dafo.oportunidades, c: COLORS.secondary },
+    { t: 'Amenazas para nosotros', items: dafo.amenazas, c: COLORS.warning }
+  );
+  return y + 2;
 }
 
 function addFooter(doc: jsPDF) {
@@ -712,6 +790,7 @@ export async function exportRivalAnalysisToPDF(
   y = addFaseSection(doc, 'FASE OFENSIVA', data.ofensiva, y, pageWidth);
   y = addFaseSection(doc, 'FASE DEFENSIVA', data.defensiva, y, pageWidth);
   if (data.balonParado) y = addBalonParadoSection(doc, data.balonParado, y, pageWidth);
+  if (data.jugadoresClave && data.jugadoresClave.length > 0) y = addJugadoresClaveSection(doc, data.jugadoresClave, y, pageWidth);
   if (data.dafo) y = addDafoSection(doc, data.dafo, y, pageWidth);
 
   addFooter(doc);

@@ -1080,6 +1080,44 @@ export async function generateMatchReportPptx(
     }
   }
 
+  // Slide — Jugadores clave del rival (compacto: tarjetas en fila, 3 por fila,
+  // abre slide nuevo si no caben todos — mismo patrón que Balón Parado arriba).
+  {
+    const jugadores = (rivalAnalysis?.jugadores_clave || []).filter((j) => j.numero || j.posicion || j.motivo);
+    if (jugadores.length > 0) {
+      let slide = pres.addSlide();
+      slide.background = { color: COLOR.white };
+      sectionHeader(slide, 'Próximo partido', 'Jugadores clave del rival');
+      let y = 1.7;
+      const cols = 3, gutter = 0.3;
+      const cardW = (11.8 - gutter * (cols - 1)) / cols;
+
+      const nuevoSlideSiNoCabe = (alturaEstimadaIn: number) => {
+        if (y + alturaEstimadaIn <= 6.85) return;
+        footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+        slide = pres.addSlide();
+        slide.background = { color: COLOR.white };
+        sectionHeader(slide, 'Próximo partido', 'Jugadores clave del rival (continuación)');
+        y = 1.7;
+      };
+
+      for (let i = 0; i < jugadores.length; i += cols) {
+        const fila = jugadores.slice(i, i + cols);
+        const alturaFila = Math.max(...fila.map((j) => 0.55 + Math.ceil((j.motivo || '').length / 36) * 0.22 + 0.2));
+        nuevoSlideSiNoCabe(alturaFila + 0.25);
+        fila.forEach((j, k) => {
+          const x = 0.6 + k * (cardW + gutter);
+          slide.addShape(pres.ShapeType.roundRect, { x, y, w: cardW, h: alturaFila, rectRadius: 0.08, fill: { color: COLOR.indigoLight }, line: { type: 'none' } });
+          const encabezado = `${j.numero ? '#' + j.numero : ''}${j.numero && j.posicion ? '  ·  ' : ''}${j.posicion || ''}`.trim() || 'Jugador clave';
+          slide.addText(encabezado, { x: x + 0.18, y: y + 0.14, w: cardW - 0.36, h: 0.3, fontFace: FONT_HEAD, fontSize: 11, bold: true, color: COLOR.indigo, isTextBox: true, margin: 0 });
+          slide.addText(j.motivo || 'Sin motivo capturado.', { x: x + 0.18, y: y + 0.48, w: cardW - 0.36, h: alturaFila - 0.58, fontFace: FONT_BODY, fontSize: 9.5, color: COLOR.ink, isTextBox: true, margin: 0 });
+        });
+        y += alturaFila + 0.25;
+      }
+      footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+    }
+  }
+
   // Slide — DAFO del rival (el que se genera con IA y se guarda en Análisis del Rival).
   // Solo sale si ese rival tiene su DAFO guardado. Es distinto del DAFO de este partido.
   if (rivalAnalysis?.dafo) {
