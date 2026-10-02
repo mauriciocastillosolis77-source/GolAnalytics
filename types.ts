@@ -238,6 +238,12 @@ export interface RivalMomento {
 // Balón parado usa "BalonParado|cobra" y "BalonParado|defiende".
 export type RivalNotas = Record<string, string>;
 
+export interface JugadorClave {
+  numero: string;
+  posicion: string;
+  motivo: string;
+}
+
 export interface RivalAnalysis {
   id: string;
   team_id: string;
@@ -249,6 +255,7 @@ export interface RivalAnalysis {
   // null = todavía no se eligió; se preseleccionan por nombre.
   partidos?: string[] | null;
   dafo?: DafoRival | null;
+  jugadores_clave?: JugadorClave[] | null;
   created_by?: string | null;
   created_at: string;
 }
