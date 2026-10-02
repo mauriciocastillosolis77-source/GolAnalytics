@@ -7,7 +7,7 @@ import { PORTERIA_ESTADIO_BASE64 } from '../constants/porteriaEstadioBase64';
 import type { Match, Tag, Player, RivalAnalysis, RivalTipo, RivalZona } from '../types';
 import { TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona, etiquetaZona } from '../utils/zonas';
 import { esJugadorFicticio } from '../utils/efectividad';
-import { ALTURAS, LADOS, codigoPorteria, detalleGolDe, resumenGol } from '../utils/goles';
+import { ALTURAS, LADOS, codigoPorteria, detalleGolDe, resumenGol, etiquetaPorteria } from '../utils/goles';
 import { esAccionBalonParado, contarCobros, contarPenales, envioMasUsado, ENVIO_LABEL, CORNER_FAVOR, CORNER_CONTRA, TL_FAVOR, TL_CONTRA, PENAL_FAVOR, PENAL_CONTRA } from '../utils/balonParado';
 
 // ── Marca GolAnalytics ──────────────────────────────────────────────────
@@ -258,22 +258,43 @@ function resumenBalonParado(rival: RivalAnalysis) {
   const contarLista = (valores: string[], opciones: string[]) => opciones.map((o) => ({ label: o, n: valores.filter((v) => v === o).length }));
   const mayus = (x: string) => (x ? x.charAt(0).toUpperCase() + x.slice(1) : x);
 
-  const conEnvio = cobra.filter((c) => c.attr1);
-  const envios = contarLista(conEnvio.map((c) => c.attr1), BP_ENVIOS);
-  const corners = cobra.filter((c) => c.cobro === 'Córner').length;
-  const tirosLibres = cobra.filter((c) => c.cobro === 'Tiro libre').length;
-  const golesCobra = cobra.filter((c) => c.attr2 === 'Gol').length;
-  const rematesCobra = cobra.filter((c) => c.attr2 === 'Remate' || c.attr2 === 'Gol').length;
-  const conResCobra = cobra.filter((c) => !!c.attr2).length;
-  const partes: string[] = [];
-  if (conEnvio.length > 0) {
-    const top = [...envios].sort((a, b) => b.n - a.n)[0];
-    const frecuencia = top.n === conEnvio.length ? 'siempre' : top.n / conEnvio.length >= 0.6 ? 'casi siempre' : 'más seguido';
-    const destino = top.label === 'En corto' ? 'en corto' : `al ${top.label.toLowerCase()}`;
-    partes.push(`Cobra ${frecuencia} ${destino} (${top.n} de ${conEnvio.length})`);
+  // Cada tipo de cobro se lee por separado — mezclar córners y tiros libres
+  // ocultaba patrones reales (ej. "todos los córners al primer palo" se
+  // perdía si además había tiros libres hacia otro lado).
+  const lecturaPorZona = (items: typeof cobra) => {
+    const conEnvio = items.filter((c) => c.attr1);
+    const envios = contarLista(conEnvio.map((c) => c.attr1), BP_ENVIOS);
+    const goles = items.filter((c) => c.attr2 === 'Gol').length;
+    const remates = items.filter((c) => c.attr2 === 'Remate' || c.attr2 === 'Gol').length;
+    const conRes = items.filter((c) => !!c.attr2).length;
+    const partes: string[] = [];
+    if (conEnvio.length > 0) {
+      const top = [...envios].sort((a, b) => b.n - a.n)[0];
+      const frecuencia = top.n === conEnvio.length ? 'siempre' : top.n / conEnvio.length >= 0.6 ? 'casi siempre' : 'más seguido';
+      const destino = top.label === 'En corto' ? 'en corto' : `al ${top.label.toLowerCase()}`;
+      partes.push(`Cobra ${frecuencia} ${destino} (${top.n} de ${conEnvio.length})`);
+    }
+    if (conRes > 0) partes.push(`${remates} de ${conRes} terminaron en remate${goles > 0 ? ` y ${goles} en gol` : ''}`);
+    return mayus(partes.length ? `${partes.join('; ')}.` : 'Sin detalle suficiente.');
+  };
+  const itemsCorner = cobra.filter((c) => c.cobro === 'Córner');
+  const itemsTiroLibre = cobra.filter((c) => c.cobro === 'Tiro libre');
+  const itemsPenal = cobra.filter((c) => c.cobro === 'Penal');
+  // Penal: attr1 guarda el resultado (gol/atajado/fuera/palo), no una zona.
+  // La zona real (a dónde tiró) vive en `porteria` — se pide siempre, acierte o no.
+  const golesPenal = itemsPenal.filter((c) => c.attr1 === 'gol').length;
+  let lecturaPenal = '';
+  if (itemsPenal.length > 0) {
+    let texto = `${golesPenal} de ${itemsPenal.length} penales anotados${itemsPenal.length - golesPenal > 0 ? ` (${itemsPenal.length - golesPenal} fallados o atajados)` : ''}.`;
+    const conPorteria = itemsPenal.filter((c) => c.porteria);
+    if (conPorteria.length > 0) {
+      const labels = conPorteria.map((c) => (etiquetaPorteria(c.porteria as string) || '').toLowerCase());
+      const porLado = contarLista(labels, Array.from(new Set(labels)));
+      const top = [...porLado].sort((a, b) => b.n - a.n)[0];
+      if (top) texto += ` Tira ${top.n === conPorteria.length ? 'siempre' : `${top.n} de ${conPorteria.length} veces`} ${top.label}.`;
+    }
+    lecturaPenal = mayus(texto);
   }
-  if (conResCobra > 0) partes.push(`${rematesCobra} de ${conResCobra} terminaron en remate${golesCobra > 0 ? ` y ${golesCobra} en gol` : ''}`);
-  const lecturaCobra = mayus(partes.length ? `${partes.join('; ')}.` : 'Sin detalle suficiente.');
 
   const conMarc = defiende.filter((d) => d.attr1);
   const marcajes = contarLista(conMarc.map((d) => d.attr1), BP_MARCAJES);
@@ -289,7 +310,13 @@ function resumenBalonParado(rival: RivalAnalysis) {
   const lecturaDefiende = mayus(partesD.length ? `${partesD.join('; ')}.` : 'Sin detalle suficiente.');
 
   return {
-    cobra: { n: cobra.length, corners, tirosLibres, lectura: lecturaCobra, nota: rival.notas?.['BalonParado|cobra'] },
+    cobra: {
+      n: cobra.length,
+      corner: { n: itemsCorner.length, lectura: itemsCorner.length > 0 ? lecturaPorZona(itemsCorner) : '' },
+      tiroLibre: { n: itemsTiroLibre.length, lectura: itemsTiroLibre.length > 0 ? lecturaPorZona(itemsTiroLibre) : '' },
+      penal: { n: itemsPenal.length, lectura: lecturaPenal },
+      nota: rival.notas?.['BalonParado|cobra'],
+    },
     defiende: { n: defiende.length, lectura: lecturaDefiende, nota: rival.notas?.['BalonParado|defiende'] },
   };
 }
@@ -1005,24 +1032,48 @@ export async function generateMatchReportPptx(
   if (rivalAnalysis) {
     const bp = resumenBalonParado(rivalAnalysis);
     if (bp.cobra.n > 0 || bp.defiende.n > 0) {
-      const slide = pres.addSlide();
+      let slide = pres.addSlide();
       slide.background = { color: COLOR.white };
       sectionHeader(slide, 'Próximo partido', `Análisis del rival — Balón parado`);
-
       let y = 1.7;
+
+      // Si un bloque ya no cabe en lo que queda del slide, cierra este
+      // (con su footer) y abre uno nuevo — así nunca se corta a la mitad,
+      // el mismo problema que ya se corrigió en el PDF.
+      const nuevoSlideSiNoCabe = (alturaEstimadaIn: number) => {
+        if (y + alturaEstimadaIn <= 6.85) return;
+        footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+        slide = pres.addSlide();
+        slide.background = { color: COLOR.white };
+        sectionHeader(slide, 'Próximo partido', `Análisis del rival — Balón parado (continuación)`);
+        y = 1.7;
+      };
+
       const bloqueBp = (titulo: string, texto: string, nota: string | undefined) => {
+        const alturaTexto = Math.ceil(texto.length / 110) * 0.3 + 0.3;
+        const alturaNota = nota && nota.trim() ? Math.ceil(nota.length / 110) * 0.3 + 0.35 : 0;
+        nuevoSlideSiNoCabe(0.5 + alturaTexto + alturaNota + 0.35);
+
         slide.addShape(pres.ShapeType.roundRect, { x: 0.6, y, w: 11.8, h: 0.35, rectRadius: 0.06, fill: { color: COLOR.indigoDark }, line: { type: 'none' } });
         slide.addText(titulo.toUpperCase(), { x: 0.8, y, w: 11.4, h: 0.35, fontFace: FONT_BODY, fontSize: 11, bold: true, color: COLOR.white, valign: 'middle', charSpacing: 1, isTextBox: true, margin: 0 });
         y += 0.5;
-        slide.addText(texto, { x: 0.8, y, w: 11.4, h: 0.5, fontFace: FONT_BODY, fontSize: 12, color: COLOR.ink, isTextBox: true, margin: 0 });
-        y += 0.55;
+        slide.addText(texto, { x: 0.8, y, w: 11.4, h: alturaTexto, fontFace: FONT_BODY, fontSize: 12, color: COLOR.ink, isTextBox: true, margin: 0 });
+        y += alturaTexto;
         if (nota && nota.trim()) {
-          slide.addText(`Nota del analista: ${nota.trim()}`, { x: 0.8, y, w: 11.4, h: 0.6, fontFace: FONT_BODY, fontSize: 11, italic: true, color: COLOR.gray, isTextBox: true, margin: 0 });
-          y += 0.65;
+          slide.addText(`Nota del analista: ${nota.trim()}`, { x: 0.8, y, w: 11.4, h: alturaNota, fontFace: FONT_BODY, fontSize: 11, italic: true, color: COLOR.gray, isTextBox: true, margin: 0 });
+          y += alturaNota;
         }
         y += 0.35;
       };
-      bloqueBp('Cuando cobra', bp.cobra.n > 0 ? bp.cobra.lectura : 'Sin cobros registrados todavía.', bp.cobra.nota);
+
+      if (bp.cobra.n === 0) {
+        bloqueBp('Cuando cobra', 'Sin cobros registrados todavía.', undefined);
+      } else {
+        if (bp.cobra.corner.n > 0) bloqueBp(`Córners — cuando cobra (${bp.cobra.corner.n})`, bp.cobra.corner.lectura, undefined);
+        if (bp.cobra.tiroLibre.n > 0) bloqueBp(`Tiros libres — cuando cobra (${bp.cobra.tiroLibre.n})`, bp.cobra.tiroLibre.lectura, undefined);
+        if (bp.cobra.penal.n > 0) bloqueBp(`Penales — cuando cobra (${bp.cobra.penal.n})`, bp.cobra.penal.lectura, undefined);
+        if (bp.cobra.nota && bp.cobra.nota.trim()) bloqueBp('Nota del analista — cuando cobra', bp.cobra.nota, undefined);
+      }
       bloqueBp('Cuando defiende', bp.defiende.n > 0 ? bp.defiende.lectura : 'Sin cobros del rival defendidos todavía.', bp.defiende.nota);
 
       footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);

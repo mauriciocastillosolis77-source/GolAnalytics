@@ -42,7 +42,9 @@ interface RivalFaseData {
 
 interface RivalBalonParadoData {
   pregunta: string;
-  cobra: string;          // lectura automática cuando el rival cobra
+  corner?: string;        // lectura automática de córners a favor del rival
+  tiroLibre?: string;     // lectura automática de tiros libres a favor del rival
+  penal?: string;         // lectura automática de penales a favor del rival
   notaCobra?: string;
   defiende: string;       // lectura automática cuando el rival defiende
   notaDefiende?: string;
@@ -332,7 +334,10 @@ function drawMiniPitch(doc: jsPDF, x: number, y: number, width: number, height: 
 // Dibuja una fase completa (Ofensiva o Defensiva): barra de título + pregunta guía,
 // la mini-cancha a la izquierda, y el resumen de cada zona a la derecha.
 function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: number, pageWidth: number): number {
-  let y = addSection(doc, title, startY, pageWidth);
+  const pageHeight = doc.internal.pageSize.getHeight();
+  let y = startY;
+  if (y > pageHeight - 90) { doc.addPage(); y = 20; }
+  y = addSection(doc, title, y, pageWidth);
 
   doc.setFontSize(9);
   doc.setTextColor(...COLORS.secondary);
@@ -351,6 +356,13 @@ function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: 
   const zonas: Array<'Inicio' | 'Creacion' | 'Finalizacion'> = ['Inicio', 'Creacion', 'Finalizacion'];
   zonas.forEach(z => {
     const zonaData = fase.zonas.find(f => f.zona === z);
+    const lines = doc.splitTextToSize(zonaData?.resumen || 'Sin momentos registrados todavía.', textWidth);
+    const notaLines = zonaData?.nota && zonaData.nota.trim() ? doc.splitTextToSize(`Nota del analista: ${zonaData.nota.trim()}`, textWidth) : [];
+    const alturaBloque = 4.5 + lines.length * 4.5 + (notaLines.length ? notaLines.length * 4.5 + 1 : 0) + 5;
+    // Si este bloque (título + resumen + nota) no cabe completo, se salta de
+    // página ANTES de empezar a dibujarlo — así nunca lo corta a la mitad.
+    if (textY + alturaBloque > pageHeight - 30) { doc.addPage(); textY = 20; }
+
     doc.setFillColor(...ZONA_COLOR_RGB[z]);
     doc.rect(textX, textY - 3, 3, 3, 'F');
     doc.setFontSize(9.5);
@@ -361,7 +373,6 @@ function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: 
     doc.setFontSize(9);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(...COLORS.text);
-    const lines = doc.splitTextToSize(zonaData?.resumen || 'Sin momentos registrados todavía.', textWidth);
     doc.text(lines, textX + 6, textY);
     textY += lines.length * 4.5 + 1;
     if (zonaData?.nota && zonaData.nota.trim()) {
@@ -391,6 +402,11 @@ function addBalonParadoSection(doc: jsPDF, bp: RivalBalonParadoData, startY: num
   y += preguntaLines.length * 5 + 4;
 
   const bloque = (titulo: string, texto: string, nota?: string) => {
+    const lines = doc.splitTextToSize(texto, pageWidth - 36);
+    const notaLines = nota && nota.trim() ? doc.splitTextToSize(`Nota del analista: ${nota.trim()}`, pageWidth - 36) : [];
+    const altura = 4.5 + lines.length * 4.5 + (notaLines.length ? notaLines.length * 4.5 + 1 : 0) + 4;
+    if (y + altura > pageHeight - 30) { doc.addPage(); y = 20; }
+
     doc.setFillColor(...COLORS.secondary);
     doc.rect(15, y - 3, 3, 3, 'F');
     doc.setFontSize(9.5);
@@ -401,18 +417,22 @@ function addBalonParadoSection(doc: jsPDF, bp: RivalBalonParadoData, startY: num
     doc.setFontSize(9);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(...COLORS.text);
-    const lines = doc.splitTextToSize(texto, pageWidth - 36);
     doc.text(lines, 21, y);
     y += lines.length * 4.5 + 1;
     if (nota && nota.trim()) {
       doc.setFont('helvetica', 'italic');
-      const notaLines = doc.splitTextToSize(`Nota del analista: ${nota.trim()}`, pageWidth - 36);
       doc.text(notaLines, 21, y);
       y += notaLines.length * 4.5 + 1;
     }
     y += 4;
   };
-  bloque('Cuando cobra', bp.cobra, bp.notaCobra);
+  if (bp.corner) bloque('Córners — cuando cobra', bp.corner);
+  if (bp.tiroLibre) bloque('Tiros libres — cuando cobra', bp.tiroLibre);
+  if (bp.penal) bloque('Penales — cuando cobra', bp.penal);
+  if ((bp.corner || bp.tiroLibre || bp.penal) && bp.notaCobra && bp.notaCobra.trim()) {
+    bloque('Nota del analista — cuando cobra', bp.notaCobra, undefined);
+  }
+  if (!bp.corner && !bp.tiroLibre && !bp.penal) bloque('Cuando cobra', 'Sin cobros registrados todavía.');
   bloque('Cuando defiende', bp.defiende, bp.notaDefiende);
   return y + 4;
 }
