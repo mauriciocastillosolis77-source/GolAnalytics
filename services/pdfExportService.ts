@@ -353,6 +353,13 @@ function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: 
   const textX = 15 + pitchWidth + 8;
   const textWidth = pageWidth - textX - 15;
   let textY = y + 5;
+  // Si una zona se salta a una página nueva, la cancha y el `y` original ya
+  // no aplican (quedaron en la página anterior) — el valor que se devuelve al
+  // final debe basarse SOLO en `textY` de la página actual, no compararse
+  // contra la posición vieja de la cancha (eso fue lo que mandaba a la
+  // siguiente sección un número inflado y la hacía saltar de página sin
+  // necesidad, dejando una hoja casi en blanco).
+  let saltoDePagina = false;
   const zonas: Array<'Inicio' | 'Creacion' | 'Finalizacion'> = ['Inicio', 'Creacion', 'Finalizacion'];
   zonas.forEach(z => {
     const zonaData = fase.zonas.find(f => f.zona === z);
@@ -361,7 +368,7 @@ function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: 
     const alturaBloque = 4.5 + lines.length * 4.5 + (notaLines.length ? notaLines.length * 4.5 + 1 : 0) + 5;
     // Si este bloque (título + resumen + nota) no cabe completo, se salta de
     // página ANTES de empezar a dibujarlo — así nunca lo corta a la mitad.
-    if (textY + alturaBloque > pageHeight - 30) { doc.addPage(); textY = 20; }
+    if (textY + alturaBloque > pageHeight - 30) { doc.addPage(); textY = 20; saltoDePagina = true; }
 
     doc.setFillColor(...ZONA_COLOR_RGB[z]);
     doc.rect(textX, textY - 3, 3, 3, 'F');
@@ -384,7 +391,7 @@ function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: 
     textY += 4;
   });
 
-  return Math.max(y + pitchHeight, textY) + 8;
+  return (saltoDePagina ? textY : Math.max(y + pitchHeight, textY)) + 8;
 }
 
 // Balón parado del rival (tipo 4): dos bloques de texto, cuando cobra y cuando defiende.
