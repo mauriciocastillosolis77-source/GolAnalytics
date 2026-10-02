@@ -15,6 +15,7 @@ import { generarDafoRival } from '../services/dafoRivalService';
 import { fetchTeams, type Team } from '../services/teamsService';
 import { exportRivalAnalysisToPDF } from '../services/pdfExportService';
 import { mejorarRedaccionChecklist } from '../services/reportExportService';
+import { generarPlanPartidoRival } from '../services/planPartidoService';
 import { etiquetaPorteria } from '../utils/goles';
 import PorteriaEstadio from '../components/charts/PorteriaEstadio';
 
@@ -123,6 +124,30 @@ const AnalisisRivalPage: React.FC = () => {
     setPlanPartido(selected?.plan_partido || PLAN_PARTIDO_VACIO);
     setTemasEntrenamiento(selected?.temas_entrenamiento || []);
   }, [selected]);
+
+  const [generandoPlan, setGenerandoPlan] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const handleGenerarPlanPartido = async () => {
+    if (!selected) return;
+    setGenerandoPlan(true);
+    setPlanError(null);
+    try {
+      const { plan, temas } = await generarPlanPartidoRival({
+        equipo: teamName(selected.team_id),
+        rival: selected.rival_name,
+        dafo: selected.dafo || null,
+        resumenRival: armarResumenRival(),
+        resumenPartidos: armarResumenPartidos(),
+      });
+      setPlanPartido(plan);
+      setTemasEntrenamiento(temas);
+    } catch (err: any) {
+      console.error(err);
+      setPlanError(err?.message || 'No se pudo generar el plan de partido.');
+    } finally {
+      setGenerandoPlan(false);
+    }
+  };
 
   const agregarAdaptacion = () => setPlanPartido(p => ({ ...p, adaptaciones: [...p.adaptaciones, ''] }));
   const quitarAdaptacion = (i: number) => setPlanPartido(p => ({ ...p, adaptaciones: p.adaptaciones.filter((_, idx) => idx !== i) }));
@@ -1304,7 +1329,17 @@ const AnalisisRivalPage: React.FC = () => {
 
           {tabPlanPartido ? (
             <div className="space-y-4">
-              <p className="text-xs text-gray-500">Se arma con lo que ya encontraste en Fases, Balón Parado y DAFO — tú lo escribes/ajustas y mejoras con IA. Sale al final del PDF y del PowerPoint del partido.</p>
+              <p className="text-xs text-gray-500">Se genera solo, con lo que ya tienes en Fases, Balón Parado y DAFO — después puedes ajustar o mejorar cualquier campo a mano. Sale al final del PDF y del PowerPoint del partido.</p>
+
+              {isAdmin && (
+                <div className="flex items-center gap-3 flex-wrap">
+                  <button onClick={handleGenerarPlanPartido} disabled={generandoPlan || !selected} className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-medium disabled:opacity-50">
+                    {generandoPlan ? 'Generando…' : (planPartido.estrategia || planPartido.adaptaciones.length) ? '✨ Volver a generar plan' : '✨ Generar plan de partido'}
+                  </button>
+                  {!selected?.dafo && <span className="text-xs text-amber-400">Genera primero el DAFO para un mejor plan (lo puedes generar igual sin él).</span>}
+                </div>
+              )}
+              {planError && <p className="text-sm text-red-400">{planError}</p>}
 
               <div>
                 <label className="block text-xs text-gray-400 mb-1">Estrategia general</label>
