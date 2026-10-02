@@ -228,7 +228,10 @@ export interface RivalMomento {
   // Solo Balón parado (tipo 4): el rival cobra o defiende, y qué cobro fue.
   // En Balón parado: attr1 = zona de envío (cobra) o tipo de marcaje (defiende); attr2 = resultado.
   lado?: 'cobra' | 'defiende';
-  cobro?: 'Córner' | 'Tiro libre';
+  cobro?: 'Córner' | 'Tiro libre' | 'Penal';
+  // Solo Penal: a dónde tiró, misma cuadrícula de portería que el Etiquetador
+  // (utils/goles.ts) — se pide siempre, no solo cuando el resultado fue gol.
+  porteria?: string;
 }
 
 // Notas del analista por combinación Tipo+Zona. Clave: "Tipo|Zona", ej. "Ofensiva|Inicio"
