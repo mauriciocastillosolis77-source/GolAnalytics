@@ -1152,6 +1152,74 @@ export async function generateMatchReportPptx(
     footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
 
+  // Slide — Plan de Partido del rival (estrategia + adaptaciones + ABP) y
+  // Recomendaciones de trabajo de la semana — mismo orden y contenido que el
+  // PDF de Análisis del Rival: van después del DAFO, como cierre del arco
+  // "qué vimos → qué hacemos".
+  if (rivalAnalysis?.plan_partido && (rivalAnalysis.plan_partido.estrategia || rivalAnalysis.plan_partido.adaptaciones?.length)) {
+    const plan = rivalAnalysis.plan_partido;
+    let slide = pres.addSlide();
+    slide.background = { color: COLOR.white };
+    sectionHeader(slide, 'Próximo partido', `Plan de partido para enfrentar a ${match.rival}`);
+    let y = 1.6;
+
+    const nuevoSlideSiNoCabe = (alturaEstimadaIn: number) => {
+      if (y + alturaEstimadaIn <= 6.85) return;
+      footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+      slide = pres.addSlide();
+      slide.background = { color: COLOR.white };
+      sectionHeader(slide, 'Próximo partido', `Plan de partido para enfrentar a ${match.rival} (continuación)`);
+      y = 1.6;
+    };
+
+    if (plan.estrategia) {
+      const alturaTexto = Math.ceil(plan.estrategia.length / 110) * 0.3 + 0.3;
+      nuevoSlideSiNoCabe(alturaTexto + 0.3);
+      slide.addText(plan.estrategia, { x: 0.6, y, w: 11.8, h: alturaTexto, fontFace: FONT_BODY, fontSize: 12, color: COLOR.ink, isTextBox: true, margin: 0 });
+      y += alturaTexto + 0.3;
+    }
+
+    const bloquePlan = (titulo: string, contenido: string | string[]) => {
+      const esLista = Array.isArray(contenido);
+      const alturaContenido = esLista
+        ? (contenido as string[]).reduce((sum, it) => sum + Math.ceil(it.length / 90) * 0.26 + 0.1, 0)
+        : Math.ceil((contenido as string).length / 110) * 0.26 + 0.2;
+      nuevoSlideSiNoCabe(0.4 + alturaContenido + 0.3);
+      slide.addText(titulo, { x: 0.6, y, w: 11.8, h: 0.32, fontFace: FONT_BODY, fontSize: 11.5, bold: true, color: COLOR.indigo, isTextBox: true, margin: 0 });
+      y += 0.38;
+      if (esLista) {
+        const items = contenido as string[];
+        slide.addText(
+          items.map((t, j) => ({ text: t, options: { bullet: { code: '2022' }, breakLine: j < items.length - 1, paraSpaceAfter: 5 } })) as any,
+          { x: 0.6, y, w: 11.8, h: alturaContenido, fontFace: FONT_BODY, fontSize: 11, color: COLOR.ink, isTextBox: true, margin: 0 }
+        );
+      } else {
+        slide.addText(contenido as string, { x: 0.6, y, w: 11.8, h: alturaContenido, fontFace: FONT_BODY, fontSize: 11, color: COLOR.ink, isTextBox: true, margin: 0 });
+      }
+      y += alturaContenido + 0.3;
+    };
+    if (plan.adaptaciones?.length) bloquePlan(`Adaptaciones tácticas (recomendaciones que se dan a ${match.nombre_equipo})`, plan.adaptaciones);
+    if (plan.abpOfensivo) bloquePlan('ABP ofensivo (cómo aprovechar nuestras acciones a balón parado)', plan.abpOfensivo);
+    if (plan.abpDefensivo) bloquePlan('ABP defensivo (cómo defendernos en las ABP en contra)', plan.abpDefensivo);
+
+    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+  }
+
+  if (rivalAnalysis?.temas_entrenamiento && rivalAnalysis.temas_entrenamiento.length > 0) {
+    const temas = rivalAnalysis.temas_entrenamiento.filter(Boolean);
+    const slide = pres.addSlide();
+    slide.background = { color: COLOR.white };
+    sectionHeader(slide, 'Próximo partido', 'Recomendaciones de trabajo de la semana');
+    slide.addText(
+      temas.map((t, j) => ({ text: t, options: { bullet: { code: '2022' }, breakLine: j < temas.length - 1, paraSpaceAfter: 10 } })) as any,
+      { x: 0.6, y: 1.7, w: 11.8, h: 3, fontFace: FONT_BODY, fontSize: 13, color: COLOR.ink, isTextBox: true, margin: 0 }
+    );
+    slide.addText('Esto no es un ejercicio armado — son objetivos derivados de los datos del rival; tú decides el ejercicio.', {
+      x: 0.6, y: 1.7 + temas.length * 0.5 + 0.3, w: 11.8, h: 0.4, fontFace: FONT_BODY, fontSize: 10, italic: true, color: COLOR.gray, isTextBox: true, margin: 0,
+    });
+    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+  }
+
   // Slide — Recomendaciones de entrenamiento
   {
     const slide = pres.addSlide();

@@ -57,6 +57,13 @@ interface RivalJugadorClave {
   motivo: string;
 }
 
+interface RivalPlanPartido {
+  estrategia: string;
+  adaptaciones: string[];
+  abpOfensivo: string;
+  abpDefensivo: string;
+}
+
 interface RivalReportData {
   rivalName: string;
   ofensiva: RivalFaseData;
@@ -64,6 +71,8 @@ interface RivalReportData {
   balonParado?: RivalBalonParadoData; // tipo 4 (solo si hay momentos de balón parado)
   jugadoresClave?: RivalJugadorClave[];
   dafo?: { fortalezas: string[]; debilidades: string[]; oportunidades: string[]; amenazas: string[] };
+  planPartido?: RivalPlanPartido;
+  temas?: string[];
 }
 
 const ZONA_COLOR_RGB: Record<string, [number, number, number]> = {
@@ -486,6 +495,79 @@ function addJugadoresClaveSection(doc: jsPDF, jugadores: RivalJugadorClave[], st
   return y + 2;
 }
 
+// Plan de Partido: estrategia + adaptaciones tácticas + ABP. Título y
+// subtítulos dinámicos según el rival y el equipo propio — para que no diga
+// "Pumas Chalco" o "ML7" cuando en realidad es otro rival o equipo.
+function addPlanPartidoSection(doc: jsPDF, equipo: string, rival: string, plan: RivalPlanPartido, startY: number, pageWidth: number): number {
+  const pageHeight = doc.internal.pageSize.getHeight();
+  let y = startY;
+  if (y > pageHeight - 60) { doc.addPage(); y = 20; }
+  y = addSection(doc, `PLAN DE PARTIDO PARA ENFRENTAR A ${rival.toUpperCase()}`, y, pageWidth) + 2;
+
+  doc.setFontSize(8.5);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(...COLORS.text);
+  let lines = doc.splitTextToSize(plan.estrategia, pageWidth - 30);
+  doc.text(lines, 15, y);
+  y += lines.length * 4.2 + 5;
+
+  const bloque = (titulo: string, contenido: string[] | string) => {
+    doc.setFontSize(8.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(...COLORS.primary);
+    const tl = doc.splitTextToSize(titulo, pageWidth - 30);
+    doc.text(tl, 15, y);
+    y += tl.length * 4.2 + 1;
+    doc.setFontSize(8.5);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(...COLORS.text);
+    if (Array.isArray(contenido)) {
+      contenido.forEach(it => {
+        const l = doc.splitTextToSize(`• ${it}`, pageWidth - 36);
+        if (y + l.length * 4.2 > pageHeight - 25) { doc.addPage(); y = 20; }
+        doc.text(l, 21, y);
+        y += l.length * 4.2 + 0.8;
+      });
+    } else {
+      const l = doc.splitTextToSize(contenido, pageWidth - 30);
+      if (y + l.length * 4.2 > pageHeight - 25) { doc.addPage(); y = 20; }
+      doc.text(l, 15, y);
+      y += l.length * 4.2;
+    }
+    y += 4;
+  };
+  bloque(`Adaptaciones tácticas (recomendaciones que se dan a ${equipo})`, plan.adaptaciones);
+  bloque('ABP ofensivo (cómo aprovechar nuestras acciones a balón parado)', plan.abpOfensivo);
+  bloque('ABP defensivo (cómo defendernos en las ABP en contra)', plan.abpDefensivo);
+  return y + 2;
+}
+
+// Recomendaciones de trabajo de la semana: objetivos cortos derivados del
+// rival — a propósito NO son ejercicios armados (el sistema no sabe espacio,
+// cuántos entrenan, ni el microciclo), por eso la leyenda de abajo se queda.
+function addTemasEntrenamientoSection(doc: jsPDF, temas: string[], startY: number, pageWidth: number): number {
+  if (!temas || temas.length === 0) return startY;
+  const pageHeight = doc.internal.pageSize.getHeight();
+  let y = startY;
+  if (y > pageHeight - 45) { doc.addPage(); y = 20; }
+  y = addSection(doc, 'RECOMENDACIONES DE TRABAJO DE LA SEMANA', y, pageWidth) + 2;
+  doc.setFontSize(8.5);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(...COLORS.text);
+  temas.forEach(t => {
+    const l = doc.splitTextToSize(`• ${t}`, pageWidth - 30);
+    doc.text(l, 15, y);
+    y += l.length * 4.2 + 1;
+  });
+  y += 2;
+  doc.setFont('helvetica', 'italic');
+  doc.setFontSize(7.5);
+  doc.setTextColor(...COLORS.secondary);
+  const nota = doc.splitTextToSize('Esto no es un ejercicio armado — son objetivos derivados de los datos del rival; tú decides el ejercicio.', pageWidth - 30);
+  doc.text(nota, 15, y);
+  return y + nota.length * 4 + 4;
+}
+
 // DAFO del rival: cuadrante 2x2 (mismo texto completo, mismos colores, pero
 // en 4 cajas lado a lado como en el PowerPoint, no 4 listas apiladas a lo
 // largo de toda la hoja — así cabe en mucho menos espacio.
@@ -493,7 +575,7 @@ function addDafoSection(doc: jsPDF, dafo: NonNullable<RivalReportData['dafo']>, 
   const pageHeight = doc.internal.pageSize.getHeight();
   let y = startY;
   if (y > pageHeight - 60) { doc.addPage(); y = 20; }
-  y = addSection(doc, 'DAFO DEL RIVAL', y, pageWidth);
+  y = addSection(doc, 'DAFO DEL RIVAL', y, pageWidth) + 3;
 
   const gutter = 5;
   const colW = (pageWidth - 30 - gutter) / 2;
@@ -792,6 +874,8 @@ export async function exportRivalAnalysisToPDF(
   if (data.balonParado) y = addBalonParadoSection(doc, data.balonParado, y, pageWidth);
   if (data.jugadoresClave && data.jugadoresClave.length > 0) y = addJugadoresClaveSection(doc, data.jugadoresClave, y, pageWidth);
   if (data.dafo) y = addDafoSection(doc, data.dafo, y, pageWidth);
+  if (data.planPartido) y = addPlanPartidoSection(doc, options.teamName, data.rivalName, data.planPartido, y, pageWidth);
+  if (data.temas && data.temas.length > 0) y = addTemasEntrenamientoSection(doc, data.temas, y, pageWidth);
 
   addFooter(doc);
 
