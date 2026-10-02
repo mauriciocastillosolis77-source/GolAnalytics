@@ -244,6 +244,13 @@ export interface JugadorClave {
   motivo: string;
 }
 
+export interface PlanPartido {
+  estrategia: string;
+  adaptaciones: string[];
+  abpOfensivo: string;
+  abpDefensivo: string;
+}
+
 export interface RivalAnalysis {
   id: string;
   team_id: string;
@@ -256,6 +263,8 @@ export interface RivalAnalysis {
   partidos?: string[] | null;
   dafo?: DafoRival | null;
   jugadores_clave?: JugadorClave[] | null;
+  plan_partido?: PlanPartido | null;
+  temas_entrenamiento?: string[] | null;
   created_by?: string | null;
   created_at: string;
 }
