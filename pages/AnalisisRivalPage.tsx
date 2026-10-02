@@ -141,6 +141,15 @@ const AnalisisRivalPage: React.FC = () => {
       });
       setPlanPartido(plan);
       setTemasEntrenamiento(temas);
+      // Se guarda de una vez, igual que "Generar DAFO" — si no, se genera en
+      // pantalla pero el PDF sigue leyendo lo último GUARDADO, no lo recién
+      // generado, y parece que "no aparece en el PDF" aunque sí se generó.
+      const { data, error: ue } = await supabase.from('rival_analysis')
+        .update({ plan_partido: plan, temas_entrenamiento: temas })
+        .eq('id', selected.id).select().single();
+      if (ue) throw new Error('Se generó el plan pero no se pudo guardar. ¿Ya corriste el SQL de esta entrega?');
+      setSelected(data);
+      setAnalyses(prev => prev.map(a => a.id === data.id ? data : a));
     } catch (err: any) {
       console.error(err);
       setPlanError(err?.message || 'No se pudo generar el plan de partido.');
