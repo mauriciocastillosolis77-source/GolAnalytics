@@ -3,7 +3,7 @@ import { supabase } from '../services/supabaseClient';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
-import type { RivalAnalysis, RivalAnalysisInsert, RivalMomento, RivalNotas, RivalTipo, RivalZona, Match, Tag, Player, DafoRival } from '../types';
+import type { RivalAnalysis, RivalAnalysisInsert, RivalMomento, RivalNotas, RivalTipo, RivalZona, Match, Tag, Player, DafoRival, JugadorClave } from '../types';
 import {
   CORNER_FAVOR, CORNER_CONTRA, TL_FAVOR, TL_CONTRA, PENAL_FAVOR, PENAL_CONTRA,
   ENVIO_LABEL, RESULTADO_COBRO_LABEL, MARCAJE_LABEL, detalleAbpDe, contarCobros, contarPenales,
@@ -82,6 +82,56 @@ const AnalisisRivalPage: React.FC = () => {
 
   const [view, setView] = useState<'list' | 'workspace'>('list');
   const [selected, setSelected] = useState<RivalAnalysis | null>(null);
+
+  // Jugadores clave del rival — número, posición y por qué es clave (editable
+  // a mano, con botón de Mejorar). Se guarda aparte, igual que `partidos`/`dafo`.
+  const [jugadoresClave, setJugadoresClave] = useState<JugadorClave[]>([]);
+  const [guardandoJugadoresClave, setGuardandoJugadoresClave] = useState(false);
+  const [mejorandoJugadorIdx, setMejorandoJugadorIdx] = useState<number | null>(null);
+  useEffect(() => { setJugadoresClave(selected?.jugadores_clave || []); }, [selected]);
+
+  const agregarJugadorClave = () => setJugadoresClave(prev => [...prev, { numero: '', posicion: '', motivo: '' }]);
+  const quitarJugadorClave = (i: number) => setJugadoresClave(prev => prev.filter((_, idx) => idx !== i));
+  const actualizarJugadorClave = (i: number, patch: Partial<JugadorClave>) =>
+    setJugadoresClave(prev => prev.map((j, idx) => idx === i ? { ...j, ...patch } : j));
+
+  const handleMejorarJugadorClave = async (i: number) => {
+    const j = jugadoresClave[i];
+    if (!j || !j.motivo.trim()) return;
+    setMejorandoJugadorIdx(i);
+    try {
+      const pilar = `Jugador clave del rival${j.numero ? ` — #${j.numero}` : ''}${j.posicion ? ` (${j.posicion})` : ''}`;
+      const mejorado = await mejorarRedaccionChecklist(pilar, j.motivo.trim());
+      actualizarJugadorClave(i, { motivo: mejorado });
+    } catch (err: any) {
+      console.error('Error mejorando jugador clave:', err);
+      setSaveMsg({ text: err?.message || 'No se pudo mejorar el texto.', ok: false });
+    } finally {
+      setMejorandoJugadorIdx(null);
+    }
+  };
+
+  const guardarJugadoresClave = async () => {
+    if (!selected) return;
+    setGuardandoJugadoresClave(true);
+    try {
+      const limpios = jugadoresClave
+        .map(j => ({ numero: j.numero.trim(), posicion: j.posicion.trim(), motivo: j.motivo.trim() }))
+        .filter(j => j.numero || j.posicion || j.motivo);
+      const { data, error: ue } = await supabase.from('rival_analysis')
+        .update({ jugadores_clave: limpios })
+        .eq('id', selected.id).select().single();
+      if (ue) throw ue;
+      setSelected(data);
+      setAnalyses(prev => prev.map(a => a.id === data.id ? data : a));
+      setSaveMsg({ text: 'Jugadores clave guardados', ok: true });
+    } catch (err: any) {
+      console.error('Error guardando jugadores clave:', err);
+      setSaveMsg({ text: 'No se pudieron guardar los jugadores clave.', ok: false });
+    } finally {
+      setGuardandoJugadoresClave(false);
+    }
+  };
   const [mode, setMode] = useState<'tag' | 'report'>('tag'); // el auxiliar siempre queda forzado a 'report'
 
   // ── Creación de un análisis nuevo ──
@@ -127,6 +177,7 @@ const AnalisisRivalPage: React.FC = () => {
   const [repTipo, setRepTipo] = useState<RivalTipo>('Ofensiva');
   const [repZona, setRepZona] = useState<RivalZona>('Inicio');
   const [tabDafo, setTabDafo] = useState(false);
+  const [tabJugadoresClave, setTabJugadoresClave] = useState(false);
 
   // ── Partidos propios contra este rival (para Balón parado y DAFO) ──
   const [matchesEquipo, setMatchesEquipo] = useState<Match[]>([]);
@@ -831,6 +882,7 @@ const AnalisisRivalPage: React.FC = () => {
               notaDefiende: bp.defiende.nota || undefined,
             };
           })(),
+          jugadoresClave: (selected.jugadores_clave || []).filter(j => j.numero || j.posicion || j.motivo),
           dafo: selected.dafo ? {
             fortalezas: selected.dafo.fortalezas, debilidades: selected.dafo.debilidades,
             oportunidades: selected.dafo.oportunidades, amenazas: selected.dafo.amenazas,
@@ -1152,13 +1204,46 @@ const AnalisisRivalPage: React.FC = () => {
 
           <div className="flex gap-2">
             {REPORT_TIPOS.map(t => (
-              <button key={t} onClick={() => { setRepTipo(t); setTabDafo(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${!tabDafo && repTipo === t ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>{TIPO_LABEL[t]}</button>
+              <button key={t} onClick={() => { setRepTipo(t); setTabDafo(false); setTabJugadoresClave(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${!tabDafo && !tabJugadoresClave && repTipo === t ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>{TIPO_LABEL[t]}</button>
             ))}
-            <button onClick={() => setTabDafo(true)} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabDafo ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>DAFO</button>
+            <button onClick={() => { setTabDafo(true); setTabJugadoresClave(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabDafo ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>DAFO</button>
+            <button onClick={() => { setTabJugadoresClave(true); setTabDafo(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabJugadoresClave ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>Jugadores clave</button>
           </div>
-          {!tabDafo && REPORT_QUESTION[repTipo] && <p className="text-sm text-gray-400 italic">{REPORT_QUESTION[repTipo]}</p>}
+          {!tabDafo && !tabJugadoresClave && REPORT_QUESTION[repTipo] && <p className="text-sm text-gray-400 italic">{REPORT_QUESTION[repTipo]}</p>}
 
-          {tabDafo ? (
+          {tabJugadoresClave ? (
+            <div className="space-y-3">
+              <p className="text-xs text-gray-500">Número, posición y por qué hay que cuidarlo — sale en el PDF y en el PowerPoint del partido.</p>
+              {jugadoresClave.length === 0 && <p className="text-sm text-gray-500">Todavía no agregas ningún jugador clave.</p>}
+              {jugadoresClave.map((j, i) => (
+                <div key={i} className="bg-gray-800 rounded-xl p-4 border border-gray-700 space-y-2">
+                  <div className="flex gap-2">
+                    <input type="text" placeholder="Número" value={j.numero} onChange={e => actualizarJugadorClave(i, { numero: e.target.value })}
+                      className="w-20 bg-gray-700 text-white text-sm rounded-lg px-3 py-2 border border-gray-600 focus:border-cyan-500 focus:outline-none" />
+                    <input type="text" placeholder="Posición" value={j.posicion} onChange={e => actualizarJugadorClave(i, { posicion: e.target.value })}
+                      className="flex-1 bg-gray-700 text-white text-sm rounded-lg px-3 py-2 border border-gray-600 focus:border-cyan-500 focus:outline-none" />
+                  </div>
+                  <label className="block text-xs text-gray-500">¿Por qué es clave?</label>
+                  <textarea rows={2} value={j.motivo} onChange={e => actualizarJugadorClave(i, { motivo: e.target.value })}
+                    className="w-full bg-gray-700 text-white text-sm rounded-lg px-3 py-2 border border-gray-600 focus:border-cyan-500 focus:outline-none resize-y" />
+                  <div className="flex justify-between items-center">
+                    <button onClick={() => handleMejorarJugadorClave(i)} disabled={!j.motivo.trim() || mejorandoJugadorIdx === i}
+                      className="text-cyan-400 hover:text-cyan-300 disabled:text-gray-500 disabled:cursor-not-allowed text-xs">
+                      {mejorandoJugadorIdx === i ? 'Mejorando…' : '✨ Mejorar redacción'}
+                    </button>
+                    <button onClick={() => quitarJugadorClave(i)} className="text-red-400 hover:text-red-300 text-xs">Quitar</button>
+                  </div>
+                </div>
+              ))}
+              <div className="flex items-center gap-3">
+                <button onClick={agregarJugadorClave} className="px-3 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm">+ Agregar jugador</button>
+                <button onClick={guardarJugadoresClave} disabled={guardandoJugadoresClave || !selected}
+                  className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-medium disabled:opacity-50">
+                  {guardandoJugadoresClave ? 'Guardando…' : 'Guardar jugadores clave'}
+                </button>
+              </div>
+            </div>
+          ) : tabDafo ? (
             <div className="space-y-4">
               {isAdmin && (
                 <div className="flex items-center gap-3 flex-wrap">
