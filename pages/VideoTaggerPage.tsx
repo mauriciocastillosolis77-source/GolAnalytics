@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { supabase } from '../services/supabaseClient';
-import type { Player, Match, Tag, AISuggestion, EstatusPartido } from '../types';
+import type { Player, Match, Tag, AISuggestion } from '../types';
 import { METRICS } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
 import { EditIcon, TrashIcon, SparklesIcon, CloudUploadIcon, CloudCheckIcon } from '../components/ui/Icons';
@@ -14,9 +14,8 @@ import { ACCIONES_CON_ZONA, TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codig
 import { esJugadorFicticio } from '../utils/efectividad';
 import { ACCIONES_GOL, TIPOS_GOL, TIPO_GOL_LABEL, GOLPEOS, GOLPEO_LABEL, detalleGolDe, detalleGolDesdeVoz, resumenGol, etiquetaPorteria, type DetalleGol } from '../utils/goles';
 import PorteriaEstadio from '../components/charts/PorteriaEstadio';
+import { accionDesdeVoz } from '../utils/accionDesdeVoz';
 import { ACCIONES_ABP, ACCIONES_ABP_SET, ACCIONES_PENAL, ACCIONES_EN_CONTRA, ENVIOS, ENVIO_LABEL, RESULTADOS_COBRO, RESULTADO_COBRO_LABEL, MARCAJES, MARCAJE_LABEL, RESULTADOS_PENAL, RESULTADO_PENAL_LABEL, detalleAbpDe, resumenAbp, accionAbpDesdeVoz, detalleAbpDesdeVoz, type DetalleAbp } from '../utils/balonParado';
-import { ACCION_CAMBIO, detalleCambioDe, resumenCambio } from '../utils/cambios';
-import { fetchEstatusPartido, guardarEstatusPartido } from '../services/asistenciaService';
 
 declare var XLSX: any;
 
@@ -94,16 +93,6 @@ const VideoTaggerPage: React.FC = () => {
     const [videoCompacto, setVideoCompacto] = useState(false);
     const [gestionAbierta, setGestionAbierta] = useState(false);
     const [cargaAbierta, setCargaAbierta] = useState(false);
-
-    // Alineación — se llena una vez por partido (no por jugada etiquetada).
-    // Los minutos ya no se capturan aquí: se calculan solos con la etiqueta
-    // de Cambio (ver más abajo) + la duración real de los videos.
-    type FilaEstatus = { estatus: EstatusPartido | '' };
-    const [estatusAbierta, setEstatusAbierta] = useState(false);
-    const [estatusPorJugador, setEstatusPorJugador] = useState<Record<string, FilaEstatus>>({});
-    const [cargandoEstatus, setCargandoEstatus] = useState(false);
-    const [guardandoEstatus, setGuardandoEstatus] = useState(false);
-    const [estatusMsg, setEstatusMsg] = useState<string | null>(null);
     const [iaAbierta, setIaAbierta] = useState(false);
 
     // Mejora 1 — zona de la jugada. Después de etiquetar una recuperación o una pérdida,
@@ -231,51 +220,6 @@ const VideoTaggerPage: React.FC = () => {
         };
         fetchTagsPlayersVideos();
     }, [selectedMatchId]);
-
-    // Alineación del partido seleccionado.
-    useEffect(() => {
-        let cancelado = false;
-        setEstatusMsg(null);
-        if (!selectedMatchId) { setEstatusPorJugador({}); return; }
-        setCargandoEstatus(true);
-        (async () => {
-            try {
-                const filas = await fetchEstatusPartido(selectedMatchId);
-                if (cancelado) return;
-                const inicial: Record<string, FilaEstatus> = {};
-                filas.forEach((f) => { inicial[f.player_id] = { estatus: f.estatus }; });
-                setEstatusPorJugador(inicial);
-            } catch (err) {
-                console.error('No se pudo cargar la alineación:', err);
-                if (!cancelado) setEstatusPorJugador({});
-            } finally {
-                if (!cancelado) setCargandoEstatus(false);
-            }
-        })();
-        return () => { cancelado = true; };
-    }, [selectedMatchId]);
-
-    const updateEstatusJugador = (playerId: string, patch: Partial<FilaEstatus>) => {
-        setEstatusPorJugador((prev) => ({ ...prev, [playerId]: { ...(prev[playerId] || { estatus: '' }), ...patch } }));
-    };
-
-    const handleGuardarEstatus = async () => {
-        if (!selectedMatchId) return;
-        setGuardandoEstatus(true);
-        setEstatusMsg(null);
-        try {
-            const filas = Object.entries(estatusPorJugador)
-                .filter(([, v]) => v.estatus)
-                .map(([player_id, v]) => ({ player_id, estatus: v.estatus as EstatusPartido }));
-            const n = await guardarEstatusPartido(selectedMatchId, filas);
-            setEstatusMsg(`Alineación guardada (${n} jugador${n === 1 ? '' : 'es'}).`);
-        } catch (err: any) {
-            console.error('Error guardando alineación:', err);
-            setEstatusMsg('No se pudo guardar. ' + (err?.message || ''));
-        } finally {
-            setGuardandoEstatus(false);
-        }
-    };
 
     // Update selectedVideo object when selectedVideoId or videos change
     useEffect(() => {
@@ -540,7 +484,7 @@ const VideoTaggerPage: React.FC = () => {
 
         // Mejora 1: si es recuperación o pérdida de un jugador real, pedir la zona en el panel de detalle.
         const jugadorDelTag = players.find(p => p.id === selectedPlayerId);
-        if ((ACCIONES_CON_ZONA.has(accion) || ACCIONES_GOL.has(accion) || ACCIONES_ABP_SET.has(accion) || accion === ACCION_CAMBIO) && !esJugadorFicticio(jugadorDelTag?.nombre)) {
+        if ((ACCIONES_CON_ZONA.has(accion) || ACCIONES_GOL.has(accion) || ACCIONES_ABP_SET.has(accion)) && !esJugadorFicticio(jugadorDelTag?.nombre)) {
             setDetallePendiente({ id: newTag.id, match_id: newTag.match_id, player_id: newTag.player_id, accion: newTag.accion, timestamp: newTag.timestamp });
         } else {
             setDetallePendiente(null);
@@ -656,29 +600,6 @@ const VideoTaggerPage: React.FC = () => {
         }
         setTags(prev => prev.map(t => (t.id === tag.id ? { ...t, detalle: nuevo } : t)));
         return `🚩 ${resumenAbp(tag.accion, detalleAbpDe({ accion: tag.accion, detalle: nuevo })) || 'Detalle guardado'}`;
-    };
-
-    // Cambios: guarda quién sale (el que entra ya es el player_id del tag).
-    const aplicarDetalleCambio = async (saleId: string): Promise<string> => {
-        const pend = detallePendiente;
-        if (!pend) return '⚠ No hay cambio esperando detalle';
-        const tag = tags.find(t => t.id === pend.id)
-            || tags.find(t => t.match_id === pend.match_id && t.player_id === pend.player_id && t.accion === pend.accion && t.timestamp === pend.timestamp);
-        setDetallePendiente(null);
-        if (!tag) return '⚠ No encontré la jugada';
-        const nuevo = { ...(tag.detalle || {}), sale: saleId };
-        const esTemporal = String(tag.id).startsWith('temp-');
-        if (!esTemporal) {
-            const { error } = await supabase.from('tags').update({ detalle: nuevo }).eq('id', tag.id);
-            if (error) {
-                console.error('Error al guardar el cambio', error);
-                return '⚠ No se pudo guardar el cambio';
-            }
-        }
-        setTags(prev => prev.map(t => (t.id === tag.id ? { ...t, detalle: nuevo } : t)));
-        const entraNombre = players.find(p => p.id === tag.player_id)?.nombre;
-        const saleNombre = players.find(p => p.id === saleId)?.nombre;
-        return `🔁 ${resumenCambio(entraNombre, saleNombre) || 'Cambio guardado'}`;
     };
 
     // Handler for saving all tags (jugadas) to DB
@@ -1383,6 +1304,8 @@ const VideoTaggerPage: React.FC = () => {
         // Mejora 6: detalle del gol ("contraataque dentro del área abajo izquierda", "cabeza", "listo")
         // Mejoras 4 y 5: decir una acción de balón parado la selecciona ("córner a favor",
         // "tiro libre en contra", "penal a favor"). Va antes del detalle para no confundirla con él.
+        // Autocorrector de acciones (utils/accionDesdeVoz.ts): se calcula una vez y se usa más abajo.
+        const accionPorVoz = accionDesdeVoz(text);
         const accionAbpDicha = accionAbpDesdeVoz(text);
         if (accionAbpDicha) {
             setSelectedAction(accionAbpDicha);
@@ -1398,7 +1321,10 @@ const VideoTaggerPage: React.FC = () => {
                 return;
             }
             const esOtroComando = /\bjugador\b|\betiquetar\b|\betiqueta\b|\bguardar\b|\btecla\b|\bletra\b/.test(text)
-                || METRICS.some(m => text.includes(m.toLowerCase()));
+                || METRICS.some(m => text.includes(m.toLowerCase()))
+                // También si el autocorrector reconoce una acción ("pase corto ofensivo fayado", "tiro a portería").
+                // "Atajadas" se deja fuera: "atajado" aquí es el resultado del penal.
+                || (accionPorVoz.accion !== null && accionPorVoz.accion !== 'Atajadas');
             if (!esOtroComando) {
                 const dicho = detalleAbpDesdeVoz(detallePendiente.accion, text);
                 if (Object.keys(dicho).length > 0) {
@@ -1554,6 +1480,14 @@ const VideoTaggerPage: React.FC = () => {
             show(`🎯 Acción: ${matchedMetric}`);
             return;
         }
+        // Autocorrector: si la frase no coincidió tal cual ("pase al cuarto ofensivo logrado",
+        // "hero defensivo fallado", "recuperación de valor"), se arma la acción por sus palabras clave.
+        // Si no queda claro corto/largo, ofensivo/defensivo o logrado/fallado, no elige nada.
+        if (accionPorVoz.accion) {
+            setSelectedAction(accionPorVoz.accion);
+            show(`🎯 Acción: ${accionPorVoz.accion} (corregido)`);
+            return;
+        }
 
         // ── Tag & Save ────────────────────────────────────────────────────
         if (/etiquetar|etiqueta\b|agregar jugada/.test(text)) {
@@ -1569,7 +1503,7 @@ const VideoTaggerPage: React.FC = () => {
             return;
         }
 
-        show(`❓ No entendí: "${transcript}"`);
+        show(accionPorVoz.duda ? `❓ ${accionPorVoz.duda} — "${transcript}"` : `❓ No entendí: "${transcript}"`);
     };
 
     const startVoice = async () => {
@@ -1929,9 +1863,6 @@ const VideoTaggerPage: React.FC = () => {
                                 <optgroup label="Balón parado y penales (solo se cuentan)">
                                     {ACCIONES_ABP.map(m => <option key={m} value={m}>{m}</option>)}
                                 </optgroup>
-                                <optgroup label="Cambios">
-                                    <option value={ACCION_CAMBIO}>{ACCION_CAMBIO}</option>
-                                </optgroup>
                             </select>
                             <button 
                                 onClick={addTag} 
@@ -2039,21 +1970,6 @@ const VideoTaggerPage: React.FC = () => {
                                                     title="Marcar o cambiar el detalle de esta jugada"
                                                 >
                                                     {resumen ? `Detalle: ${resumen}` : '+ detalle'}
-                                                </button>
-                                            );
-                                        })()}
-                                        {tag.accion === ACCION_CAMBIO && (() => {
-                                            const d = detalleCambioDe(tag);
-                                            const entraNombre = players.find(p => p.id === tag.player_id)?.nombre;
-                                            const saleNombre = d.sale ? players.find(p => p.id === d.sale)?.nombre : undefined;
-                                            const resumen = resumenCambio(entraNombre, saleNombre);
-                                            return (
-                                                <button
-                                                    onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
-                                                    className={`block text-xs mt-1 underline text-left ${d.sale ? 'text-cyan-300' : 'text-gray-400'}`}
-                                                    title="Marcar o cambiar quién sale"
-                                                >
-                                                    {resumen ? resumen : '+ ¿quién sale?'}
                                                 </button>
                                             );
                                         })()}
@@ -2204,65 +2120,6 @@ const VideoTaggerPage: React.FC = () => {
                     </div>
                 </div>
 
-                {/* 3. Alineación y Minutos */}
-                <div className="bg-gray-800 rounded-lg p-4">
-                    <button
-                        onClick={() => setEstatusAbierta(!estatusAbierta)}
-                        className="w-full flex items-center justify-between text-left gap-2"
-                        title={estatusAbierta ? 'Encoger' : 'Abrir'}
-                    >
-                        <span className="min-w-0">
-                            <span className="block text-lg font-semibold text-white">3. Alineación y Minutos</span>
-                            {!estatusAbierta && (
-                                <span className="block text-sm text-gray-300 truncate">
-                                    {Object.values(estatusPorJugador).filter(v => v.estatus).length} de {filteredPlayers.filter(p => !esJugadorFicticio(p.nombre)).length} jugadores marcados
-                                </span>
-                            )}
-                        </span>
-                        <span className="text-cyan-400 flex-shrink-0">{estatusAbierta ? '▼' : '▶'}</span>
-                    </button>
-                    {estatusAbierta && (
-                        <div className="mt-2">
-                            <p className="text-xs text-gray-500 mb-2">Se llena una vez por partido — no por jugada. Deja "Sin marcar" al que no revises.</p>
-                            {cargandoEstatus ? (
-                                <p className="text-xs text-gray-400">Cargando…</p>
-                            ) : (
-                                <div className="space-y-1 max-h-96 overflow-y-auto pr-1">
-                                    {filteredPlayers.filter(p => !esJugadorFicticio(p.nombre)).map(p => {
-                                        const row = estatusPorJugador[p.id] || { estatus: '' as EstatusPartido | '' };
-                                        return (
-                                            <div key={p.id} className="flex items-center gap-2 bg-gray-700/50 p-2 rounded">
-                                                <span className="flex-1 text-sm text-white truncate">{p.nombre}</span>
-                                                <select
-                                                    value={row.estatus}
-                                                    onChange={e => updateEstatusJugador(p.id, { estatus: e.target.value as EstatusPartido | '' })}
-                                                    className="bg-gray-700 text-white text-xs p-1.5 rounded border border-gray-600"
-                                                >
-                                                    <option value="">Sin marcar</option>
-                                                    <option value="titular">Titular</option>
-                                                    <option value="suplente">Suplente</option>
-                                                    <option value="no_convocado">No convocado</option>
-                                                    <option value="lesionado">Lesionado</option>
-                                                    <option value="falta">Falta</option>
-                                                </select>
-                                            </div>
-                                        );
-                                    })}
-                                </div>
-                            )}
-                            <p className="text-xs text-gray-500 mt-2">Los minutos se calculan solos con la etiqueta "Cambio" al etiquetar el video — aquí solo marcas quién arrancó y quién no asistió.</p>
-                            <button
-                                onClick={handleGuardarEstatus}
-                                disabled={guardandoEstatus || filteredPlayers.length === 0}
-                                className="mt-3 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-sm px-3 py-1.5 rounded text-white"
-                            >
-                                {guardandoEstatus ? 'Guardando…' : 'Guardar alineación'}
-                            </button>
-                            {estatusMsg && <p className="text-xs mt-1 text-green-400">{estatusMsg}</p>}
-                        </div>
-                    )}
-                </div>
-
                 {/* "3. Etiquetar Jugada" se quitó en la entrega 2: repetía lo que ya está en el panel central. */}
                 {/* Detalle de la jugada (mejora 1: zona de recuperaciones y pérdidas) */}
                 <div className={`bg-gray-800 rounded-lg p-4 ${detallePendiente ? 'border-2 border-cyan-500' : ''}`}>
@@ -2364,28 +2221,6 @@ const VideoTaggerPage: React.FC = () => {
                                         Listo
                                     </button>
                                 </div>
-                            </div>
-                        );
-                    })() : detallePendiente && detallePendiente.accion === ACCION_CAMBIO ? (() => {
-                        const entra = players.find(p => p.id === detallePendiente.player_id);
-                        const tagActual = tags.find(t => t.id === detallePendiente.id)
-                            || tags.find(t => t.match_id === detallePendiente.match_id && t.player_id === detallePendiente.player_id && t.accion === detallePendiente.accion && t.timestamp === detallePendiente.timestamp);
-                        const d = tagActual ? detalleCambioDe(tagActual) : {};
-                        const candidatos = filteredPlayers.filter(p => p.id !== detallePendiente.player_id && !esJugadorFicticio(p.nombre));
-                        return (
-                            <div className="space-y-2">
-                                <p className="text-sm text-gray-200">
-                                    Cambio · Entra {entra ? `#${entra.numero} ${entra.nombre.trim().split(/\s+/)[0]}` : 'Jugador'} · <span className="text-gray-400">¿quién sale?</span>
-                                </p>
-                                <select
-                                    value={d.sale || ''}
-                                    onChange={e => { aplicarDetalleCambio(e.target.value).then(msg => { setVoiceStatus(msg); setTimeout(() => setVoiceStatus(''), 2500); }); }}
-                                    className="w-full bg-gray-700 p-2 rounded text-sm"
-                                >
-                                    <option value="">Selecciona quién sale…</option>
-                                    {candidatos.map(p => <option key={p.id} value={p.id}>#{p.numero} {p.nombre}</option>)}
-                                </select>
-                                <p className="text-xs text-gray-500">Se guarda al elegir — no hace falta botón de "Listo".</p>
                             </div>
                         );
                     })() : detallePendiente ? (() => {
