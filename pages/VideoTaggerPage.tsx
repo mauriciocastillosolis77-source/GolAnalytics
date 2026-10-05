@@ -1801,7 +1801,7 @@ const VideoTaggerPage: React.FC = () => {
                                             // Abre el video en una ventana nueva para usarla en segunda pantalla
                                             const html = `<!DOCTYPE html>
 <html style="margin:0;padding:0;background:#000;width:100%;height:100%;">
-<head><title>Video - GolAnalytics</title>
+<head><meta charset="utf-8"><title>Video - GolAnalytics</title>
 <style>
   body { margin:0; padding:0; background:#000; display:flex; flex-direction:column; align-items:center; justify-content:center; width:100vw; height:100vh; font-family:sans-serif; }
   /* Este wrapper (video + controles) es lo que se pone en pantalla completa —
@@ -1824,7 +1824,7 @@ const VideoTaggerPage: React.FC = () => {
 <body>
 <div id="wrapper">
 <div id="viewport">
-<video id="vid" src="${activeVideoUrl}" controls autoplay></video>
+<video id="vid" src="${activeVideoUrl}" controls autoplay controlsList="nofullscreen"></video>
 </div>
 <div class="controls">
   <button onclick="document.getElementById('vid').currentTime -= 10">⏪ -10s</button>
