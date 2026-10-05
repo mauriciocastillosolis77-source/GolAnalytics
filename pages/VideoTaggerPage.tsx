@@ -1782,6 +1782,18 @@ const VideoTaggerPage: React.FC = () => {
                                     >
                                         +5s ⏩
                                     </button>
+                                    <select
+                                        defaultValue="1"
+                                        onChange={(e) => { if (videoRef.current) videoRef.current.playbackRate = parseFloat(e.target.value); }}
+                                        className="bg-black/70 hover:bg-black/90 text-white px-1.5 py-1 rounded text-xs font-bold border border-white/20 shadow"
+                                        title="Velocidad de reproducción"
+                                    >
+                                        <option value="0.5">0.5x</option>
+                                        <option value="0.7">0.7x</option>
+                                        <option value="1">1x</option>
+                                        <option value="1.5">1.5x</option>
+                                        <option value="2">2x</option>
+                                    </select>
                                     <button
                                         onClick={(e) => {
                                             e.preventDefault();
@@ -1792,21 +1804,84 @@ const VideoTaggerPage: React.FC = () => {
 <head><title>Video - GolAnalytics</title>
 <style>
   body { margin:0; padding:0; background:#000; display:flex; flex-direction:column; align-items:center; justify-content:center; width:100vw; height:100vh; font-family:sans-serif; }
-  video { max-width:100%; max-height:calc(100vh - 60px); }
-  .controls { display:flex; gap:12px; margin-top:10px; }
-  button { background:#1e293b; color:#fff; border:1px solid #475569; border-radius:8px; padding:8px 20px; font-size:15px; font-weight:bold; cursor:pointer; }
+  /* Este wrapper (video + controles) es lo que se pone en pantalla completa —
+     así los botones no desaparecen al maximizar, como sí pasaba poniendo
+     pantalla completa solo al <video>. */
+  #wrapper { display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; height:100%; background:#000; }
+  #wrapper:fullscreen { justify-content:space-between; padding:16px 0; box-sizing:border-box; }
+  /* "viewport" recorta lo que se ve; el <video> de adentro es el que se agranda
+     y se arrastra — así el zoom no rompe el layout de la página. */
+  #viewport { max-width:100%; max-height:calc(100vh - 110px); overflow:hidden; position:relative; cursor:grab; }
+  #viewport.dragging { cursor:grabbing; }
+  video { max-width:100%; max-height:calc(100vh - 110px); display:block; transform-origin: 0 0; }
+  .controls { display:flex; gap:10px; margin-top:10px; flex-wrap:wrap; justify-content:center; align-items:center; }
+  button { background:#1e293b; color:#fff; border:1px solid #475569; border-radius:8px; padding:8px 18px; font-size:15px; font-weight:bold; cursor:pointer; }
   button:hover { background:#0e7490; }
+  select { background:#1e293b; color:#fff; border:1px solid #475569; border-radius:8px; padding:8px 10px; font-size:15px; font-weight:bold; cursor:pointer; }
+  #zoomLabel { color:#9ca3af; font-size:13px; min-width:42px; text-align:center; }
 </style>
 </head>
 <body>
+<div id="wrapper">
+<div id="viewport">
 <video id="vid" src="${activeVideoUrl}" controls autoplay></video>
+</div>
 <div class="controls">
   <button onclick="document.getElementById('vid').currentTime -= 10">⏪ -10s</button>
   <button onclick="document.getElementById('vid').currentTime += 10">+10s ⏩</button>
+  <select id="speed" onchange="document.getElementById('vid').playbackRate = parseFloat(this.value)">
+    <option value="0.5">0.5x</option>
+    <option value="0.7">0.7x</option>
+    <option value="1" selected>1x</option>
+    <option value="1.5">1.5x</option>
+    <option value="2">2x</option>
+  </select>
+  <button onclick="(document.getElementById('wrapper').requestFullscreen ? document.getElementById('wrapper').requestFullscreen() : null)">⛶ Pantalla completa</button>
+  <button onclick="zoomBy(-0.5)" title="Alejar">🔍−</button>
+  <span id="zoomLabel">100%</span>
+  <button onclick="zoomBy(0.5)" title="Acercar a la jugada">🔍+</button>
+  <button onclick="resetZoom()" title="Quitar zoom">Zoom 1:1</button>
+</div>
 </div>
 <script>
   var vid = document.getElementById('vid');
+  var viewport = document.getElementById('viewport');
+  var zoomLabel = document.getElementById('zoomLabel');
   var lastSent = 0;
+
+  // ── Zoom digital + arrastrar (zoom óptico no es posible: el video ya
+  // quedó grabado con una cantidad fija de píxeles, esto solo los agranda). ──
+  var zoom = 1, panX = 0, panY = 0;
+  function applyZoom() {
+    vid.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + zoom + ')';
+    zoomLabel.textContent = Math.round(zoom * 100) + '%';
+  }
+  function zoomBy(delta) {
+    zoom = Math.min(4, Math.max(1, zoom + delta));
+    if (zoom === 1) { panX = 0; panY = 0; }
+    applyZoom();
+  }
+  function resetZoom() { zoom = 1; panX = 0; panY = 0; applyZoom(); }
+
+  var dragging = false, startX = 0, startY = 0, startPanX = 0, startPanY = 0;
+  viewport.addEventListener('mousedown', function(e) {
+    if (zoom <= 1) return;
+    dragging = true;
+    viewport.classList.add('dragging');
+    startX = e.clientX; startY = e.clientY;
+    startPanX = panX; startPanY = panY;
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', function(e) {
+    if (!dragging) return;
+    panX = startPanX + (e.clientX - startX);
+    panY = startPanY + (e.clientY - startY);
+    applyZoom();
+  });
+  window.addEventListener('mouseup', function() {
+    dragging = false;
+    viewport.classList.remove('dragging');
+  });
   vid.addEventListener('timeupdate', function() {
     var now = Date.now();
     if (now - lastSent >= 500) {
