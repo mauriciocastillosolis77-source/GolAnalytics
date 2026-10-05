@@ -1247,7 +1247,7 @@ const AnalisisTacticoPage: React.FC = () => {
     // El punto final solo se conserva si sigue siendo posterior al nuevo frame.
     const t = v.currentTime;
     setEndTimestamp(prev => (prev !== null && prev > t ? prev : null));
-  }, []);
+  }, [computeCropRect]);
 
   // Avanza/retrocede el video con precisión, en vez de "adivinar" con la barra nativa.
   const stepVideo = (delta: number) => {
