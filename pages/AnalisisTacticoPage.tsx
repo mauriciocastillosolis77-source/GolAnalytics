@@ -356,7 +356,9 @@ function loadImageFromUrl(url: string): Promise<HTMLImageElement | null> {
 // logo en cada clip). Se invalida automáticamente si se sube un logo nuevo para ese equipo.
 const teamLogoImgCache = new Map<string, HTMLImageElement | null>();
 
-async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: number, secondsBefore: number, annotations: TacticalAnnotation[], teamLogo: HTMLImageElement | null, freezeSeconds: number, endTimestamp: number | null): Promise<Blob> {
+type CropRect = { sx: number; sy: number; sWidth: number; sHeight: number };
+
+async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: number, secondsBefore: number, annotations: TacticalAnnotation[], teamLogo: HTMLImageElement | null, freezeSeconds: number, endTimestamp: number | null, crop: CropRect): Promise<Blob> {
   const golLogo = await loadGolLogo();
   return new Promise((resolve, reject) => {
     const startAt = Math.max(0, frameTimestamp - secondsBefore);
@@ -373,9 +375,6 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
     const mimeType = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1') ? 'video/mp4;codecs=avc1'
       : MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
 
-    // Mismo recorte (zoom) que se fijó al capturar el primer cuadro — si no se
-    // tocó el zoom, esto es el cuadro completo, 0 cambios respecto a antes.
-    const crop = cropRectRef.current || { sx: 0, sy: 0, sWidth: videoElement.videoWidth, sHeight: videoElement.videoHeight };
     const canvas = document.createElement('canvas');
     canvas.width = crop.sWidth;
     canvas.height = crop.sHeight;
@@ -478,7 +477,7 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
 // el mismo cuadro. Al terminar la última pausa, sigue hasta endTimestamp (si se marcó).
 // La función extractClip original no se modificó: los análisis de una sola pausa sin
 // explicación se siguen generando exactamente igual que antes.
-async function extractSequenceClip(videoElement: HTMLVideoElement, pausas: PausaSecuencia[], secondsBefore: number, teamLogo: HTMLImageElement | null, endTimestamp: number | null): Promise<Blob> {
+async function extractSequenceClip(videoElement: HTMLVideoElement, pausas: PausaSecuencia[], secondsBefore: number, teamLogo: HTMLImageElement | null, endTimestamp: number | null, crop: CropRect): Promise<Blob> {
   const golLogo = await loadGolLogo();
   const orden = [...pausas].sort((a, b) => a.timestamp - b.timestamp);
   return new Promise((resolve, reject) => {
@@ -491,9 +490,6 @@ async function extractSequenceClip(videoElement: HTMLVideoElement, pausas: Pausa
     const mimeType = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1') ? 'video/mp4;codecs=avc1'
       : MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
 
-    // Mismo recorte (zoom) fijado al capturar la primera pausa de la secuencia
-    // — se queda igual para todas las pausas siguientes (opción simple ya acordada).
-    const crop = cropRectRef.current || { sx: 0, sy: 0, sWidth: videoElement.videoWidth, sHeight: videoElement.videoHeight };
     const canvas = document.createElement('canvas');
     canvas.width = crop.sWidth;
     canvas.height = crop.sHeight;
@@ -684,7 +680,6 @@ const AnalisisTacticoPage: React.FC = () => {
   const [panX, setPanX] = useState(0);
   const [panY, setPanY] = useState(0);
   const [zoomLocked, setZoomLocked] = useState(false);
-  type CropRect = { sx: number; sy: number; sWidth: number; sHeight: number };
   const cropRectRef = useRef<CropRect | null>(null);
 
   const computeCropRect = useCallback((video: HTMLVideoElement): CropRect => {
@@ -1347,22 +1342,31 @@ const AnalisisTacticoPage: React.FC = () => {
 
       setUploadingClip(true); setUploadProgress('Extrayendo clip de video...');
       let clipBlob: Blob | null = null;
+      let clipErrorMsg: string | null = null;
       try {
+        // Recorte (zoom) fijado al capturar el primer cuadro de este clip. Si
+        // nunca se tocó el zoom, cropRectRef sigue null y esto es el cuadro
+        // completo — mismo comportamiento de siempre.
+        const crop: CropRect = cropRectRef.current || { sx: 0, sy: 0, sWidth: video.videoWidth, sHeight: video.videoHeight };
         if (usarSecuencia) {
           setUploadProgress(`Generando video con ${pausasFinales.length} pausa${pausasFinales.length !== 1 ? 's' : ''}... no cambies de pestaña`);
-          clipBlob = await extractSequenceClip(video, pausasFinales, secondsBefore, teamLogoImg, endTimestamp);
+          clipBlob = await extractSequenceClip(video, pausasFinales, secondsBefore, teamLogoImg, endTimestamp, crop);
         } else {
           const unica = pausasFinales[0];
-          clipBlob = await extractClip(video, unica.timestamp, secondsBefore, unica.annotations, teamLogoImg, unica.freezeSeconds, endTimestamp);
+          clipBlob = await extractClip(video, unica.timestamp, secondsBefore, unica.annotations, teamLogoImg, unica.freezeSeconds, endTimestamp, crop);
         }
-      } catch (err) { console.warn('No se pudo extraer el clip:', err); }
+      } catch (err: any) { console.warn('No se pudo extraer el clip:', err); clipErrorMsg = `No se pudo generar el video del clip (${err?.message || err}).`; }
       if (clipBlob) {
         setUploadProgress('Subiendo clip a Storage...');
         const ext = clipBlob.type.includes('mp4') ? 'mp4' : 'webm';
         const fileName = `${user!.id}/${selectedMatchId}/${Date.now()}.${ext}`;
         const { data: ud, error: ue } = await supabase.storage.from(CLIP_BUCKET).upload(fileName, clipBlob, { contentType: clipBlob.type, upsert: false });
-        if (ue) console.warn('Error subiendo clip:', ue); else clipStoragePath = ud.path;
+        if (ue) { console.warn('Error subiendo clip:', ue); clipErrorMsg = `No se pudo subir el video del clip (${ue.message}).`; } else clipStoragePath = ud.path;
       }
+      // El análisis se guarda de todas formas aunque el clip falle (así no pierdes
+      // tus dibujos ni tu descripción) — pero ahora SÍ te avisa, en vez de quedarse
+      // callado y enterarte después de que falta el video.
+      if (clipErrorMsg) setError(`${clipErrorMsg} El análisis se guardará sin video — puedes volver a intentar el clip después.`);
       setUploadingClip(false); setUploadProgress('Guardando análisis...');
       const tipoFinal = (showCustomTipo ? tipoAnalisisCustom.trim() : tipoAnalisis.trim()) || null;
       // En secuencia: se guardan todos los dibujos (cada uno marcado con su número de pausa) y la
