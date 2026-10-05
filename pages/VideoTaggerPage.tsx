@@ -1806,15 +1806,16 @@ const VideoTaggerPage: React.FC = () => {
   body { margin:0; padding:0; background:#000; display:flex; flex-direction:column; align-items:center; justify-content:center; width:100vw; height:100vh; font-family:sans-serif; }
   /* Este wrapper (video + controles) es lo que se pone en pantalla completa —
      así los botones no desaparecen al maximizar, como sí pasaba poniendo
-     pantalla completa solo al <video>. */
-  #wrapper { display:flex; flex-direction:column; align-items:center; justify-content:center; width:100%; height:100%; background:#000; }
-  #wrapper:fullscreen { justify-content:space-between; padding:16px 0; box-sizing:border-box; }
+     pantalla completa solo al <video>. Los controles van ENCIMA del video
+     (no debajo, empujándolo) para que el video use toda la pantalla, igual
+     que con el ícono nativo de pantalla completa. */
+  #wrapper { position:relative; display:flex; align-items:center; justify-content:center; width:100%; height:100%; background:#000; }
   /* "viewport" recorta lo que se ve; el <video> de adentro es el que se agranda
      y se arrastra — así el zoom no rompe el layout de la página. */
-  #viewport { max-width:100%; max-height:calc(100vh - 110px); overflow:hidden; position:relative; cursor:grab; }
+  #viewport { max-width:100%; max-height:100%; overflow:hidden; position:relative; cursor:grab; }
   #viewport.dragging { cursor:grabbing; }
-  video { max-width:100%; max-height:calc(100vh - 110px); display:block; transform-origin: 0 0; }
-  .controls { display:flex; gap:10px; margin-top:10px; flex-wrap:wrap; justify-content:center; align-items:center; }
+  video { max-width:100%; max-height:100%; display:block; transform-origin: 0 0; }
+  .controls { position:absolute; left:0; right:0; bottom:0; display:flex; gap:10px; padding:10px 14px; flex-wrap:wrap; justify-content:center; align-items:center; background:rgba(0,0,0,0.65); box-sizing:border-box; }
   button { background:#1e293b; color:#fff; border:1px solid #475569; border-radius:8px; padding:8px 18px; font-size:15px; font-weight:bold; cursor:pointer; }
   button:hover { background:#0e7490; }
   select { background:#1e293b; color:#fff; border:1px solid #475569; border-radius:8px; padding:8px 10px; font-size:15px; font-weight:bold; cursor:pointer; }
