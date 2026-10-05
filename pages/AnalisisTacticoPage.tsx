@@ -685,8 +685,13 @@ const AnalisisTacticoPage: React.FC = () => {
   const computeCropRect = useCallback((video: HTMLVideoElement): CropRect => {
     const vw = video.videoWidth || 1, vh = video.videoHeight || 1;
     if (zoom <= 1) return { sx: 0, sy: 0, sWidth: vw, sHeight: vh };
+    // OJO: getBoundingClientRect() da el tamaño YA con el zoom (scale) aplicado
+    // por CSS — hay que quitarle ese zoom para recuperar el tamaño real en
+    // pantalla antes de la transformación, si no, el arrastre (pan) se vuelve
+    // cada vez menos efectivo entre más zoom uses, y el recorte se queda
+    // pegado cerca de la esquina superior izquierda sin importar cuánto arrastres.
     const rect = video.getBoundingClientRect();
-    const displayW = rect.width || vw, displayH = rect.height || vh;
+    const displayW = (rect.width || vw) / zoom, displayH = (rect.height || vh) / zoom;
     const scaleX = vw / displayW, scaleY = vh / displayH;
     const sWidth = vw / zoom, sHeight = vh / zoom;
     let sx = (-panX / zoom) * scaleX;
@@ -1237,7 +1242,11 @@ const AnalisisTacticoPage: React.FC = () => {
 
   const captureFrame = useCallback(() => {
     const v = videoRef.current; if (!v) return;
-    if (!cropRectRef.current) { cropRectRef.current = computeCropRect(v); setZoomLocked(true); }
+    if (!cropRectRef.current) {
+      cropRectRef.current = computeCropRect(v);
+      setZoomLocked(true);
+      console.log('[DEBUG ZOOM] cropRectRef fijado al capturar:', cropRectRef.current, '— zoom/pan en ese momento:', zoom, panX, panY);
+    }
     const crop = cropRectRef.current;
     const off = makeOffscreen(crop.sWidth, crop.sHeight);
     off.getContext('2d')!.drawImage(v, crop.sx, crop.sy, crop.sWidth, crop.sHeight, 0, 0, crop.sWidth, crop.sHeight);
@@ -1348,6 +1357,7 @@ const AnalisisTacticoPage: React.FC = () => {
         // nunca se tocó el zoom, cropRectRef sigue null y esto es el cuadro
         // completo — mismo comportamiento de siempre.
         const crop: CropRect = cropRectRef.current || { sx: 0, sy: 0, sWidth: video.videoWidth, sHeight: video.videoHeight };
+        console.log('[DEBUG ZOOM] cropRectRef.current al guardar:', cropRectRef.current, '— crop que se va a usar:', crop, '— video nativo:', video.videoWidth, 'x', video.videoHeight);
         if (usarSecuencia) {
           setUploadProgress(`Generando video con ${pausasFinales.length} pausa${pausasFinales.length !== 1 ? 's' : ''}... no cambies de pestaña`);
           clipBlob = await extractSequenceClip(video, pausasFinales, secondsBefore, teamLogoImg, endTimestamp, crop);
