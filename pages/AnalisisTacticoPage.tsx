@@ -373,9 +373,12 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
     const mimeType = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1') ? 'video/mp4;codecs=avc1'
       : MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
 
+    // Mismo recorte (zoom) que se fijó al capturar el primer cuadro — si no se
+    // tocó el zoom, esto es el cuadro completo, 0 cambios respecto a antes.
+    const crop = cropRectRef.current || { sx: 0, sy: 0, sWidth: videoElement.videoWidth, sHeight: videoElement.videoHeight };
     const canvas = document.createElement('canvas');
-    canvas.width = videoElement.videoWidth;
-    canvas.height = videoElement.videoHeight;
+    canvas.width = crop.sWidth;
+    canvas.height = crop.sHeight;
     const ctx = canvas.getContext('2d');
     if (!ctx) { reject(new Error('No se pudo crear el canvas de grabación')); return; }
 
@@ -399,7 +402,7 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
 
     const drawMovingFrame = () => {
       if (phase !== 'moving1') return;
-      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(videoElement, crop.sx, crop.sy, crop.sWidth, crop.sHeight, 0, 0, canvas.width, canvas.height);
       drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo, teamLogo);
       if (videoElement.currentTime >= frameTimestamp || videoElement.ended) freeze();
       else requestAnimationFrame(drawMovingFrame);
@@ -416,7 +419,7 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
       // confiable con un canvas estático, y eso cortaba el video antes de tiempo.
       const drawFrozenFrame = () => {
         if (phase !== 'frozen') return; // evita que un cuadro tardío se dibuje ya en otra fase
-        ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(videoElement, crop.sx, crop.sy, crop.sWidth, crop.sHeight, 0, 0, canvas.width, canvas.height);
         annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height));
         drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo, teamLogo);
         if (performance.now() - freezeStartedAt < freezeSeconds * 1000) {
@@ -438,7 +441,7 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
       videoElement.play();
       const drawResumedFrame = () => {
         if (phase !== 'moving2') return;
-        ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(videoElement, crop.sx, crop.sy, crop.sWidth, crop.sHeight, 0, 0, canvas.width, canvas.height);
         drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo, teamLogo);
         if (videoElement.currentTime >= (endTimestamp as number) || videoElement.ended) {
           videoElement.pause();
@@ -488,9 +491,12 @@ async function extractSequenceClip(videoElement: HTMLVideoElement, pausas: Pausa
     const mimeType = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1') ? 'video/mp4;codecs=avc1'
       : MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
 
+    // Mismo recorte (zoom) fijado al capturar la primera pausa de la secuencia
+    // — se queda igual para todas las pausas siguientes (opción simple ya acordada).
+    const crop = cropRectRef.current || { sx: 0, sy: 0, sWidth: videoElement.videoWidth, sHeight: videoElement.videoHeight };
     const canvas = document.createElement('canvas');
-    canvas.width = videoElement.videoWidth;
-    canvas.height = videoElement.videoHeight;
+    canvas.width = crop.sWidth;
+    canvas.height = crop.sHeight;
     const ctx = canvas.getContext('2d');
     if (!ctx) { reject(new Error('No se pudo crear el canvas de grabación')); return; }
 
@@ -522,7 +528,7 @@ async function extractSequenceClip(videoElement: HTMLVideoElement, pausas: Pausa
 
     const drawMovingFrame = () => {
       if (phase !== 'moving') return;
-      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(videoElement, crop.sx, crop.sy, crop.sWidth, crop.sHeight, 0, 0, canvas.width, canvas.height);
       drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo, teamLogo);
       if (idx < total && (videoElement.currentTime >= orden[idx].timestamp || videoElement.ended)) { freeze(); return; }
       if (idx >= total && (!hasEnd || videoElement.currentTime >= (endTimestamp as number) || videoElement.ended)) { terminar(); return; }
@@ -540,7 +546,7 @@ async function extractSequenceClip(videoElement: HTMLVideoElement, pausas: Pausa
       // extractClip: no todos los navegadores graban bien un canvas que no cambia).
       const drawFrozenFrame = () => {
         if (phase !== 'frozen') return;
-        ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(videoElement, crop.sx, crop.sy, crop.sWidth, crop.sHeight, 0, 0, canvas.width, canvas.height);
         pausa.annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height));
         drawCaption(ctx, canvas.width, canvas.height, pausa.texto, pausa.texto.trim() ? etiqueta : undefined);
         drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo, teamLogo);
@@ -667,6 +673,66 @@ const AnalisisTacticoPage: React.FC = () => {
   const [selectedVideo, setSelectedVideo] = useState<VideoMeta | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  // ── Zoom digital para clips/frames de Análisis Táctico ──────────────────
+  // Mismo principio que el zoom del video de "pantalla aparte" (acerca los
+  // píxeles que ya existen, no inventa detalle nuevo). Se elige ANTES de
+  // capturar el primer cuadro de un clip; desde ahí queda fijo (congelado en
+  // `cropRectRef`, en coordenadas reales del video) para que los 8 segundos
+  // previos, el cuadro congelado y el resto del clip usen el mismo encuadre.
+  const viewportWrapRef = useRef<HTMLDivElement>(null);
+  const [zoom, setZoom] = useState(1);
+  const [panX, setPanX] = useState(0);
+  const [panY, setPanY] = useState(0);
+  const [zoomLocked, setZoomLocked] = useState(false);
+  type CropRect = { sx: number; sy: number; sWidth: number; sHeight: number };
+  const cropRectRef = useRef<CropRect | null>(null);
+
+  const computeCropRect = useCallback((video: HTMLVideoElement): CropRect => {
+    const vw = video.videoWidth || 1, vh = video.videoHeight || 1;
+    if (zoom <= 1) return { sx: 0, sy: 0, sWidth: vw, sHeight: vh };
+    const rect = video.getBoundingClientRect();
+    const displayW = rect.width || vw, displayH = rect.height || vh;
+    const scaleX = vw / displayW, scaleY = vh / displayH;
+    const sWidth = vw / zoom, sHeight = vh / zoom;
+    let sx = (-panX / zoom) * scaleX;
+    let sy = (-panY / zoom) * scaleY;
+    sx = Math.max(0, Math.min(vw - sWidth, sx));
+    sy = Math.max(0, Math.min(vh - sHeight, sy));
+    return { sx, sy, sWidth, sHeight };
+  }, [zoom, panX, panY]);
+
+  // El recorte efectivo para cualquier captura: si ya está fijo (clip en
+  // curso), usa ese; si no, lo calcula del zoom/pan actuales.
+  const getActiveCropRect = useCallback((video: HTMLVideoElement): CropRect => {
+    return cropRectRef.current || computeCropRect(video);
+  }, [computeCropRect]);
+
+  const zoomBy = (delta: number) => {
+    if (zoomLocked) return;
+    setZoom(z => {
+      const nz = Math.min(4, Math.max(1, z + delta));
+      if (nz === 1) { setPanX(0); setPanY(0); }
+      return nz;
+    });
+  };
+  const resetZoomUI = () => { if (zoomLocked) return; setZoom(1); setPanX(0); setPanY(0); };
+  // Se llama en cada punto donde empieza un clip/jugada nueva — desbloquea
+  // el zoom para que puedas elegir uno distinto en la siguiente captura.
+  const resetZoomClip = () => { setZoomLocked(false); cropRectRef.current = null; setZoom(1); setPanX(0); setPanY(0); };
+
+  const draggingZoomRef = useRef(false);
+  const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  const handleZoomMouseDown = (e: React.MouseEvent) => {
+    if (zoom <= 1 || zoomLocked) return;
+    draggingZoomRef.current = true;
+    dragStartRef.current = { x: e.clientX, y: e.clientY, panX, panY };
+  };
+  const handleZoomMouseMove = (e: React.MouseEvent) => {
+    if (!draggingZoomRef.current) return;
+    setPanX(dragStartRef.current.panX + (e.clientX - dragStartRef.current.x));
+    setPanY(dragStartRef.current.panY + (e.clientY - dragStartRef.current.y));
+  };
+  const handleZoomMouseUp = () => { draggingZoomRef.current = false; };
   const videoFileRef = useRef<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoFileName, setVideoFileName] = useState('');
@@ -1171,12 +1237,15 @@ const AnalisisTacticoPage: React.FC = () => {
     setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]);
     setPausas([]); setCaptionActual(''); setEndTimestamp(null);
     setTrackingJobId(null); setTrackingError(null);
+    resetZoomClip();
   };
 
   const captureFrame = useCallback(() => {
     const v = videoRef.current; if (!v) return;
-    const off = makeOffscreen(v.videoWidth, v.videoHeight);
-    off.getContext('2d')!.drawImage(v, 0, 0);
+    if (!cropRectRef.current) { cropRectRef.current = computeCropRect(v); setZoomLocked(true); }
+    const crop = cropRectRef.current;
+    const off = makeOffscreen(crop.sWidth, crop.sHeight);
+    off.getContext('2d')!.drawImage(v, crop.sx, crop.sy, crop.sWidth, crop.sHeight, 0, 0, crop.sWidth, crop.sHeight);
     setFrameDataUrl(off.toDataURL('image/jpeg', 0.92));
     setFrameTimestamp(v.currentTime);
     setAnnotations([]); setPreviewAnn(null); setCaptionActual('');
@@ -1312,6 +1381,7 @@ const AnalisisTacticoPage: React.FC = () => {
       setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]);
       setPausas([]); setCaptionActual(''); setModo(null);
       setEndTimestamp(null); setFreezeSeconds(DEFAULT_FREEZE_SECONDS);
+      resetZoomClip();
       setDescription(''); setSelectedMatchId(''); setSelectedVideoId(''); setSelectedVideo(null); setMatchVideos([]);
       setTipoAnalisis(''); setTipoAnalisisCustom(''); setShowCustomTipo(false);
       if (teamLogoPreviewUrl) URL.revokeObjectURL(teamLogoPreviewUrl);
@@ -1382,7 +1452,13 @@ const AnalisisTacticoPage: React.FC = () => {
 
             {/* Canvas principal */}
             <div className="relative bg-black rounded-xl overflow-hidden border border-gray-700">
-              <video ref={trackingVideoRefCallback} src={videoUrl ?? undefined} className="hidden" playsInline />
+              {/* OJO: nunca usar display:none (className="hidden") aquí — Chrome/Edge
+                  dejan de decodificar los cuadros de un <video> completamente oculto así,
+                  y el canvas que lo dibuja se queda en negro para siempre. Se mantiene
+                  "invisible" pero sí renderizado (tamaño 1x1, opacidad 0) para que el
+                  navegador lo siga reproduciendo de verdad. */}
+              <video ref={trackingVideoRefCallback} src={videoUrl ?? undefined} playsInline
+                style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }} />
               <canvas ref={trackingCanvasRef} className="w-full h-auto block" style={{ cursor: isVideoPaused ? 'crosshair' : 'default' }} onClick={handleTrackingCanvasClick} />
               {/* Controles superpuestos */}
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-4 py-3 flex items-center gap-3">
@@ -1559,7 +1635,7 @@ const AnalisisTacticoPage: React.FC = () => {
           {modo && (
             <>
               <span className="text-xs text-cyan-300 bg-cyan-900/40 border border-cyan-800 px-2 py-0.5 rounded">{MODOS_ANALISIS.find(m => m.id === modo)?.nombre}</span>
-              <button type="button" onClick={() => { setModo(null); setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]); setPausas([]); setCaptionActual(''); setEndTimestamp(null); setError(null); }}
+              <button type="button" onClick={() => { setModo(null); setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]); setPausas([]); setCaptionActual(''); setEndTimestamp(null); setError(null); resetZoomClip(); }}
                 className="text-xs text-gray-400 hover:text-cyan-400 underline">Cambiar tipo</button>
             </>
           )}
@@ -1589,7 +1665,7 @@ const AnalisisTacticoPage: React.FC = () => {
           <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
             <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">1</span>Selecciona el partido
           </h3>
-          <select value={selectedMatchId} onChange={e => { setSelectedMatchId(e.target.value); setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]); setPausas([]); setCaptionActual(''); setEndTimestamp(null); }}
+          <select value={selectedMatchId} onChange={e => { setSelectedMatchId(e.target.value); setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]); setPausas([]); setCaptionActual(''); setEndTimestamp(null); resetZoomClip(); }}
             className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none">
             <option value="">Selecciona un partido</option>
             {matches.map(m => <option key={m.id} value={m.id}>{m.nombre_equipo} vs {m.rival} — J{m.jornada} · {m.torneo} · {m.categoria}</option>)}
@@ -1655,7 +1731,34 @@ const AnalisisTacticoPage: React.FC = () => {
                 <span className="text-gray-400">Minuto del partido: <span className="text-cyan-400 font-medium">{formatTime(getAbsoluteTs(selectedVideo, frameTimestamp))}</span></span>
               </div>
             )}
-            <video ref={videoRef} src={videoUrl} className="w-full rounded-lg" controls onLoadedMetadata={e => setVideoDuration(e.currentTarget.duration || 0)} />
+            <div
+              ref={viewportWrapRef}
+              className="relative w-full rounded-lg overflow-hidden"
+              style={{ cursor: zoom > 1 ? 'grab' : 'default' }}
+              onMouseDown={handleZoomMouseDown}
+              onMouseMove={handleZoomMouseMove}
+              onMouseUp={handleZoomMouseUp}
+              onMouseLeave={handleZoomMouseUp}
+            >
+              <video
+                ref={videoRef} src={videoUrl} className="w-full rounded-lg" controls
+                onLoadedMetadata={e => setVideoDuration(e.currentTarget.duration || 0)}
+                style={{ transform: `translate(${panX}px,${panY}px) scale(${zoom})`, transformOrigin: '0 0' }}
+              />
+            </div>
+            <div className="flex items-center justify-center gap-1.5 bg-gray-700/50 rounded-lg px-3 py-2">
+              <span className="text-xs text-gray-500 mr-1">
+                Zoom {zoomLocked ? '(fijo para este clip)' : '(elige antes de capturar)'}:
+              </span>
+              <button type="button" onClick={() => zoomBy(-0.5)} disabled={zoomLocked}
+                className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed text-gray-200 rounded text-xs font-mono transition-colors">🔍−</button>
+              <span className="text-xs text-gray-400 w-10 text-center">{Math.round(zoom * 100)}%</span>
+              <button type="button" onClick={() => zoomBy(0.5)} disabled={zoomLocked}
+                className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed text-gray-200 rounded text-xs font-mono transition-colors">🔍+</button>
+              <button type="button" onClick={resetZoomUI} disabled={zoomLocked}
+                className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed text-gray-200 rounded text-xs font-mono transition-colors">Zoom 1:1</button>
+              {zoom > 1 && !zoomLocked && <span className="text-xs text-gray-500 ml-1">Arrastra el video para moverte</span>}
+            </div>
             <div className="flex items-center justify-center gap-1.5 bg-gray-700/50 rounded-lg px-3 py-2">
               <span className="text-xs text-gray-500 mr-1">Navegar:</span>
               <button onClick={() => stepVideo(-5)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">-5s</button>
