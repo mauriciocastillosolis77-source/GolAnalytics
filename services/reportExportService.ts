@@ -7,7 +7,7 @@ import { PORTERIA_ESTADIO_BASE64 } from '../constants/porteriaEstadioBase64';
 import type { Match, Tag, Player, RivalAnalysis, RivalTipo, RivalZona } from '../types';
 import { TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona, etiquetaZona } from '../utils/zonas';
 import { esJugadorFicticio } from '../utils/efectividad';
-import { ALTURAS, LADOS, codigoPorteria, detalleGolDe, resumenGol } from '../utils/goles';
+import { ALTURAS, LADOS, codigoPorteria, detalleGolDe, resumenGol, etiquetaPorteria } from '../utils/goles';
 import { esAccionBalonParado, contarCobros, contarPenales, envioMasUsado, ENVIO_LABEL, CORNER_FAVOR, CORNER_CONTRA, TL_FAVOR, TL_CONTRA, PENAL_FAVOR, PENAL_CONTRA } from '../utils/balonParado';
 
 // ── Marca GolAnalytics ──────────────────────────────────────────────────
@@ -243,6 +243,84 @@ function summarizeZone(rival: RivalAnalysis, tipo: RivalTipo, zona: RivalZona): 
   return `${text}.`;
 }
 
+const BP_ENVIOS = ['1er palo', '2º palo', 'Área chica', 'Punto penal', 'Frontal', 'En corto'];
+const BP_MARCAJES = ['En zona', 'Al hombre', 'Mixto'];
+
+// Mismo cálculo que bpReport() en pages/AnalisisRivalPage.tsx — aquí solo con
+// los momentos guardados en rival_analysis.momentos (tipo 'BalonParado'), sin
+// cruzar tus propios partidos etiquetados contra ese rival (eso vive aparte,
+// en la pantalla de Análisis del Rival, no en este generador).
+function resumenBalonParado(rival: RivalAnalysis) {
+  const momentos = rival.momentos || [];
+  const cobra = momentos.filter((m) => m.tipo === 'BalonParado' && m.lado === 'cobra');
+  const defiende = momentos.filter((m) => m.tipo === 'BalonParado' && m.lado === 'defiende');
+
+  const contarLista = (valores: string[], opciones: string[]) => opciones.map((o) => ({ label: o, n: valores.filter((v) => v === o).length }));
+  const mayus = (x: string) => (x ? x.charAt(0).toUpperCase() + x.slice(1) : x);
+
+  // Cada tipo de cobro se lee por separado — mezclar córners y tiros libres
+  // ocultaba patrones reales (ej. "todos los córners al primer palo" se
+  // perdía si además había tiros libres hacia otro lado).
+  const lecturaPorZona = (items: typeof cobra) => {
+    const conEnvio = items.filter((c) => c.attr1);
+    const envios = contarLista(conEnvio.map((c) => c.attr1), BP_ENVIOS);
+    const goles = items.filter((c) => c.attr2 === 'Gol').length;
+    const remates = items.filter((c) => c.attr2 === 'Remate' || c.attr2 === 'Gol').length;
+    const conRes = items.filter((c) => !!c.attr2).length;
+    const partes: string[] = [];
+    if (conEnvio.length > 0) {
+      const top = [...envios].sort((a, b) => b.n - a.n)[0];
+      const frecuencia = top.n === conEnvio.length ? 'siempre' : top.n / conEnvio.length >= 0.6 ? 'casi siempre' : 'más seguido';
+      const destino = top.label === 'En corto' ? 'en corto' : `al ${top.label.toLowerCase()}`;
+      partes.push(`Cobra ${frecuencia} ${destino} (${top.n} de ${conEnvio.length})`);
+    }
+    if (conRes > 0) partes.push(`${remates} de ${conRes} terminaron en remate${goles > 0 ? ` y ${goles} en gol` : ''}`);
+    return mayus(partes.length ? `${partes.join('; ')}.` : 'Sin detalle suficiente.');
+  };
+  const itemsCorner = cobra.filter((c) => c.cobro === 'Córner');
+  const itemsTiroLibre = cobra.filter((c) => c.cobro === 'Tiro libre');
+  const itemsPenal = cobra.filter((c) => c.cobro === 'Penal');
+  // Penal: attr1 guarda el resultado (gol/atajado/fuera/palo), no una zona.
+  // La zona real (a dónde tiró) vive en `porteria` — se pide siempre, acierte o no.
+  const golesPenal = itemsPenal.filter((c) => c.attr1 === 'gol').length;
+  let lecturaPenal = '';
+  if (itemsPenal.length > 0) {
+    let texto = `${golesPenal} de ${itemsPenal.length} penales anotados${itemsPenal.length - golesPenal > 0 ? ` (${itemsPenal.length - golesPenal} fallados o atajados)` : ''}.`;
+    const conPorteria = itemsPenal.filter((c) => c.porteria);
+    if (conPorteria.length > 0) {
+      const labels = conPorteria.map((c) => (etiquetaPorteria(c.porteria as string) || '').toLowerCase());
+      const porLado = contarLista(labels, Array.from(new Set(labels)));
+      const top = [...porLado].sort((a, b) => b.n - a.n)[0];
+      if (top) texto += ` Tira ${top.n === conPorteria.length ? 'siempre' : `${top.n} de ${conPorteria.length} veces`} ${top.label}.`;
+    }
+    lecturaPenal = mayus(texto);
+  }
+
+  const conMarc = defiende.filter((d) => d.attr1);
+  const marcajes = contarLista(conMarc.map((d) => d.attr1), BP_MARCAJES);
+  const golesDef = defiende.filter((d) => d.attr2 === 'Gol').length;
+  const rematesDef = defiende.filter((d) => d.attr2 === 'Remate' || d.attr2 === 'Gol').length;
+  const conResDef = defiende.filter((d) => !!d.attr2).length;
+  const partesD: string[] = [];
+  if (conMarc.length > 0) {
+    const top = [...marcajes].sort((a, b) => b.n - a.n)[0];
+    partesD.push(`Defiende ${top.label.toLowerCase()} en ${top.n} de ${conMarc.length} cobros`);
+  }
+  if (conResDef > 0) partesD.push(`le remataron ${rematesDef} ${rematesDef === 1 ? 'vez' : 'veces'} y le anotaron ${golesDef}`);
+  const lecturaDefiende = mayus(partesD.length ? `${partesD.join('; ')}.` : 'Sin detalle suficiente.');
+
+  return {
+    cobra: {
+      n: cobra.length,
+      corner: { n: itemsCorner.length, lectura: itemsCorner.length > 0 ? lecturaPorZona(itemsCorner) : '' },
+      tiroLibre: { n: itemsTiroLibre.length, lectura: itemsTiroLibre.length > 0 ? lecturaPorZona(itemsTiroLibre) : '' },
+      penal: { n: itemsPenal.length, lectura: lecturaPenal },
+      nota: rival.notas?.['BalonParado|cobra'],
+    },
+    defiende: { n: defiende.length, lectura: lecturaDefiende, nota: rival.notas?.['BalonParado|defiende'] },
+  };
+}
+
 // Dibuja la cancha real con las 3 etiquetas de zona encima (Inicio/Creación/
 // Finalización) — la base compartida por las 4 canchas del reporte (rival
 // ofensiva/defensiva, propia ofensiva/defensiva). Devuelve las coordenadas
@@ -261,7 +339,7 @@ function drawZonedPitch(pres: pptxgen, slide: pptxgen.Slide, x: number, y: numbe
 // Cancha real (imagen que subió el usuario) con las 3 zonas etiquetadas
 // encima — Inicio / Creación / Finalización. Se usa donde SÍ hay un dato real
 // por cada una de las 3 zonas (Análisis del Rival).
-function pitchBand3(pres: pptxgen, slide: pptxgen.Slide, x: number, y: number, w: number, title: string, phases: Array<{ label: string; text: string }>) {
+function pitchBand3(pres: pptxgen, slide: pptxgen.Slide, x: number, y: number, w: number, title: string, phases: Array<{ label: string; text: string; nota?: string }>) {
   slide.addShape(pres.ShapeType.roundRect, { x, y, w, h: 0.4, rectRadius: 0.06, fill: { color: COLOR.indigoDark }, line: { type: 'none' } });
   slide.addText(title.toUpperCase(), { x: x + 0.2, y, w: w - 0.4, h: 0.4, fontFace: FONT_BODY, fontSize: 11.5, bold: true, color: COLOR.white, valign: 'middle', charSpacing: 1, isTextBox: true, margin: 0 });
 
@@ -274,10 +352,14 @@ function pitchBand3(pres: pptxgen, slide: pptxgen.Slide, x: number, y: number, w
   phases.forEach((p, i) => {
     const ry = gy + i * rowH;
     slide.addShape(pres.ShapeType.rect, { x: legendX, y: ry + 0.06, w: 0.14, h: 0.14, fill: { color: bandColors[i] }, line: { type: 'none' } });
-    slide.addText([
+    const runs: any[] = [
       { text: p.label + ':  ', options: { bold: true, color: COLOR.ink } },
       { text: p.text, options: { color: COLOR.ink } },
-    ] as any, { x: legendX + 0.24, y: ry - 0.04, w: legendW - 0.24, h: rowH, fontFace: FONT_BODY, fontSize: 10.5, valign: 'top', isTextBox: true, margin: 0 });
+    ];
+    if (p.nota && p.nota.trim()) {
+      runs.push({ text: `  ·  Nota del analista: ${p.nota.trim()}`, options: { italic: true, color: COLOR.gray, breakLine: false } });
+    }
+    slide.addText(runs, { x: legendX + 0.24, y: ry - 0.04, w: legendW - 0.24, h: rowH, fontFace: FONT_BODY, fontSize: 9.5, valign: 'top', isTextBox: true, margin: 0 });
   });
   return gy + gh;
 }
@@ -940,10 +1022,100 @@ export async function generateMatchReportPptx(
     sectionHeader(slide, 'Próximo partido', `Análisis del rival — ${match.rival}`);
 
     const bottom1 = pitchBand3(pres, slide, 0.6, 1.6, 11.8, 'Fase ofensiva · ¿Cómo ataca el rival cuando tiene el balón?',
-      ZONAS.map((z) => ({ label: ZONA_LABEL[z], text: summarizeZone(rivalAnalysis!, 'Ofensiva', z) })));
+      ZONAS.map((z) => ({ label: ZONA_LABEL[z], text: summarizeZone(rivalAnalysis!, 'Ofensiva', z), nota: rivalAnalysis!.notas?.[`Ofensiva|${z}`] })));
     pitchBand3(pres, slide, 0.6, bottom1 + 0.25, 11.8, 'Fase defensiva · ¿Cómo presiona el rival cuando no tiene el balón?',
-      ZONAS.map((z) => ({ label: ZONA_LABEL[z], text: summarizeZone(rivalAnalysis!, 'Defensiva', z) })));
+      ZONAS.map((z) => ({ label: ZONA_LABEL[z], text: summarizeZone(rivalAnalysis!, 'Defensiva', z), nota: rivalAnalysis!.notas?.[`Defensiva|${z}`] })));
     footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+  }
+
+  // Slide — Análisis del Rival: Balón Parado (solo si hay momentos de balón parado)
+  if (rivalAnalysis) {
+    const bp = resumenBalonParado(rivalAnalysis);
+    if (bp.cobra.n > 0 || bp.defiende.n > 0) {
+      let slide = pres.addSlide();
+      slide.background = { color: COLOR.white };
+      sectionHeader(slide, 'Próximo partido', `Análisis del rival — Balón parado`);
+      let y = 1.7;
+
+      // Si un bloque ya no cabe en lo que queda del slide, cierra este
+      // (con su footer) y abre uno nuevo — así nunca se corta a la mitad,
+      // el mismo problema que ya se corrigió en el PDF.
+      const nuevoSlideSiNoCabe = (alturaEstimadaIn: number) => {
+        if (y + alturaEstimadaIn <= 6.85) return;
+        footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+        slide = pres.addSlide();
+        slide.background = { color: COLOR.white };
+        sectionHeader(slide, 'Próximo partido', `Análisis del rival — Balón parado (continuación)`);
+        y = 1.7;
+      };
+
+      const bloqueBp = (titulo: string, texto: string, nota: string | undefined) => {
+        const alturaTexto = Math.ceil(texto.length / 110) * 0.3 + 0.3;
+        const alturaNota = nota && nota.trim() ? Math.ceil(nota.length / 110) * 0.3 + 0.35 : 0;
+        nuevoSlideSiNoCabe(0.5 + alturaTexto + alturaNota + 0.35);
+
+        slide.addShape(pres.ShapeType.roundRect, { x: 0.6, y, w: 11.8, h: 0.35, rectRadius: 0.06, fill: { color: COLOR.indigoDark }, line: { type: 'none' } });
+        slide.addText(titulo.toUpperCase(), { x: 0.8, y, w: 11.4, h: 0.35, fontFace: FONT_BODY, fontSize: 11, bold: true, color: COLOR.white, valign: 'middle', charSpacing: 1, isTextBox: true, margin: 0 });
+        y += 0.5;
+        slide.addText(texto, { x: 0.8, y, w: 11.4, h: alturaTexto, fontFace: FONT_BODY, fontSize: 12, color: COLOR.ink, isTextBox: true, margin: 0 });
+        y += alturaTexto;
+        if (nota && nota.trim()) {
+          slide.addText(`Nota del analista: ${nota.trim()}`, { x: 0.8, y, w: 11.4, h: alturaNota, fontFace: FONT_BODY, fontSize: 11, italic: true, color: COLOR.gray, isTextBox: true, margin: 0 });
+          y += alturaNota;
+        }
+        y += 0.35;
+      };
+
+      if (bp.cobra.n === 0) {
+        bloqueBp('Cuando cobra', 'Sin cobros registrados todavía.', undefined);
+      } else {
+        if (bp.cobra.corner.n > 0) bloqueBp(`Córners — cuando cobra (${bp.cobra.corner.n})`, bp.cobra.corner.lectura, undefined);
+        if (bp.cobra.tiroLibre.n > 0) bloqueBp(`Tiros libres — cuando cobra (${bp.cobra.tiroLibre.n})`, bp.cobra.tiroLibre.lectura, undefined);
+        if (bp.cobra.penal.n > 0) bloqueBp(`Penales — cuando cobra (${bp.cobra.penal.n})`, bp.cobra.penal.lectura, undefined);
+        if (bp.cobra.nota && bp.cobra.nota.trim()) bloqueBp('Nota del analista — cuando cobra', bp.cobra.nota, undefined);
+      }
+      bloqueBp('Cuando defiende', bp.defiende.n > 0 ? bp.defiende.lectura : 'Sin cobros del rival defendidos todavía.', bp.defiende.nota);
+
+      footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+    }
+  }
+
+  // Slide — Jugadores clave del rival (compacto: tarjetas en fila, 3 por fila,
+  // abre slide nuevo si no caben todos — mismo patrón que Balón Parado arriba).
+  {
+    const jugadores = (rivalAnalysis?.jugadores_clave || []).filter((j) => j.numero || j.posicion || j.motivo);
+    if (jugadores.length > 0) {
+      let slide = pres.addSlide();
+      slide.background = { color: COLOR.white };
+      sectionHeader(slide, 'Próximo partido', 'Jugadores clave del rival');
+      let y = 1.7;
+      const cols = 3, gutter = 0.3;
+      const cardW = (11.8 - gutter * (cols - 1)) / cols;
+
+      const nuevoSlideSiNoCabe = (alturaEstimadaIn: number) => {
+        if (y + alturaEstimadaIn <= 6.85) return;
+        footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+        slide = pres.addSlide();
+        slide.background = { color: COLOR.white };
+        sectionHeader(slide, 'Próximo partido', 'Jugadores clave del rival (continuación)');
+        y = 1.7;
+      };
+
+      for (let i = 0; i < jugadores.length; i += cols) {
+        const fila = jugadores.slice(i, i + cols);
+        const alturaFila = Math.max(...fila.map((j) => 0.55 + Math.ceil((j.motivo || '').length / 36) * 0.22 + 0.2));
+        nuevoSlideSiNoCabe(alturaFila + 0.25);
+        fila.forEach((j, k) => {
+          const x = 0.6 + k * (cardW + gutter);
+          slide.addShape(pres.ShapeType.roundRect, { x, y, w: cardW, h: alturaFila, rectRadius: 0.08, fill: { color: COLOR.indigoLight }, line: { type: 'none' } });
+          const encabezado = `${j.numero ? '#' + j.numero : ''}${j.numero && j.posicion ? '  ·  ' : ''}${j.posicion || ''}`.trim() || 'Jugador clave';
+          slide.addText(encabezado, { x: x + 0.18, y: y + 0.14, w: cardW - 0.36, h: 0.3, fontFace: FONT_HEAD, fontSize: 11, bold: true, color: COLOR.indigo, isTextBox: true, margin: 0 });
+          slide.addText(j.motivo || 'Sin motivo capturado.', { x: x + 0.18, y: y + 0.48, w: cardW - 0.36, h: alturaFila - 0.58, fontFace: FONT_BODY, fontSize: 9.5, color: COLOR.ink, isTextBox: true, margin: 0 });
+        });
+        y += alturaFila + 0.25;
+      }
+      footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+    }
   }
 
   // Slide — DAFO del rival (el que se genera con IA y se guarda en Análisis del Rival).
@@ -977,6 +1149,74 @@ export async function generateMatchReportPptx(
     const fecha = d.generado ? new Date(d.generado).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
     slide.addText(`Generado con IA en Análisis del Rival${fecha ? ` el ${fecha}` : ''} · con ${d.momentos ?? 0} momentos del rival y ${d.partidos ?? 0} partido${d.partidos === 1 ? '' : 's'} contra él.`,
       { x: 0.6, y: 6.45, w: 11.8, h: 0.28, fontFace: FONT_BODY, fontSize: 9, italic: true, color: COLOR.gray, isTextBox: true, margin: 0 });
+    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+  }
+
+  // Slide — Plan de Partido del rival (estrategia + adaptaciones + ABP) y
+  // Recomendaciones de trabajo de la semana — mismo orden y contenido que el
+  // PDF de Análisis del Rival: van después del DAFO, como cierre del arco
+  // "qué vimos → qué hacemos".
+  if (rivalAnalysis?.plan_partido && (rivalAnalysis.plan_partido.estrategia || rivalAnalysis.plan_partido.adaptaciones?.length)) {
+    const plan = rivalAnalysis.plan_partido;
+    let slide = pres.addSlide();
+    slide.background = { color: COLOR.white };
+    sectionHeader(slide, 'Próximo partido', `Plan de partido para enfrentar a ${match.rival}`);
+    let y = 1.6;
+
+    const nuevoSlideSiNoCabe = (alturaEstimadaIn: number) => {
+      if (y + alturaEstimadaIn <= 6.85) return;
+      footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+      slide = pres.addSlide();
+      slide.background = { color: COLOR.white };
+      sectionHeader(slide, 'Próximo partido', `Plan de partido para enfrentar a ${match.rival} (continuación)`);
+      y = 1.6;
+    };
+
+    if (plan.estrategia) {
+      const alturaTexto = Math.ceil(plan.estrategia.length / 110) * 0.3 + 0.3;
+      nuevoSlideSiNoCabe(alturaTexto + 0.3);
+      slide.addText(plan.estrategia, { x: 0.6, y, w: 11.8, h: alturaTexto, fontFace: FONT_BODY, fontSize: 12, color: COLOR.ink, isTextBox: true, margin: 0 });
+      y += alturaTexto + 0.3;
+    }
+
+    const bloquePlan = (titulo: string, contenido: string | string[]) => {
+      const esLista = Array.isArray(contenido);
+      const alturaContenido = esLista
+        ? (contenido as string[]).reduce((sum, it) => sum + Math.ceil(it.length / 90) * 0.26 + 0.1, 0)
+        : Math.ceil((contenido as string).length / 110) * 0.26 + 0.2;
+      nuevoSlideSiNoCabe(0.4 + alturaContenido + 0.3);
+      slide.addText(titulo, { x: 0.6, y, w: 11.8, h: 0.32, fontFace: FONT_BODY, fontSize: 11.5, bold: true, color: COLOR.indigo, isTextBox: true, margin: 0 });
+      y += 0.38;
+      if (esLista) {
+        const items = contenido as string[];
+        slide.addText(
+          items.map((t, j) => ({ text: t, options: { bullet: { code: '2022' }, breakLine: j < items.length - 1, paraSpaceAfter: 5 } })) as any,
+          { x: 0.6, y, w: 11.8, h: alturaContenido, fontFace: FONT_BODY, fontSize: 11, color: COLOR.ink, isTextBox: true, margin: 0 }
+        );
+      } else {
+        slide.addText(contenido as string, { x: 0.6, y, w: 11.8, h: alturaContenido, fontFace: FONT_BODY, fontSize: 11, color: COLOR.ink, isTextBox: true, margin: 0 });
+      }
+      y += alturaContenido + 0.3;
+    };
+    if (plan.adaptaciones?.length) bloquePlan(`Adaptaciones tácticas (recomendaciones que se dan a ${match.nombre_equipo})`, plan.adaptaciones);
+    if (plan.abpOfensivo) bloquePlan('ABP ofensivo (cómo aprovechar nuestras acciones a balón parado)', plan.abpOfensivo);
+    if (plan.abpDefensivo) bloquePlan('ABP defensivo (cómo defendernos en las ABP en contra)', plan.abpDefensivo);
+
+    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+  }
+
+  if (rivalAnalysis?.temas_entrenamiento && rivalAnalysis.temas_entrenamiento.length > 0) {
+    const temas = rivalAnalysis.temas_entrenamiento.filter(Boolean);
+    const slide = pres.addSlide();
+    slide.background = { color: COLOR.white };
+    sectionHeader(slide, 'Próximo partido', 'Recomendaciones de trabajo de la semana');
+    slide.addText(
+      temas.map((t, j) => ({ text: t, options: { bullet: { code: '2022' }, breakLine: j < temas.length - 1, paraSpaceAfter: 10 } })) as any,
+      { x: 0.6, y: 1.7, w: 11.8, h: 3, fontFace: FONT_BODY, fontSize: 13, color: COLOR.ink, isTextBox: true, margin: 0 }
+    );
+    slide.addText('Esto no es un ejercicio armado — son objetivos derivados de los datos del rival; tú decides el ejercicio.', {
+      x: 0.6, y: 1.7 + temas.length * 0.5 + 0.3, w: 11.8, h: 0.4, fontFace: FONT_BODY, fontSize: 10, italic: true, color: COLOR.gray, isTextBox: true, margin: 0,
+    });
     footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
 

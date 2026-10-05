@@ -3,16 +3,21 @@ import { supabase } from '../services/supabaseClient';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
-import type { RivalAnalysis, RivalAnalysisInsert, RivalMomento, RivalNotas, RivalTipo, RivalZona, Match, Tag, Player, DafoRival } from '../types';
+import type { RivalAnalysis, RivalAnalysisInsert, RivalMomento, RivalNotas, RivalTipo, RivalZona, Match, Tag, Player, DafoRival, JugadorClave, PlanPartido } from '../types';
 import {
   CORNER_FAVOR, CORNER_CONTRA, TL_FAVOR, TL_CONTRA, PENAL_FAVOR, PENAL_CONTRA,
   ENVIO_LABEL, RESULTADO_COBRO_LABEL, MARCAJE_LABEL, detalleAbpDe, contarCobros, contarPenales,
+  RESULTADOS_PENAL, RESULTADO_PENAL_LABEL,
 } from '../utils/balonParado';
 import { detalleGolDe, resumenGol } from '../utils/goles';
 import { esJugadorFicticio } from '../utils/efectividad';
 import { generarDafoRival } from '../services/dafoRivalService';
 import { fetchTeams, type Team } from '../services/teamsService';
 import { exportRivalAnalysisToPDF } from '../services/pdfExportService';
+import { mejorarRedaccionChecklist } from '../services/reportExportService';
+import { generarPlanPartidoRival } from '../services/planPartidoService';
+import { etiquetaPorteria } from '../utils/goles';
+import PorteriaEstadio from '../components/charts/PorteriaEstadio';
 
 // ─── Configuración de atributos por Tipo (contextual, igual que el mockup aprobado) ──
 const ATTR_CONFIG: Record<RivalTipo, { lbl1: string; opts1: [string, string][]; lbl2: string; opts2: [string, string][] }> = {
@@ -27,8 +32,8 @@ const TIPO_LABEL: Record<RivalTipo, string> = { Ofensiva: 'Ofensiva', Defensiva:
 
 // ─── Balón parado (tipo 4, mejora 4): el rival cobra o defiende ──────────────
 type BpLado = 'cobra' | 'defiende';
-type BpCobro = 'Córner' | 'Tiro libre';
-const BP_COBROS: BpCobro[] = ['Córner', 'Tiro libre'];
+type BpCobro = 'Córner' | 'Tiro libre' | 'Penal';
+const BP_COBROS: BpCobro[] = ['Córner', 'Tiro libre', 'Penal'];
 const BP_ENVIOS = ['1er palo', '2º palo', 'Área chica', 'Punto penal', 'Frontal', 'En corto'];
 const BP_RES_COBRA = ['Gol', 'Remate', 'Nada'];
 const BP_MARCAJES = ['En zona', 'Al hombre', 'Mixto'];
@@ -78,6 +83,176 @@ const AnalisisRivalPage: React.FC = () => {
 
   const [view, setView] = useState<'list' | 'workspace'>('list');
   const [selected, setSelected] = useState<RivalAnalysis | null>(null);
+
+  // Jugadores clave del rival — número, posición y por qué es clave (editable
+  // a mano, con botón de Mejorar). Se guarda aparte, igual que `partidos`/`dafo`.
+  const [jugadoresClave, setJugadoresClave] = useState<JugadorClave[]>([]);
+  const [guardandoJugadoresClave, setGuardandoJugadoresClave] = useState(false);
+  const [mejorandoJugadorIdx, setMejorandoJugadorIdx] = useState<number | null>(null);
+  useEffect(() => { setJugadoresClave(selected?.jugadores_clave || []); }, [selected]);
+
+  const agregarJugadorClave = () => setJugadoresClave(prev => [...prev, { numero: '', posicion: '', motivo: '' }]);
+  const quitarJugadorClave = (i: number) => setJugadoresClave(prev => prev.filter((_, idx) => idx !== i));
+  const actualizarJugadorClave = (i: number, patch: Partial<JugadorClave>) =>
+    setJugadoresClave(prev => prev.map((j, idx) => idx === i ? { ...j, ...patch } : j));
+
+  const handleMejorarJugadorClave = async (i: number) => {
+    const j = jugadoresClave[i];
+    if (!j || !j.motivo.trim()) return;
+    setMejorandoJugadorIdx(i);
+    try {
+      const pilar = `Jugador clave del rival${j.numero ? ` — #${j.numero}` : ''}${j.posicion ? ` (${j.posicion})` : ''}`;
+      const mejorado = await mejorarRedaccionChecklist(pilar, j.motivo.trim());
+      actualizarJugadorClave(i, { motivo: mejorado });
+    } catch (err: any) {
+      console.error('Error mejorando jugador clave:', err);
+      setSaveMsg({ text: err?.message || 'No se pudo mejorar el texto.', ok: false });
+    } finally {
+      setMejorandoJugadorIdx(null);
+    }
+  };
+
+  // Plan de Partido (estrategia + adaptaciones + ABP) y Recomendaciones de
+  // trabajo de la semana — mismo patrón que jugadores clave: se editan a
+  // mano, botón de Mejorar, se guardan aparte.
+  const PLAN_PARTIDO_VACIO: PlanPartido = { estrategia: '', adaptaciones: [], abpOfensivo: '', abpDefensivo: '' };
+  const [planPartido, setPlanPartido] = useState<PlanPartido>(PLAN_PARTIDO_VACIO);
+  const [temasEntrenamiento, setTemasEntrenamiento] = useState<string[]>([]);
+  const [guardandoPlan, setGuardandoPlan] = useState(false);
+  const [mejorandoPlanCampo, setMejorandoPlanCampo] = useState<string | null>(null);
+  useEffect(() => {
+    setPlanPartido(selected?.plan_partido || PLAN_PARTIDO_VACIO);
+    setTemasEntrenamiento(selected?.temas_entrenamiento || []);
+  }, [selected]);
+
+  const [generandoPlan, setGenerandoPlan] = useState(false);
+  const [planError, setPlanError] = useState<string | null>(null);
+  const handleGenerarPlanPartido = async () => {
+    if (!selected) return;
+    setGenerandoPlan(true);
+    setPlanError(null);
+    try {
+      const { plan, temas } = await generarPlanPartidoRival({
+        equipo: teamName(selected.team_id),
+        rival: selected.rival_name,
+        dafo: selected.dafo || null,
+        resumenRival: armarResumenRival(),
+        resumenPartidos: armarResumenPartidos(),
+      });
+      setPlanPartido(plan);
+      setTemasEntrenamiento(temas);
+      // Se guarda de una vez, igual que "Generar DAFO" — si no, se genera en
+      // pantalla pero el PDF sigue leyendo lo último GUARDADO, no lo recién
+      // generado, y parece que "no aparece en el PDF" aunque sí se generó.
+      const { data, error: ue } = await supabase.from('rival_analysis')
+        .update({ plan_partido: plan, temas_entrenamiento: temas })
+        .eq('id', selected.id).select().single();
+      if (ue) throw new Error('Se generó el plan pero no se pudo guardar. ¿Ya corriste el SQL de esta entrega?');
+      setSelected(data);
+      setAnalyses(prev => prev.map(a => a.id === data.id ? data : a));
+    } catch (err: any) {
+      console.error(err);
+      setPlanError(err?.message || 'No se pudo generar el plan de partido.');
+    } finally {
+      setGenerandoPlan(false);
+    }
+  };
+
+  const agregarAdaptacion = () => setPlanPartido(p => ({ ...p, adaptaciones: [...p.adaptaciones, ''] }));
+  const quitarAdaptacion = (i: number) => setPlanPartido(p => ({ ...p, adaptaciones: p.adaptaciones.filter((_, idx) => idx !== i) }));
+  const actualizarAdaptacion = (i: number, v: string) => setPlanPartido(p => ({ ...p, adaptaciones: p.adaptaciones.map((a, idx) => idx === i ? v : a) }));
+
+  const agregarTema = () => setTemasEntrenamiento(t => [...t, '']);
+  const quitarTema = (i: number) => setTemasEntrenamiento(t => t.filter((_, idx) => idx !== i));
+  const actualizarTema = (i: number, v: string) => setTemasEntrenamiento(t => t.map((x, idx) => idx === i ? v : x));
+
+  const handleMejorarPlanCampo = async (campo: 'estrategia' | 'abpOfensivo' | 'abpDefensivo', pilar: string) => {
+    const texto = planPartido[campo];
+    if (!texto.trim()) return;
+    setMejorandoPlanCampo(campo);
+    try {
+      const mejorado = await mejorarRedaccionChecklist(pilar, texto.trim());
+      setPlanPartido(p => ({ ...p, [campo]: mejorado }));
+    } catch (err: any) {
+      setSaveMsg({ text: err?.message || 'No se pudo mejorar el texto.', ok: false });
+    } finally {
+      setMejorandoPlanCampo(null);
+    }
+  };
+  const handleMejorarAdaptacion = async (i: number) => {
+    const texto = planPartido.adaptaciones[i];
+    if (!texto || !texto.trim()) return;
+    setMejorandoPlanCampo(`adaptacion-${i}`);
+    try {
+      const mejorado = await mejorarRedaccionChecklist('Adaptación táctica', texto.trim());
+      actualizarAdaptacion(i, mejorado);
+    } catch (err: any) {
+      setSaveMsg({ text: err?.message || 'No se pudo mejorar el texto.', ok: false });
+    } finally {
+      setMejorandoPlanCampo(null);
+    }
+  };
+  const handleMejorarTema = async (i: number) => {
+    const texto = temasEntrenamiento[i];
+    if (!texto || !texto.trim()) return;
+    setMejorandoPlanCampo(`tema-${i}`);
+    try {
+      const mejorado = await mejorarRedaccionChecklist('Tema de entrenamiento', texto.trim());
+      actualizarTema(i, mejorado);
+    } catch (err: any) {
+      setSaveMsg({ text: err?.message || 'No se pudo mejorar el texto.', ok: false });
+    } finally {
+      setMejorandoPlanCampo(null);
+    }
+  };
+
+  const guardarPlanPartido = async () => {
+    if (!selected) return;
+    setGuardandoPlan(true);
+    try {
+      const planLimpio: PlanPartido = {
+        estrategia: planPartido.estrategia.trim(),
+        adaptaciones: planPartido.adaptaciones.map(a => a.trim()).filter(Boolean),
+        abpOfensivo: planPartido.abpOfensivo.trim(),
+        abpDefensivo: planPartido.abpDefensivo.trim(),
+      };
+      const temasLimpios = temasEntrenamiento.map(t => t.trim()).filter(Boolean);
+      const { data, error: ue } = await supabase.from('rival_analysis')
+        .update({ plan_partido: planLimpio, temas_entrenamiento: temasLimpios })
+        .eq('id', selected.id).select().single();
+      if (ue) throw ue;
+      setSelected(data);
+      setAnalyses(prev => prev.map(a => a.id === data.id ? data : a));
+      setSaveMsg({ text: 'Plan de partido guardado', ok: true });
+    } catch (err: any) {
+      console.error('Error guardando plan de partido:', err);
+      setSaveMsg({ text: 'No se pudo guardar el plan de partido.', ok: false });
+    } finally {
+      setGuardandoPlan(false);
+    }
+  };
+
+  const guardarJugadoresClave = async () => {
+    if (!selected) return;
+    setGuardandoJugadoresClave(true);
+    try {
+      const limpios = jugadoresClave
+        .map(j => ({ numero: j.numero.trim(), posicion: j.posicion.trim(), motivo: j.motivo.trim() }))
+        .filter(j => j.numero || j.posicion || j.motivo);
+      const { data, error: ue } = await supabase.from('rival_analysis')
+        .update({ jugadores_clave: limpios })
+        .eq('id', selected.id).select().single();
+      if (ue) throw ue;
+      setSelected(data);
+      setAnalyses(prev => prev.map(a => a.id === data.id ? data : a));
+      setSaveMsg({ text: 'Jugadores clave guardados', ok: true });
+    } catch (err: any) {
+      console.error('Error guardando jugadores clave:', err);
+      setSaveMsg({ text: 'No se pudieron guardar los jugadores clave.', ok: false });
+    } finally {
+      setGuardandoJugadoresClave(false);
+    }
+  };
   const [mode, setMode] = useState<'tag' | 'report'>('tag'); // el auxiliar siempre queda forzado a 'report'
 
   // ── Creación de un análisis nuevo ──
@@ -101,7 +276,8 @@ const AnalisisRivalPage: React.FC = () => {
   const [bpCobro, setBpCobro] = useState<BpCobro | null>(null);
   const [bpDetalle, setBpDetalle] = useState<string | null>(null);   // envío (cobra) o marcaje (defiende)
   const [bpResultado, setBpResultado] = useState<string | null>(null);
-  const resetBp = () => { setBpLado(null); setBpCobro(null); setBpDetalle(null); setBpResultado(null); };
+  const [bpPorteria, setBpPorteria] = useState<string | null>(null); // solo Penal: a dónde tiró
+  const resetBp = () => { setBpLado(null); setBpCobro(null); setBpDetalle(null); setBpResultado(null); setBpPorteria(null); };
 
   // ── Borrador (sin guardar) y guardado ──
   const [draftMomentos, setDraftMomentos] = useState<RivalMomento[]>([]);
@@ -122,6 +298,8 @@ const AnalisisRivalPage: React.FC = () => {
   const [repTipo, setRepTipo] = useState<RivalTipo>('Ofensiva');
   const [repZona, setRepZona] = useState<RivalZona>('Inicio');
   const [tabDafo, setTabDafo] = useState(false);
+  const [tabJugadoresClave, setTabJugadoresClave] = useState(false);
+  const [tabPlanPartido, setTabPlanPartido] = useState(false);
 
   // ── Partidos propios contra este rival (para Balón parado y DAFO) ──
   const [matchesEquipo, setMatchesEquipo] = useState<Match[]>([]);
@@ -254,7 +432,7 @@ const AnalisisRivalPage: React.FC = () => {
 
   // ─── Selección de Tipo/Zona/Atributos ───────────────────────────────────────
   const selectTipo = (t: RivalTipo) => { setSelTipo(t); setSelAttr1(null); setSelAttr2(null); resetBp(); setTagError(null); };
-  const selectBpLado = (l: BpLado) => { setBpLado(l); setBpDetalle(null); setBpResultado(null); setTagError(null); };
+  const selectBpLado = (l: BpLado) => { setBpLado(l); setBpDetalle(null); setBpResultado(null); setBpPorteria(null); setTagError(null); };
   const selectZona = (z: RivalZona) => { setSelZona(z); setTagError(null); };
   const selectAttr1 = (v: string) => { setSelAttr1(v); setTagError(null); };
   const selectAttr2 = (v: string) => { setSelAttr2(v); setTagError(null); };
@@ -276,20 +454,38 @@ const AnalisisRivalPage: React.FC = () => {
     if (notaKey) setDraftNotes(prev => ({ ...prev, [notaKey]: v }));
   };
 
+  const [mejorandoNotaRival, setMejorandoNotaRival] = useState(false);
+  const handleMejorarNotaRival = async () => {
+    if (!notaKey || !notaTexto.trim()) return;
+    const pilar = selTipo === 'BalonParado'
+      ? `Balón parado — ${bpLado === 'cobra' ? 'cuando cobra' : 'cuando defiende'}`
+      : `${TIPO_LABEL[selTipo as RivalTipo]} — ${selZona ? ZONA_LABEL[selZona] : ''}`;
+    setMejorandoNotaRival(true);
+    try {
+      handleNotaChange(await mejorarRedaccionChecklist(pilar, notaTexto.trim()));
+    } catch (err: any) {
+      console.error('Error mejorando nota del rival:', err);
+      setError(err?.message || 'No se pudo mejorar el texto. Intenta de nuevo.');
+    } finally {
+      setMejorandoNotaRival(false);
+    }
+  };
+
   const registrarMomento = useCallback(() => {
     if (selTipo === 'BalonParado') {
       if (!bpLado) { setTagError('Elige si el rival cobra o defiende'); return; }
-      if (bpLado === 'cobra' && (!bpCobro || !bpDetalle)) { setTagError('Elige el cobro (córner o tiro libre) y la zona de envío'); return; }
+      if (bpLado === 'cobra' && (!bpCobro || !bpDetalle)) { setTagError('Elige el cobro (córner, tiro libre o penal) y ' + (bpCobro === 'Penal' ? 'el resultado' : 'la zona de envío')); return; }
       if (bpLado === 'defiende' && !bpDetalle) { setTagError('Elige el tipo de marcaje'); return; }
       setTagError(null);
       const momentoBp: RivalMomento = {
         id: newLocalId(), tipo: 'BalonParado', lado: bpLado, cobro: bpLado === 'cobra' ? (bpCobro || undefined) : undefined,
         attr1: bpDetalle as string, attr2: bpResultado || undefined,
+        porteria: bpCobro === 'Penal' ? (bpPorteria || undefined) : undefined,
         timestamp_video: videoRef.current ? Math.floor(videoRef.current.currentTime) : undefined,
       };
       setDraftMomentos(prev => [...prev, momentoBp]);
       setSaveMsg(null);
-      setBpCobro(null); setBpDetalle(null); setBpResultado(null);
+      setBpCobro(null); setBpDetalle(null); setBpResultado(null); setBpPorteria(null);
       return;
     }
     if (!selTipo || !selZona || !selAttr1) { setTagError('Selecciona tipo, zona y el primer atributo'); return; }
@@ -617,18 +813,22 @@ const AnalisisRivalPage: React.FC = () => {
   };
 
   const contarLista = (valores: string[], opciones: string[]) => opciones.map(o => ({ label: o, n: valores.filter(v => v === o).length }));
+  const mayus = (x: string) => x ? x.charAt(0).toUpperCase() + x.slice(1) : x;
   // Balón parado del rival = momentos tipo 4 de esta página + lo etiquetado en tus partidos contra él:
   //   cuando cobra   ← tus "Córner en contra" y "Tiro libre en contra"
   //   cuando defiende ← tus "Córner a favor" y "Tiro libre a favor" (marcaje del rival, si lo marcaste)
+  // "Cuando cobra" se reporta POR TIPO (Córner / Tiro libre / Penal) por separado
+  // — antes se mezclaban y perdías el detalle de "todos los córners al primer
+  // palo" si además había tiros libres a otro lado.
   const bpReport = () => {
     const nota = (lado: BpLado) => draftNotes[`BalonParado|${lado}`] ?? selected?.notas?.[`BalonParado|${lado}`] ?? '';
-    type ItemCobra = { cobro?: string; envio: string | null; res: string | null };
+    type ItemCobra = { cobro?: string; envio: string | null; res: string | null; porteria?: string | null };
     type ItemDef = { marc: string | null; res: string | null };
     const cobra: ItemCobra[] = [
-      ...allMomentos.filter(m => m.tipo === 'BalonParado' && m.lado === 'cobra').map(m => ({ cobro: m.cobro, envio: m.attr1 || null, res: m.attr2 || null })),
+      ...allMomentos.filter(m => m.tipo === 'BalonParado' && m.lado === 'cobra').map(m => ({ cobro: m.cobro, envio: m.attr1 || null, res: m.attr2 || null, porteria: m.porteria || null })),
       ...tagsReales.filter(t => ACCIONES_COBRO_RIVAL.has(t.accion)).map(t => {
         const d = detalleAbpDe(t);
-        return { cobro: t.accion === CORNER_CONTRA ? 'Córner' : 'Tiro libre', envio: d.envio ? ENVIO_LABEL[d.envio] : null, res: d.resultado ? RESULTADO_COBRO_LABEL[d.resultado as 'gol' | 'remate' | 'nada'] : null };
+        return { cobro: t.accion === CORNER_CONTRA ? 'Córner' : 'Tiro libre', envio: d.envio ? ENVIO_LABEL[d.envio] : null, res: d.resultado ? RESULTADO_COBRO_LABEL[d.resultado as 'gol' | 'remate' | 'nada'] : null, porteria: null as string | null };
       }),
     ];
     const defiende: ItemDef[] = [
@@ -640,23 +840,41 @@ const AnalisisRivalPage: React.FC = () => {
     ];
     const deTusPartidos = tagsReales.filter(t => ACCIONES_COBRO_RIVAL.has(t.accion) || ACCIONES_DEFIENDE_RIVAL.has(t.accion)).length;
 
-    const conEnvio = cobra.filter(c => c.envio);
-    const envios = contarLista(conEnvio.map(c => c.envio as string), BP_ENVIOS);
-    const corners = cobra.filter(c => c.cobro === 'Córner').length;
-    const tirosLibres = cobra.filter(c => c.cobro === 'Tiro libre').length;
-    const golesCobra = cobra.filter(c => c.res === 'Gol').length;
-    const rematesCobra = cobra.filter(c => c.res === 'Remate' || c.res === 'Gol').length;
-    const conResCobra = cobra.filter(c => !!c.res).length;
-    const partes: string[] = [];
-    if (conEnvio.length > 0) {
-      const top = [...envios].sort((a, b) => b.n - a.n)[0];
-      const frecuencia = top.n / conEnvio.length >= 0.6 ? 'casi siempre' : 'más seguido';
-      const destino = top.label === 'En corto' ? 'en corto' : `al ${top.label.toLowerCase()}`;
-      partes.push(`Cobra ${frecuencia} ${destino} (${top.n} de ${conEnvio.length})`);
+    // Córner y Tiro libre: zona de envío + resultado, cada uno por su lado.
+    const lecturaPorZona = (items: ItemCobra[], verbo: string) => {
+      const conEnvio = items.filter(c => c.envio);
+      const envios = contarLista(conEnvio.map(c => c.envio as string), BP_ENVIOS);
+      const goles = items.filter(c => c.res === 'Gol').length;
+      const remates = items.filter(c => c.res === 'Remate' || c.res === 'Gol').length;
+      const conRes = items.filter(c => !!c.res).length;
+      const partes: string[] = [];
+      if (conEnvio.length > 0) {
+        const top = [...envios].sort((a, b) => b.n - a.n)[0];
+        const frecuencia = top.n === conEnvio.length ? 'siempre' : top.n / conEnvio.length >= 0.6 ? 'casi siempre' : 'más seguido';
+        const destino = top.label === 'En corto' ? 'en corto' : `al ${top.label.toLowerCase()}`;
+        partes.push(`${verbo} ${frecuencia} ${destino} (${top.n} de ${conEnvio.length})`);
+      }
+      if (conRes > 0) partes.push(`${remates} de ${conRes} terminaron en remate${goles > 0 ? ` y ${goles} en gol` : ''}`);
+      return mayus(partes.length ? `${partes.join('; ')}.` : 'Sin detalle suficiente.');
+    };
+    const itemsCorner = cobra.filter(c => c.cobro === 'Córner');
+    const itemsTiroLibre = cobra.filter(c => c.cobro === 'Tiro libre');
+    const itemsPenal = cobra.filter(c => c.cobro === 'Penal');
+    // Penal: `envio` aquí en realidad guarda el resultado del penal (gol/atajado/fuera/palo),
+    // no una zona — no tiene sentido una "zona de envío" para un penal.
+    // La ZONA real de cada penal (a dónde tiró, acertara o no) vive en `porteria`.
+    const golesPenal = itemsPenal.filter(c => c.envio === 'gol').length;
+    const conPorteria = itemsPenal.filter(c => c.porteria);
+    let lecturaPenal = '';
+    if (itemsPenal.length > 0) {
+      let texto = `${golesPenal} de ${itemsPenal.length} penales anotados${itemsPenal.length - golesPenal > 0 ? ` (${itemsPenal.length - golesPenal} fallados o atajados)` : ''}.`;
+      if (conPorteria.length > 0) {
+        const porLado = contarLista(conPorteria.map(c => (etiquetaPorteria(c.porteria as string) || '').toLowerCase()), Array.from(new Set(conPorteria.map(c => (etiquetaPorteria(c.porteria as string) || '').toLowerCase()))));
+        const top = [...porLado].sort((a, b) => b.n - a.n)[0];
+        if (top) texto += ` Tira ${top.n === conPorteria.length ? 'siempre' : `${top.n} de ${conPorteria.length} veces`} ${top.label}.`;
+      }
+      lecturaPenal = mayus(texto);
     }
-    if (conResCobra > 0) partes.push(`${rematesCobra} de ${conResCobra} terminaron en remate${golesCobra > 0 ? ` y ${golesCobra} en gol` : ''}`);
-    const mayus = (x: string) => x ? x.charAt(0).toUpperCase() + x.slice(1) : x;
-    const lecturaCobra = mayus(partes.length ? `${partes.join('; ')}.` : '');
 
     const conMarc = defiende.filter(d => d.marc);
     const marcajes = contarLista(conMarc.map(d => d.marc as string), BP_MARCAJES);
@@ -672,7 +890,13 @@ const AnalisisRivalPage: React.FC = () => {
     const lecturaDefiende = mayus(partesD.length ? `${partesD.join('; ')}.` : '');
     return {
       deTusPartidos,
-      cobra: { n: cobra.length, corners, tirosLibres, envios, sinEnvio: cobra.length - conEnvio.length, lectura: lecturaCobra, nota: nota('cobra') },
+      cobra: {
+        n: cobra.length,
+        corner: { n: itemsCorner.length, lectura: itemsCorner.length > 0 ? lecturaPorZona(itemsCorner, 'Cobra') : '' },
+        tiroLibre: { n: itemsTiroLibre.length, lectura: itemsTiroLibre.length > 0 ? lecturaPorZona(itemsTiroLibre, 'Cobra') : '' },
+        penal: { n: itemsPenal.length, lectura: lecturaPenal },
+        nota: nota('cobra'),
+      },
       defiende: { n: defiende.length, marcajes, sinMarcaje: defiende.length - conMarc.length, lectura: lecturaDefiende, nota: nota('defiende') },
     };
   };
@@ -687,7 +911,9 @@ const AnalisisRivalPage: React.FC = () => {
       });
     });
     const bp = bpReport();
-    if (bp.cobra.n > 0) lineas.push(`- Balón parado, cuando cobra (${bp.cobra.n} cobros: ${bp.cobra.corners} córners, ${bp.cobra.tirosLibres} tiros libres): ${bp.cobra.lectura || 'sin detalle'}`);
+    if (bp.cobra.corner.n > 0) lineas.push(`- Balón parado, córners a favor del rival (${bp.cobra.corner.n}): ${bp.cobra.corner.lectura}`);
+    if (bp.cobra.tiroLibre.n > 0) lineas.push(`- Balón parado, tiros libres a favor del rival (${bp.cobra.tiroLibre.n}): ${bp.cobra.tiroLibre.lectura}`);
+    if (bp.cobra.penal.n > 0) lineas.push(`- Balón parado, penales a favor del rival (${bp.cobra.penal.n}): ${bp.cobra.penal.lectura}`);
     if (bp.defiende.n > 0) lineas.push(`- Balón parado, cuando defiende (${bp.defiende.n} cobros): ${bp.defiende.lectura || 'sin detalle'}`);
     const notas = { ...(selected?.notas || {}), ...draftNotes };
     Object.entries(notas).forEach(([k, v]) => { if (String(v || '').trim()) lineas.push(`- Nota del analista (${k.replace('|', ' · ')}): ${v}`); });
@@ -755,7 +981,10 @@ const AnalisisRivalPage: React.FC = () => {
     try {
       const buildFase = (tipo: RivalTipo, pregunta: string) => ({
         pregunta,
-        zonas: ZONAS.map(z => ({ zona: z, resumen: summarizeZone(tipo, z) })),
+        zonas: ZONAS.map(z => {
+          const nota = draftNotes[`${tipo}|${z}`] ?? selected?.notas?.[`${tipo}|${z}`] ?? '';
+          return { zona: z, resumen: summarizeZone(tipo, z), nota: nota || undefined };
+        }),
       });
       await exportRivalAnalysisToPDF(
         {
@@ -767,18 +996,23 @@ const AnalisisRivalPage: React.FC = () => {
             if (bp.cobra.n === 0 && bp.defiende.n === 0) return undefined;
             return {
               pregunta: REPORT_QUESTION.BalonParado || '',
-              cobra: bp.cobra.n > 0 ? `${bp.cobra.lectura} (${bp.cobra.n} cobros: ${bp.cobra.corners} córners, ${bp.cobra.tirosLibres} tiros libres)` : 'Sin cobros registrados todavía.',
+              corner: bp.cobra.corner.n > 0 ? `${bp.cobra.corner.lectura} (${bp.cobra.corner.n} córner${bp.cobra.corner.n === 1 ? '' : 's'})` : undefined,
+              tiroLibre: bp.cobra.tiroLibre.n > 0 ? `${bp.cobra.tiroLibre.lectura} (${bp.cobra.tiroLibre.n} tiro${bp.cobra.tiroLibre.n === 1 ? '' : 's'} libre${bp.cobra.tiroLibre.n === 1 ? '' : 's'})` : undefined,
+              penal: bp.cobra.penal.n > 0 ? bp.cobra.penal.lectura : undefined,
               notaCobra: bp.cobra.nota || undefined,
               defiende: bp.defiende.n > 0 ? bp.defiende.lectura : 'Sin cobros del otro equipo registrados todavía.',
               notaDefiende: bp.defiende.nota || undefined,
             };
           })(),
+          jugadoresClave: (selected.jugadores_clave || []).filter(j => j.numero || j.posicion || j.motivo),
+          planPartido: selected.plan_partido && (selected.plan_partido.estrategia || selected.plan_partido.adaptaciones?.length) ? selected.plan_partido : undefined,
+          temas: (selected.temas_entrenamiento || []).filter(Boolean),
           dafo: selected.dafo ? {
             fortalezas: selected.dafo.fortalezas, debilidades: selected.dafo.debilidades,
             oportunidades: selected.dafo.oportunidades, amenazas: selected.dafo.amenazas,
           } : undefined,
         },
-        { userName: profile?.username || 'Usuario', teamName: teamName(selected.team_id) }
+        { userName: profile?.username || 'Mauricio Castillo — Analista Táctico y de Rendimiento', teamName: teamName(selected.team_id) }
       );
     } catch (err) {
       console.error(err);
@@ -947,16 +1181,28 @@ const AnalisisRivalPage: React.FC = () => {
                     <>
                       <div>
                         <p className="text-xs text-gray-500 mb-2">Cobro</p>
-                        <div className="flex gap-2 flex-wrap">{BP_COBROS.map(c => <button key={c} onClick={() => { setBpCobro(c); setTagError(null); }} className={chip(bpCobro === c)}>{c}</button>)}</div>
+                        <div className="flex gap-2 flex-wrap">{BP_COBROS.map(c => <button key={c} onClick={() => { setBpCobro(c); setBpDetalle(null); setBpResultado(null); setBpPorteria(null); setTagError(null); }} className={chip(bpCobro === c)}>{c}</button>)}</div>
                       </div>
-                      <div>
-                        <p className="text-xs text-gray-500 mb-2">Zona de envío</p>
-                        <div className="flex gap-2 flex-wrap">{BP_ENVIOS.map(v => <button key={v} onClick={() => { setBpDetalle(v); setTagError(null); }} className={chip(bpDetalle === v)}>{v}</button>)}</div>
-                      </div>
-                      <div>
-                        <p className="text-xs text-gray-500 mb-2">Resultado</p>
-                        <div className="flex gap-2 flex-wrap">{BP_RES_COBRA.map(v => <button key={v} onClick={() => setBpResultado(v)} className={chip(bpResultado === v)}>{v}</button>)}</div>
-                      </div>
+                      {bpCobro === 'Penal' ? (
+                        <div className="space-y-2">
+                          <p className="text-xs text-gray-500">¿A dónde tiró? (portería vista de frente) — opcional, pero recomendado aunque lo hayan atajado</p>
+                          <PorteriaEstadio rgb="34,211,238" seleccion={bpPorteria} onSelect={k => { setBpPorteria(k); setTagError(null); }} />
+                          {bpPorteria && <p className="text-xs text-cyan-300">Tiró: {(etiquetaPorteria(bpPorteria) || '').toLowerCase()}</p>}
+                          <p className="text-xs text-gray-500 mb-2">Resultado del penal</p>
+                          <div className="flex gap-2 flex-wrap">{RESULTADOS_PENAL.map(v => <button key={v} onClick={() => { setBpDetalle(v); setTagError(null); }} className={chip(bpDetalle === v)}>{RESULTADO_PENAL_LABEL[v]}</button>)}</div>
+                        </div>
+                      ) : (
+                        <>
+                          <div>
+                            <p className="text-xs text-gray-500 mb-2">Zona de envío</p>
+                            <div className="flex gap-2 flex-wrap">{BP_ENVIOS.map(v => <button key={v} onClick={() => { setBpDetalle(v); setTagError(null); }} className={chip(bpDetalle === v)}>{v}</button>)}</div>
+                          </div>
+                          <div>
+                            <p className="text-xs text-gray-500 mb-2">Resultado</p>
+                            <div className="flex gap-2 flex-wrap">{BP_RES_COBRA.map(v => <button key={v} onClick={() => setBpResultado(v)} className={chip(bpResultado === v)}>{v}</button>)}</div>
+                          </div>
+                        </>
+                      )}
                       <p className="text-xs text-gray-500">Por voz: "córner primer palo remate", luego "registrar"</p>
                     </>
                   )}
@@ -1012,6 +1258,14 @@ const AnalisisRivalPage: React.FC = () => {
             <p className="text-xs text-gray-500 mb-1">Nota del analista (opcional)</p>
             <p className="text-xs text-gray-600 mb-2">Se guarda para: <span className="text-gray-300">{selTipo === 'BalonParado' ? (bpLado ? `Balón parado · ${bpLado === 'cobra' ? 'cuando cobra' : 'cuando defiende'}` : 'elige si el rival cobra o defiende') : selTipo && selZona ? `${TIPO_LABEL[selTipo]} · ${ZONA_LABEL[selZona]}` : 'selecciona tipo y zona arriba'}</span></p>
             <textarea value={notaTexto} onChange={e => handleNotaChange(e.target.value)} disabled={!notaKey} rows={2} placeholder="Ej. Rice y Zubimendi como ejecutores clave del primer pase tras el robo" className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none resize-y disabled:opacity-50" />
+            <button
+              type="button"
+              onClick={handleMejorarNotaRival}
+              disabled={!notaKey || !notaTexto.trim() || mejorandoNotaRival}
+              className="mt-2 text-cyan-400 hover:text-cyan-300 disabled:text-gray-500 disabled:cursor-not-allowed text-xs"
+            >
+              {mejorandoNotaRival ? 'Mejorando…' : '✨ Mejorar redacción'}
+            </button>
           </div>
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
@@ -1072,15 +1326,134 @@ const AnalisisRivalPage: React.FC = () => {
             </div>
           )}
 
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
             {REPORT_TIPOS.map(t => (
-              <button key={t} onClick={() => { setRepTipo(t); setTabDafo(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${!tabDafo && repTipo === t ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>{TIPO_LABEL[t]}</button>
+              <button key={t} onClick={() => { setRepTipo(t); setTabDafo(false); setTabJugadoresClave(false); setTabPlanPartido(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${!tabDafo && !tabJugadoresClave && !tabPlanPartido && repTipo === t ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>{TIPO_LABEL[t]}</button>
             ))}
-            <button onClick={() => setTabDafo(true)} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabDafo ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>DAFO</button>
+            <button onClick={() => { setTabDafo(true); setTabJugadoresClave(false); setTabPlanPartido(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabDafo ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>DAFO</button>
+            <button onClick={() => { setTabJugadoresClave(true); setTabDafo(false); setTabPlanPartido(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabJugadoresClave ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>Jugadores clave</button>
+            <button onClick={() => { setTabPlanPartido(true); setTabDafo(false); setTabJugadoresClave(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabPlanPartido ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>Plan de partido</button>
           </div>
-          {!tabDafo && REPORT_QUESTION[repTipo] && <p className="text-sm text-gray-400 italic">{REPORT_QUESTION[repTipo]}</p>}
+          {saveMsg && <p className={`text-center text-sm ${saveMsg.ok ? 'text-green-400' : 'text-red-400'}`}>{saveMsg.text}</p>}
+          {!tabDafo && !tabJugadoresClave && !tabPlanPartido && REPORT_QUESTION[repTipo] && <p className="text-sm text-gray-400 italic">{REPORT_QUESTION[repTipo]}</p>}
 
-          {tabDafo ? (
+          {tabPlanPartido ? (
+            <div className="space-y-4">
+              <p className="text-xs text-gray-500">Se genera solo, con lo que ya tienes en Fases, Balón Parado y DAFO — después puedes ajustar o mejorar cualquier campo a mano. Sale al final del PDF y del PowerPoint del partido.</p>
+
+              {isAdmin && (
+                <div className="flex items-center gap-3 flex-wrap">
+                  <button onClick={handleGenerarPlanPartido} disabled={generandoPlan || !selected} className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-medium disabled:opacity-50">
+                    {generandoPlan ? 'Generando…' : (planPartido.estrategia || planPartido.adaptaciones.length) ? '✨ Volver a generar plan' : '✨ Generar plan de partido'}
+                  </button>
+                  {!selected?.dafo && <span className="text-xs text-amber-400">Genera primero el DAFO para un mejor plan (lo puedes generar igual sin él).</span>}
+                </div>
+              )}
+              {planError && <p className="text-sm text-red-400">{planError}</p>}
+
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">Estrategia general</label>
+                <textarea rows={3} value={planPartido.estrategia} onChange={e => setPlanPartido(p => ({ ...p, estrategia: e.target.value }))}
+                  className="w-full bg-gray-800 text-white text-sm rounded-lg px-3 py-2 border border-gray-700 focus:border-cyan-500 focus:outline-none resize-y" />
+                <button onClick={() => handleMejorarPlanCampo('estrategia', 'Estrategia general del plan de partido')} disabled={!planPartido.estrategia.trim() || mejorandoPlanCampo === 'estrategia'}
+                  className="mt-1 text-cyan-400 hover:text-cyan-300 disabled:text-gray-500 disabled:cursor-not-allowed text-xs">
+                  {mejorandoPlanCampo === 'estrategia' ? 'Mejorando…' : '✨ Mejorar redacción'}
+                </button>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-400 mb-2">Adaptaciones tácticas</label>
+                <div className="space-y-2">
+                  {planPartido.adaptaciones.map((a, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <input type="text" value={a} onChange={e => actualizarAdaptacion(i, e.target.value)}
+                        className="flex-1 bg-gray-800 text-white text-sm rounded-lg px-3 py-2 border border-gray-700 focus:border-cyan-500 focus:outline-none" />
+                      <button onClick={() => handleMejorarAdaptacion(i)} disabled={!a.trim() || mejorandoPlanCampo === `adaptacion-${i}`} className="text-cyan-400 hover:text-cyan-300 disabled:text-gray-500 disabled:cursor-not-allowed text-xs whitespace-nowrap">
+                        {mejorandoPlanCampo === `adaptacion-${i}` ? '…' : '✨'}
+                      </button>
+                      <button onClick={() => quitarAdaptacion(i)} className="text-red-400 hover:text-red-300 text-xs">Quitar</button>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={agregarAdaptacion} className="mt-2 text-sm text-gray-300 hover:text-white">+ Agregar adaptación</button>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">ABP ofensivo (cómo aprovechar nuestras acciones a balón parado)</label>
+                <textarea rows={2} value={planPartido.abpOfensivo} onChange={e => setPlanPartido(p => ({ ...p, abpOfensivo: e.target.value }))}
+                  className="w-full bg-gray-800 text-white text-sm rounded-lg px-3 py-2 border border-gray-700 focus:border-cyan-500 focus:outline-none resize-y" />
+                <button onClick={() => handleMejorarPlanCampo('abpOfensivo', 'ABP ofensivo propio')} disabled={!planPartido.abpOfensivo.trim() || mejorandoPlanCampo === 'abpOfensivo'}
+                  className="mt-1 text-cyan-400 hover:text-cyan-300 disabled:text-gray-500 disabled:cursor-not-allowed text-xs">
+                  {mejorandoPlanCampo === 'abpOfensivo' ? 'Mejorando…' : '✨ Mejorar redacción'}
+                </button>
+              </div>
+
+              <div>
+                <label className="block text-xs text-gray-400 mb-1">ABP defensivo (cómo defendernos en las ABP en contra)</label>
+                <textarea rows={2} value={planPartido.abpDefensivo} onChange={e => setPlanPartido(p => ({ ...p, abpDefensivo: e.target.value }))}
+                  className="w-full bg-gray-800 text-white text-sm rounded-lg px-3 py-2 border border-gray-700 focus:border-cyan-500 focus:outline-none resize-y" />
+                <button onClick={() => handleMejorarPlanCampo('abpDefensivo', 'ABP defensivo propio')} disabled={!planPartido.abpDefensivo.trim() || mejorandoPlanCampo === 'abpDefensivo'}
+                  className="mt-1 text-cyan-400 hover:text-cyan-300 disabled:text-gray-500 disabled:cursor-not-allowed text-xs">
+                  {mejorandoPlanCampo === 'abpDefensivo' ? 'Mejorando…' : '✨ Mejorar redacción'}
+                </button>
+              </div>
+
+              <div className="border-t border-gray-700 pt-4">
+                <label className="block text-xs text-gray-400 mb-2">Recomendaciones de trabajo de la semana</label>
+                <div className="space-y-2">
+                  {temasEntrenamiento.map((t, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <input type="text" value={t} onChange={e => actualizarTema(i, e.target.value)}
+                        className="flex-1 bg-gray-800 text-white text-sm rounded-lg px-3 py-2 border border-gray-700 focus:border-cyan-500 focus:outline-none" />
+                      <button onClick={() => handleMejorarTema(i)} disabled={!t.trim() || mejorandoPlanCampo === `tema-${i}`} className="text-cyan-400 hover:text-cyan-300 disabled:text-gray-500 disabled:cursor-not-allowed text-xs whitespace-nowrap">
+                        {mejorandoPlanCampo === `tema-${i}` ? '…' : '✨'}
+                      </button>
+                      <button onClick={() => quitarTema(i)} className="text-red-400 hover:text-red-300 text-xs">Quitar</button>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={agregarTema} className="mt-2 text-sm text-gray-300 hover:text-white">+ Agregar tema</button>
+                <p className="text-xs text-gray-500 mt-2 italic">No son ejercicios armados — son objetivos. En el PDF se aclara esto mismo.</p>
+              </div>
+
+              <button onClick={guardarPlanPartido} disabled={guardandoPlan || !selected}
+                className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-medium disabled:opacity-50">
+                {guardandoPlan ? 'Guardando…' : 'Guardar plan de partido'}
+              </button>
+            </div>
+          ) : tabJugadoresClave ? (
+            <div className="space-y-3">
+              <p className="text-xs text-gray-500">Número, posición y por qué hay que cuidarlo — sale en el PDF y en el PowerPoint del partido.</p>
+              {jugadoresClave.length === 0 && <p className="text-sm text-gray-500">Todavía no agregas ningún jugador clave.</p>}
+              {jugadoresClave.map((j, i) => (
+                <div key={i} className="bg-gray-800 rounded-xl p-4 border border-gray-700 space-y-2">
+                  <div className="flex gap-2">
+                    <input type="text" placeholder="Número" value={j.numero} onChange={e => actualizarJugadorClave(i, { numero: e.target.value })}
+                      className="w-20 bg-gray-700 text-white text-sm rounded-lg px-3 py-2 border border-gray-600 focus:border-cyan-500 focus:outline-none" />
+                    <input type="text" placeholder="Posición" value={j.posicion} onChange={e => actualizarJugadorClave(i, { posicion: e.target.value })}
+                      className="flex-1 bg-gray-700 text-white text-sm rounded-lg px-3 py-2 border border-gray-600 focus:border-cyan-500 focus:outline-none" />
+                  </div>
+                  <label className="block text-xs text-gray-500">¿Por qué es clave?</label>
+                  <textarea rows={2} value={j.motivo} onChange={e => actualizarJugadorClave(i, { motivo: e.target.value })}
+                    className="w-full bg-gray-700 text-white text-sm rounded-lg px-3 py-2 border border-gray-600 focus:border-cyan-500 focus:outline-none resize-y" />
+                  <div className="flex justify-between items-center">
+                    <button onClick={() => handleMejorarJugadorClave(i)} disabled={!j.motivo.trim() || mejorandoJugadorIdx === i}
+                      className="text-cyan-400 hover:text-cyan-300 disabled:text-gray-500 disabled:cursor-not-allowed text-xs">
+                      {mejorandoJugadorIdx === i ? 'Mejorando…' : '✨ Mejorar redacción'}
+                    </button>
+                    <button onClick={() => quitarJugadorClave(i)} className="text-red-400 hover:text-red-300 text-xs">Quitar</button>
+                  </div>
+                </div>
+              ))}
+              <div className="flex items-center gap-3">
+                <button onClick={agregarJugadorClave} className="px-3 py-1.5 rounded-lg bg-gray-700 hover:bg-gray-600 text-gray-200 text-sm">+ Agregar jugador</button>
+                <button onClick={guardarJugadoresClave} disabled={guardandoJugadoresClave || !selected}
+                  className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-700 text-white text-sm font-medium disabled:opacity-50">
+                  {guardandoJugadoresClave ? 'Guardando…' : 'Guardar jugadores clave'}
+                </button>
+              </div>
+            </div>
+          ) : tabDafo ? (
             <div className="space-y-4">
               {isAdmin && (
                 <div className="flex items-center gap-3 flex-wrap">
@@ -1116,7 +1489,6 @@ const AnalisisRivalPage: React.FC = () => {
             </div>
           ) : repTipo === 'BalonParado' ? (() => {
             const bp = bpReport();
-            const maxEnvio = Math.max(1, ...bp.cobra.envios.map(e => e.n));
             return (
               <div className="space-y-2">
               {bp.deTusPartidos > 0 && <p className="text-xs text-gray-500">Incluye {bp.deTusPartidos} cobros etiquetados en tus partidos contra este rival (Etiquetador).</p>}
@@ -1125,16 +1497,16 @@ const AnalisisRivalPage: React.FC = () => {
                   <p className="text-base font-medium text-white">Cuando cobra</p>
                   {bp.cobra.n === 0 ? <p className="text-sm text-gray-500">Sin cobros registrados todavía.</p> : (
                     <>
-                      <p className="text-xs text-gray-500">Zona de envío · {bp.cobra.n} cobro{bp.cobra.n === 1 ? '' : 's'} ({bp.cobra.corners} córner{bp.cobra.corners === 1 ? '' : 's'} · {bp.cobra.tirosLibres} tiro{bp.cobra.tirosLibres === 1 ? '' : 's'} libre{bp.cobra.tirosLibres === 1 ? '' : 's'})</p>
-                      {bp.cobra.envios.map(e => (
-                        <div key={e.label} className="grid items-center gap-2 text-xs" style={{ gridTemplateColumns: '90px minmax(0,1fr) 24px' }}>
-                          <span className="text-gray-300">{e.label}</span>
-                          <div className="h-2 bg-gray-700 rounded-full overflow-hidden"><div className="h-full bg-cyan-500 rounded-full" style={{ width: `${(e.n / maxEnvio) * 100}%` }} /></div>
-                          <span className="text-gray-200 font-semibold text-right">{e.n}</span>
+                      {([
+                        { label: 'Córner', data: bp.cobra.corner },
+                        { label: 'Tiro libre', data: bp.cobra.tiroLibre },
+                        { label: 'Penal', data: bp.cobra.penal },
+                      ] as const).map(({ label, data }) => data.n > 0 && (
+                        <div key={label} className="bg-gray-900 rounded-lg p-2.5">
+                          <p className="text-xs text-gray-500 mb-1">{label} · {data.n} cobro{data.n === 1 ? '' : 's'}</p>
+                          <p className="text-sm text-gray-200">{data.lectura}</p>
                         </div>
                       ))}
-                      {bp.cobra.lectura && <p className="text-sm text-gray-200 bg-gray-900 rounded-lg p-2.5"><span className="font-semibold">Lectura automática:</span> {bp.cobra.lectura}</p>}
-                      {bp.cobra.sinEnvio > 0 && <p className="text-xs text-yellow-300">{bp.cobra.sinEnvio} cobro{bp.cobra.sinEnvio === 1 ? '' : 's'} sin zona de envío marcada.</p>}
                     </>
                   )}
                   {bp.cobra.nota && (

@@ -12,6 +12,15 @@ export interface Match {
   created_at?: string;
 }
 
+export type EstatusPartido = 'titular' | 'suplente' | 'no_convocado' | 'lesionado' | 'falta';
+export interface PlayerMatchStatus {
+  id: string;
+  match_id: string;
+  player_id: string;
+  estatus: EstatusPartido;
+  created_at?: string;
+}
+
 export interface Player {
   id: string;
   nombre: string;
@@ -219,12 +228,28 @@ export interface RivalMomento {
   // Solo Balón parado (tipo 4): el rival cobra o defiende, y qué cobro fue.
   // En Balón parado: attr1 = zona de envío (cobra) o tipo de marcaje (defiende); attr2 = resultado.
   lado?: 'cobra' | 'defiende';
-  cobro?: 'Córner' | 'Tiro libre';
+  cobro?: 'Córner' | 'Tiro libre' | 'Penal';
+  // Solo Penal: a dónde tiró, misma cuadrícula de portería que el Etiquetador
+  // (utils/goles.ts) — se pide siempre, no solo cuando el resultado fue gol.
+  porteria?: string;
 }
 
 // Notas del analista por combinación Tipo+Zona. Clave: "Tipo|Zona", ej. "Ofensiva|Inicio"
 // Balón parado usa "BalonParado|cobra" y "BalonParado|defiende".
 export type RivalNotas = Record<string, string>;
+
+export interface JugadorClave {
+  numero: string;
+  posicion: string;
+  motivo: string;
+}
+
+export interface PlanPartido {
+  estrategia: string;
+  adaptaciones: string[];
+  abpOfensivo: string;
+  abpDefensivo: string;
+}
 
 export interface RivalAnalysis {
   id: string;
@@ -237,6 +262,9 @@ export interface RivalAnalysis {
   // null = todavía no se eligió; se preseleccionan por nombre.
   partidos?: string[] | null;
   dafo?: DafoRival | null;
+  jugadores_clave?: JugadorClave[] | null;
+  plan_partido?: PlanPartido | null;
+  temas_entrenamiento?: string[] | null;
   created_by?: string | null;
   created_at: string;
 }

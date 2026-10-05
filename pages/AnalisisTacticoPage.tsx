@@ -59,12 +59,43 @@ const TOOLS: ToolDef[] = [
   { type: 'text', label: 'Texto táctico', cursor: 'text', icon: <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-5 h-5"><polyline points="4,7 4,4 20,4 20,7" /><line x1="9" y1="20" x2="15" y2="20" /><line x1="12" y1="4" x2="12" y2="20" /></svg> },
 ];
 
+// ─── Tipos de análisis ────────────────────────────────────────────────────────
+// El usuario elige uno al crear cada análisis. Los nombres aparecen también en la biblioteca.
+type ModoAnalisis = 'momento' | 'secuencia' | 'tracking';
+const MODOS_ANALISIS: { id: ModoAnalisis; nombre: string; descripcion: string; badge: string; badgeClass: string }[] = [
+  { id: 'momento', nombre: 'Análisis momento clave', descripcion: 'El video se detiene en un momento, muestra tus dibujos y continúa.', badge: 'Funciona hoy', badgeClass: 'bg-green-900/50 text-green-300' },
+  { id: 'secuencia', nombre: 'Análisis de secuencia', descripcion: 'El video se detiene en varios momentos. En cada pausa muestra dibujos y una explicación que se borran antes de continuar.', badge: 'Nuevo', badgeClass: 'bg-cyan-900/50 text-cyan-300' },
+  { id: 'tracking', nombre: 'Tracking y telestración', descripcion: 'La plataforma sigue a los jugadores en movimiento y puedes marcarlos durante la jugada.', badge: 'En revisión', badgeClass: 'bg-amber-900/50 text-amber-300' },
+];
+
+// Un análisis guardado es de secuencia si sus dibujos traen número de pausa.
+const contarPausasGuardadas = (analysis: TacticalAnalysis): number => {
+  const nums = new Set<number>();
+  (analysis.annotations || []).forEach((a: any) => { if (typeof a?.pausa === 'number') nums.add(a.pausa); });
+  return nums.size;
+};
+const etiquetaTipoAnalisis = (analysis: TacticalAnalysis): string => {
+  const n = contarPausasGuardadas(analysis);
+  return n > 0 ? `Secuencia · ${n} pausa${n !== 1 ? 's' : ''}` : 'Momento clave';
+};
+
 // ─── Tipos internos ───────────────────────────────────────────────────────────
 
 interface MarkedPlayer {
   track_id: number;
   color: string;
   label: string;
+}
+
+// Una pausa de la secuencia: un momento del video donde el clip se congela, muestra sus
+// dibujos y su explicación, y luego los borra y sigue corriendo.
+interface PausaSecuencia {
+  id: string;
+  timestamp: number;                 // segundo del video donde se congela
+  frameDataUrl: string;              // cuadro capturado (para volver a editar)
+  annotations: TacticalAnnotation[]; // dibujos de esta pausa
+  freezeSeconds: number;             // cuánto dura congelado
+  texto: string;                     // explicación que aparece abajo durante la pausa
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -184,7 +215,41 @@ function drawAnnotation(mainCtx: CanvasRenderingContext2D, ann: TacticalAnnotati
   mainCtx.drawImage(off, 0, 0);
 }
 
-function renderFrame(canvas: HTMLCanvasElement, frameDataUrl: string, annotations: TacticalAnnotation[]) {
+// Dibuja la explicación de una pausa como subtítulo abajo al centro (deja libres las esquinas
+// inferiores, donde van los logos). Si el texto es largo, lo parte en varias líneas.
+function drawCaption(ctx: CanvasRenderingContext2D, W: number, H: number, texto: string, etiqueta?: string) {
+  const limpio = (texto || '').trim();
+  if (!limpio) return;
+  const fs = Math.max(16, Math.round(H * 0.042));
+  const maxW = W * 0.74;
+  const pad = Math.round(fs * 0.55);
+  ctx.save();
+  ctx.font = `bold ${fs}px sans-serif`;
+  const palabras = (etiqueta ? `${etiqueta}  ${limpio}` : limpio).split(/\s+/);
+  const lineas: string[] = [];
+  let actual = '';
+  for (const w of palabras) {
+    const prueba = actual ? `${actual} ${w}` : w;
+    if (ctx.measureText(prueba).width > maxW - pad * 2 && actual) { lineas.push(actual); actual = w; }
+    else actual = prueba;
+  }
+  if (actual) lineas.push(actual);
+  const lineH = Math.round(fs * 1.25);
+  const boxW = Math.min(maxW, Math.max(...lineas.map(l => ctx.measureText(l).width)) + pad * 2);
+  const boxH = lineas.length * lineH + pad * 2;
+  const boxX = (W - boxW) / 2;
+  const boxY = H - boxH - H * 0.05;
+  ctx.fillStyle = 'rgba(0,0,0,0.72)';
+  ctx.fillRect(boxX, boxY, boxW, boxH);
+  ctx.fillStyle = '#06B6D4';
+  ctx.fillRect(boxX, boxY, Math.max(4, fs * 0.2), boxH);
+  ctx.fillStyle = '#FFFFFF';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  lineas.forEach((l, i) => ctx.fillText(l, W / 2, boxY + pad + i * lineH));
+  ctx.restore();
+}
+
+function renderFrame(canvas: HTMLCanvasElement, frameDataUrl: string, annotations: TacticalAnnotation[], caption?: string) {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
   const img = new Image();
@@ -193,6 +258,7 @@ function renderFrame(canvas: HTMLCanvasElement, frameDataUrl: string, annotation
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(img, 0, 0);
     annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height));
+    if (caption) drawCaption(ctx, canvas.width, canvas.height, caption);
   };
   img.src = frameDataUrl;
 }
@@ -290,7 +356,9 @@ function loadImageFromUrl(url: string): Promise<HTMLImageElement | null> {
 // logo en cada clip). Se invalida automáticamente si se sube un logo nuevo para ese equipo.
 const teamLogoImgCache = new Map<string, HTMLImageElement | null>();
 
-async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: number, secondsBefore: number, annotations: TacticalAnnotation[], teamLogo: HTMLImageElement | null, freezeSeconds: number, endTimestamp: number | null): Promise<Blob> {
+type CropRect = { sx: number; sy: number; sWidth: number; sHeight: number };
+
+async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: number, secondsBefore: number, annotations: TacticalAnnotation[], teamLogo: HTMLImageElement | null, freezeSeconds: number, endTimestamp: number | null, crop: CropRect): Promise<Blob> {
   const golLogo = await loadGolLogo();
   return new Promise((resolve, reject) => {
     const startAt = Math.max(0, frameTimestamp - secondsBefore);
@@ -308,8 +376,8 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
       : MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
 
     const canvas = document.createElement('canvas');
-    canvas.width = videoElement.videoWidth;
-    canvas.height = videoElement.videoHeight;
+    canvas.width = crop.sWidth;
+    canvas.height = crop.sHeight;
     const ctx = canvas.getContext('2d');
     if (!ctx) { reject(new Error('No se pudo crear el canvas de grabación')); return; }
 
@@ -333,7 +401,7 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
 
     const drawMovingFrame = () => {
       if (phase !== 'moving1') return;
-      ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+      ctx.drawImage(videoElement, crop.sx, crop.sy, crop.sWidth, crop.sHeight, 0, 0, canvas.width, canvas.height);
       drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo, teamLogo);
       if (videoElement.currentTime >= frameTimestamp || videoElement.ended) freeze();
       else requestAnimationFrame(drawMovingFrame);
@@ -350,7 +418,7 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
       // confiable con un canvas estático, y eso cortaba el video antes de tiempo.
       const drawFrozenFrame = () => {
         if (phase !== 'frozen') return; // evita que un cuadro tardío se dibuje ya en otra fase
-        ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(videoElement, crop.sx, crop.sy, crop.sWidth, crop.sHeight, 0, 0, canvas.width, canvas.height);
         annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height));
         drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo, teamLogo);
         if (performance.now() - freezeStartedAt < freezeSeconds * 1000) {
@@ -372,7 +440,7 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
       videoElement.play();
       const drawResumedFrame = () => {
         if (phase !== 'moving2') return;
-        ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+        ctx.drawImage(videoElement, crop.sx, crop.sy, crop.sWidth, crop.sHeight, 0, 0, canvas.width, canvas.height);
         drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo, teamLogo);
         if (videoElement.currentTime >= (endTimestamp as number) || videoElement.ended) {
           videoElement.pause();
@@ -399,6 +467,116 @@ async function extractClip(videoElement: HTMLVideoElement, frameTimestamp: numbe
       if (phase === 'moving1') freeze();
       else if (phase !== 'moving2') recorder.stop();
     }, (moveDuration + freezeSeconds + secondPartDuration + 5) * 1000);
+  });
+}
+
+// ─── Clip en secuencia (varias pausas en un solo video) ──────────────────────
+// Igual que extractClip, pero con varias pausas: el video corre, se congela en cada pausa con
+// sus dibujos y su explicación, los borra al terminar la pausa y sigue corriendo hasta la
+// siguiente. Si dos pausas tienen el mismo segundo, se muestran una después de la otra sobre
+// el mismo cuadro. Al terminar la última pausa, sigue hasta endTimestamp (si se marcó).
+// La función extractClip original no se modificó: los análisis de una sola pausa sin
+// explicación se siguen generando exactamente igual que antes.
+async function extractSequenceClip(videoElement: HTMLVideoElement, pausas: PausaSecuencia[], secondsBefore: number, teamLogo: HTMLImageElement | null, endTimestamp: number | null, crop: CropRect): Promise<Blob> {
+  const golLogo = await loadGolLogo();
+  const orden = [...pausas].sort((a, b) => a.timestamp - b.timestamp);
+  return new Promise((resolve, reject) => {
+    if (orden.length === 0) { reject(new Error('La secuencia no tiene pausas')); return; }
+    const primera = orden[0].timestamp;
+    const ultima = orden[orden.length - 1].timestamp;
+    const startAt = Math.max(0, primera - secondsBefore);
+    const hasEnd = endTimestamp !== null && endTimestamp > ultima;
+    const total = orden.length;
+    const mimeType = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1') ? 'video/mp4;codecs=avc1'
+      : MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+
+    const canvas = document.createElement('canvas');
+    canvas.width = crop.sWidth;
+    canvas.height = crop.sHeight;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) { reject(new Error('No se pudo crear el canvas de grabación')); return; }
+
+    const canvasStream = canvas.captureStream(25);
+    let recordStream: MediaStream = canvasStream;
+    try {
+      const sourceStream: MediaStream | undefined = (videoElement as any).captureStream?.() ?? (videoElement as any).mozCaptureStream?.();
+      const audioTracks = sourceStream?.getAudioTracks?.() ?? [];
+      if (audioTracks.length > 0) recordStream = new MediaStream([...canvasStream.getVideoTracks(), ...audioTracks]);
+    } catch (err) { console.warn('No se pudo incluir audio en el clip:', err); }
+
+    const recorder = new MediaRecorder(recordStream, { mimeType });
+    const chunks: BlobPart[] = [];
+    let terminado = false;
+    recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+    recorder.onstop = () => { recordStream.getTracks().forEach(t => t.stop()); resolve(new Blob(chunks, { type: mimeType })); };
+    recorder.onerror = e => reject(e);
+
+    let idx = 0;                                // siguiente pausa por mostrar
+    let phase: 'moving' | 'frozen' | 'done' = 'moving';
+
+    const terminar = () => {
+      if (terminado) return;
+      terminado = true;
+      phase = 'done';
+      videoElement.pause();
+      if (recorder.state === 'recording') recorder.stop();
+    };
+
+    const drawMovingFrame = () => {
+      if (phase !== 'moving') return;
+      ctx.drawImage(videoElement, crop.sx, crop.sy, crop.sWidth, crop.sHeight, 0, 0, canvas.width, canvas.height);
+      drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo, teamLogo);
+      if (idx < total && (videoElement.currentTime >= orden[idx].timestamp || videoElement.ended)) { freeze(); return; }
+      if (idx >= total && (!hasEnd || videoElement.currentTime >= (endTimestamp as number) || videoElement.ended)) { terminar(); return; }
+      requestAnimationFrame(drawMovingFrame);
+    };
+
+    const freeze = () => {
+      if (phase === 'done') return;
+      phase = 'frozen';
+      videoElement.pause();
+      const pausa = orden[idx];
+      const etiqueta = `${idx + 1}/${total}`;
+      const inicio = performance.now();
+      // Se redibuja la imagen fija en cada cuadro durante toda la pausa (mismo motivo que en
+      // extractClip: no todos los navegadores graban bien un canvas que no cambia).
+      const drawFrozenFrame = () => {
+        if (phase !== 'frozen') return;
+        ctx.drawImage(videoElement, crop.sx, crop.sy, crop.sWidth, crop.sHeight, 0, 0, canvas.width, canvas.height);
+        pausa.annotations.forEach(ann => drawAnnotation(ctx, ann, canvas.width, canvas.height));
+        drawCaption(ctx, canvas.width, canvas.height, pausa.texto, pausa.texto.trim() ? etiqueta : undefined);
+        drawWatermarkLogos(ctx, canvas.width, canvas.height, golLogo, teamLogo);
+        if (performance.now() - inicio < pausa.freezeSeconds * 1000) {
+          requestAnimationFrame(drawFrozenFrame);
+          return;
+        }
+        idx++;
+        if (idx < total && orden[idx].timestamp <= videoElement.currentTime + 0.05) {
+          // Siguiente pausa en el mismo momento: se muestra de inmediato sobre el mismo cuadro.
+          freeze();
+        } else if (idx < total || hasEnd) {
+          phase = 'moving';
+          videoElement.play();
+          requestAnimationFrame(drawMovingFrame);
+        } else {
+          terminar();
+        }
+      };
+      requestAnimationFrame(drawFrozenFrame);
+    };
+
+    videoElement.currentTime = startAt;
+    videoElement.onseeked = () => {
+      videoElement.onseeked = null;
+      recorder.start();
+      videoElement.play();
+      requestAnimationFrame(drawMovingFrame);
+    };
+
+    // Salvaguarda por si algo se cuelga (ej. el video nunca llega a un timestamp esperado).
+    const duracionVideo = (hasEnd ? (endTimestamp as number) : ultima) - startAt;
+    const duracionPausas = orden.reduce((acc, p) => acc + p.freezeSeconds, 0);
+    setTimeout(() => terminar(), (duracionVideo + duracionPausas + 10) * 1000);
   });
 }
 
@@ -491,6 +669,70 @@ const AnalisisTacticoPage: React.FC = () => {
   const [selectedVideo, setSelectedVideo] = useState<VideoMeta | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  // ── Zoom digital para clips/frames de Análisis Táctico ──────────────────
+  // Mismo principio que el zoom del video de "pantalla aparte" (acerca los
+  // píxeles que ya existen, no inventa detalle nuevo). Se elige ANTES de
+  // capturar el primer cuadro de un clip; desde ahí queda fijo (congelado en
+  // `cropRectRef`, en coordenadas reales del video) para que los 8 segundos
+  // previos, el cuadro congelado y el resto del clip usen el mismo encuadre.
+  const viewportWrapRef = useRef<HTMLDivElement>(null);
+  const [zoom, setZoom] = useState(1);
+  const [panX, setPanX] = useState(0);
+  const [panY, setPanY] = useState(0);
+  const [zoomLocked, setZoomLocked] = useState(false);
+  const cropRectRef = useRef<CropRect | null>(null);
+
+  const computeCropRect = useCallback((video: HTMLVideoElement): CropRect => {
+    const vw = video.videoWidth || 1, vh = video.videoHeight || 1;
+    if (zoom <= 1) return { sx: 0, sy: 0, sWidth: vw, sHeight: vh };
+    // OJO: getBoundingClientRect() da el tamaño YA con el zoom (scale) aplicado
+    // por CSS — hay que quitarle ese zoom para recuperar el tamaño real en
+    // pantalla antes de la transformación, si no, el arrastre (pan) se vuelve
+    // cada vez menos efectivo entre más zoom uses, y el recorte se queda
+    // pegado cerca de la esquina superior izquierda sin importar cuánto arrastres.
+    const rect = video.getBoundingClientRect();
+    const displayW = (rect.width || vw) / zoom, displayH = (rect.height || vh) / zoom;
+    const scaleX = vw / displayW, scaleY = vh / displayH;
+    const sWidth = vw / zoom, sHeight = vh / zoom;
+    let sx = (-panX / zoom) * scaleX;
+    let sy = (-panY / zoom) * scaleY;
+    sx = Math.max(0, Math.min(vw - sWidth, sx));
+    sy = Math.max(0, Math.min(vh - sHeight, sy));
+    return { sx, sy, sWidth, sHeight };
+  }, [zoom, panX, panY]);
+
+  // El recorte efectivo para cualquier captura: si ya está fijo (clip en
+  // curso), usa ese; si no, lo calcula del zoom/pan actuales.
+  const getActiveCropRect = useCallback((video: HTMLVideoElement): CropRect => {
+    return cropRectRef.current || computeCropRect(video);
+  }, [computeCropRect]);
+
+  const zoomBy = (delta: number) => {
+    if (zoomLocked) return;
+    setZoom(z => {
+      const nz = Math.min(4, Math.max(1, z + delta));
+      if (nz === 1) { setPanX(0); setPanY(0); }
+      return nz;
+    });
+  };
+  const resetZoomUI = () => { if (zoomLocked) return; setZoom(1); setPanX(0); setPanY(0); };
+  // Se llama en cada punto donde empieza un clip/jugada nueva — desbloquea
+  // el zoom para que puedas elegir uno distinto en la siguiente captura.
+  const resetZoomClip = () => { setZoomLocked(false); cropRectRef.current = null; setZoom(1); setPanX(0); setPanY(0); };
+
+  const draggingZoomRef = useRef(false);
+  const dragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  const handleZoomMouseDown = (e: React.MouseEvent) => {
+    if (zoom <= 1 || zoomLocked) return;
+    draggingZoomRef.current = true;
+    dragStartRef.current = { x: e.clientX, y: e.clientY, panX, panY };
+  };
+  const handleZoomMouseMove = (e: React.MouseEvent) => {
+    if (!draggingZoomRef.current) return;
+    setPanX(dragStartRef.current.panX + (e.clientX - dragStartRef.current.x));
+    setPanY(dragStartRef.current.panY + (e.clientY - dragStartRef.current.y));
+  };
+  const handleZoomMouseUp = () => { draggingZoomRef.current = false; };
   const videoFileRef = useRef<File | null>(null);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoFileName, setVideoFileName] = useState('');
@@ -506,6 +748,11 @@ const AnalisisTacticoPage: React.FC = () => {
   const [activeColor, setActiveColor] = useState(TOOL_COLORS[0]);
   const [activeStroke, setActiveStroke] = useState(3);
   const [description, setDescription] = useState('');
+  // ── Secuencia de pausas ─────────────────────────────────────────────────
+  const [modo, setModo] = useState<ModoAnalisis | null>(null); // tipo elegido al crear (null = aún no elige)
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [pausas, setPausas] = useState<PausaSecuencia[]>([]);
+  const [captionActual, setCaptionActual] = useState(''); // explicación de la pausa que se está dibujando
   const [playerLabel, setPlayerLabel] = useState('');
   const [textInput, setTextInput] = useState('');
 
@@ -857,8 +1104,8 @@ const AnalisisTacticoPage: React.FC = () => {
   const redrawCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas || !frameDataUrl) return;
-    renderFrame(canvas, frameDataUrl, previewAnn ? [...annotations, previewAnn] : annotations);
-  }, [frameDataUrl, annotations, previewAnn]);
+    renderFrame(canvas, frameDataUrl, previewAnn ? [...annotations, previewAnn] : annotations, captionActual);
+  }, [frameDataUrl, annotations, previewAnn, captionActual]);
 
   useEffect(() => { redrawCanvas(); }, [redrawCanvas]);
 
@@ -988,18 +1235,28 @@ const AnalisisTacticoPage: React.FC = () => {
     videoFileRef.current = file;
     setVideoUrl(URL.createObjectURL(file)); setVideoFileName(file.name);
     setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]);
+    setPausas([]); setCaptionActual(''); setEndTimestamp(null);
     setTrackingJobId(null); setTrackingError(null);
+    resetZoomClip();
   };
 
   const captureFrame = useCallback(() => {
     const v = videoRef.current; if (!v) return;
-    const off = makeOffscreen(v.videoWidth, v.videoHeight);
-    off.getContext('2d')!.drawImage(v, 0, 0);
+    if (!cropRectRef.current) {
+      cropRectRef.current = computeCropRect(v);
+      setZoomLocked(true);
+      console.log('[DEBUG ZOOM] cropRectRef fijado al capturar:', cropRectRef.current, '— zoom/pan en ese momento:', zoom, panX, panY);
+    }
+    const crop = cropRectRef.current;
+    const off = makeOffscreen(crop.sWidth, crop.sHeight);
+    off.getContext('2d')!.drawImage(v, crop.sx, crop.sy, crop.sWidth, crop.sHeight, 0, 0, crop.sWidth, crop.sHeight);
     setFrameDataUrl(off.toDataURL('image/jpeg', 0.92));
     setFrameTimestamp(v.currentTime);
-    setAnnotations([]); setPreviewAnn(null);
-    setEndTimestamp(null); // el punto final quedó ligado al frame anterior, ya no aplica
-  }, []);
+    setAnnotations([]); setPreviewAnn(null); setCaptionActual('');
+    // El punto final solo se conserva si sigue siendo posterior al nuevo frame.
+    const t = v.currentTime;
+    setEndTimestamp(prev => (prev !== null && prev > t ? prev : null));
+  }, [computeCropRect]);
 
   // Avanza/retrocede el video con precisión, en vez de "adivinar" con la barra nativa.
   const stepVideo = (delta: number) => {
@@ -1008,11 +1265,42 @@ const AnalisisTacticoPage: React.FC = () => {
   };
 
   // Marca dónde termina la 2a parte (el video reanuda sin dibujos después del cuadro congelado).
+  // En una secuencia, el punto final debe ser posterior a la última pausa.
   const markEndTimestamp = () => {
-    const v = videoRef.current; if (!v || frameTimestamp === null) return;
-    if (v.currentTime <= frameTimestamp) { setError('El punto final debe ser posterior al frame capturado.'); return; }
+    const v = videoRef.current; if (!v) return;
+    const referencias = [...pausas.map(p => p.timestamp), ...(frameTimestamp !== null ? [frameTimestamp] : [])];
+    if (referencias.length === 0) return;
+    const ultima = Math.max(...referencias);
+    if (v.currentTime <= ultima) { setError(pausas.length > 0 ? 'El punto final debe ser posterior a la última pausa.' : 'El punto final debe ser posterior al frame capturado.'); return; }
+    setError(null);
     setEndTimestamp(v.currentTime);
   };
+
+  // ─── Secuencia: agregar, editar y quitar pausas ──────────────────────────
+  const agregarPausa = () => {
+    if (!frameDataUrl || frameTimestamp === null || annotations.length === 0) return;
+    const nueva: PausaSecuencia = {
+      id: `pausa_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      timestamp: frameTimestamp, frameDataUrl, annotations, freezeSeconds, texto: captionActual.trim(),
+    };
+    setPausas(prev => [...prev, nueva].sort((a, b) => a.timestamp - b.timestamp));
+    // Se limpia el lienzo para capturar el siguiente momento. El video queda donde estaba.
+    setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]); setPreviewAnn(null); setCaptionActual('');
+  };
+
+  const editarPausa = (id: string) => {
+    const p = pausas.find(x => x.id === id); if (!p) return;
+    // Si había un cuadro a medio dibujar, se guarda primero como pausa para no perderlo.
+    const pendiente: PausaSecuencia[] = (frameDataUrl && frameTimestamp !== null && annotations.length > 0)
+      ? [{ id: `pausa_${Date.now()}`, timestamp: frameTimestamp, frameDataUrl, annotations, freezeSeconds, texto: captionActual.trim() }]
+      : [];
+    setPausas(prev => [...prev.filter(x => x.id !== id), ...pendiente].sort((a, b) => a.timestamp - b.timestamp));
+    setFrameDataUrl(p.frameDataUrl); setFrameTimestamp(p.timestamp); setAnnotations(p.annotations);
+    setFreezeSeconds(p.freezeSeconds); setCaptionActual(p.texto); setPreviewAnn(null);
+    if (videoRef.current) videoRef.current.currentTime = p.timestamp;
+  };
+
+  const quitarPausa = (id: string) => setPausas(prev => prev.filter(x => x.id !== id));
 
   const handleStartTracking = async () => {
     if (!videoFileRef.current || !selectedVideoId || !selectedMatchId || !profile?.team_id || !user?.id) return;
@@ -1031,7 +1319,14 @@ const AnalisisTacticoPage: React.FC = () => {
   };
 
   const saveAnalysis = async () => {
-    if (!selectedMatchId || !selectedVideoId || frameTimestamp === null || annotations.length === 0) return;
+    // Pausas finales: las ya agregadas + el cuadro que se está dibujando (si tiene dibujos).
+    const pausaActual: PausaSecuencia[] = (frameDataUrl && frameTimestamp !== null && annotations.length > 0)
+      ? [{ id: 'pausa_actual', timestamp: frameTimestamp, frameDataUrl, annotations, freezeSeconds, texto: captionActual.trim() }]
+      : [];
+    const pausasFinales = [...pausas, ...pausaActual].sort((a, b) => a.timestamp - b.timestamp);
+    // Modo secuencia si hay más de una pausa o si se escribió una explicación para el video.
+    const usarSecuencia = modo === 'secuencia';
+    if (!selectedMatchId || !selectedVideoId || pausasFinales.length === 0) return;
     const video = videoRef.current; if (!video) return;
     setSaving(true); setError(null); let clipStoragePath: string | null = null;
     try {
@@ -1056,22 +1351,51 @@ const AnalisisTacticoPage: React.FC = () => {
 
       setUploadingClip(true); setUploadProgress('Extrayendo clip de video...');
       let clipBlob: Blob | null = null;
-      try { clipBlob = await extractClip(video, frameTimestamp, secondsBefore, annotations, teamLogoImg, freezeSeconds, endTimestamp); } catch (err) { console.warn('No se pudo extraer el clip:', err); }
+      let clipErrorMsg: string | null = null;
+      try {
+        // Recorte (zoom) fijado al capturar el primer cuadro de este clip. Si
+        // nunca se tocó el zoom, cropRectRef sigue null y esto es el cuadro
+        // completo — mismo comportamiento de siempre.
+        const crop: CropRect = cropRectRef.current || { sx: 0, sy: 0, sWidth: video.videoWidth, sHeight: video.videoHeight };
+        console.log('[DEBUG ZOOM] cropRectRef.current al guardar:', cropRectRef.current, '— crop que se va a usar:', crop, '— video nativo:', video.videoWidth, 'x', video.videoHeight);
+        if (usarSecuencia) {
+          setUploadProgress(`Generando video con ${pausasFinales.length} pausa${pausasFinales.length !== 1 ? 's' : ''}... no cambies de pestaña`);
+          clipBlob = await extractSequenceClip(video, pausasFinales, secondsBefore, teamLogoImg, endTimestamp, crop);
+        } else {
+          const unica = pausasFinales[0];
+          clipBlob = await extractClip(video, unica.timestamp, secondsBefore, unica.annotations, teamLogoImg, unica.freezeSeconds, endTimestamp, crop);
+        }
+      } catch (err: any) { console.warn('No se pudo extraer el clip:', err); clipErrorMsg = `No se pudo generar el video del clip (${err?.message || err}).`; }
       if (clipBlob) {
         setUploadProgress('Subiendo clip a Storage...');
         const ext = clipBlob.type.includes('mp4') ? 'mp4' : 'webm';
         const fileName = `${user!.id}/${selectedMatchId}/${Date.now()}.${ext}`;
         const { data: ud, error: ue } = await supabase.storage.from(CLIP_BUCKET).upload(fileName, clipBlob, { contentType: clipBlob.type, upsert: false });
-        if (ue) console.warn('Error subiendo clip:', ue); else clipStoragePath = ud.path;
+        if (ue) { console.warn('Error subiendo clip:', ue); clipErrorMsg = `No se pudo subir el video del clip (${ue.message}).`; } else clipStoragePath = ud.path;
       }
+      // El análisis se guarda de todas formas aunque el clip falle (así no pierdes
+      // tus dibujos ni tu descripción) — pero ahora SÍ te avisa, en vez de quedarse
+      // callado y enterarte después de que falta el video.
+      if (clipErrorMsg) setError(`${clipErrorMsg} El análisis se guardará sin video — puedes volver a intentar el clip después.`);
       setUploadingClip(false); setUploadProgress('Guardando análisis...');
       const tipoFinal = (showCustomTipo ? tipoAnalisisCustom.trim() : tipoAnalisis.trim()) || null;
-      const payload: TacticalAnalysisInsert = { match_id: selectedMatchId, team_id: matchTeamId, video_id: selectedVideoId, timestamp_video: frameTimestamp, annotations, description: description.trim() || undefined, created_by: user!.id, clip_storage_path: clipStoragePath, tipo_analisis: tipoFinal };
+      // En secuencia: se guardan todos los dibujos (cada uno marcado con su número de pausa) y la
+      // descripción incluye la explicación de cada pausa con su segundo en el video.
+      const anotacionesFinales: TacticalAnnotation[] = usarSecuencia
+        ? pausasFinales.flatMap((p, i) => p.annotations.map(a => ({ ...a, pausa: i + 1, pausa_timestamp: p.timestamp })))
+        : pausasFinales[0].annotations;
+      const lineasPausas = usarSecuencia
+        ? pausasFinales.map((p, i) => p.texto ? `${i + 1}. [${formatTime(p.timestamp)}] ${p.texto}` : '').filter(Boolean)
+        : [];
+      const descripcionFinal = [description.trim(), ...lineasPausas].filter(Boolean).join('\n');
+      const payload: TacticalAnalysisInsert = { match_id: selectedMatchId, team_id: matchTeamId, video_id: selectedVideoId, timestamp_video: pausasFinales[0].timestamp, annotations: anotacionesFinales, description: descripcionFinal || undefined, created_by: user!.id, clip_storage_path: clipStoragePath, tipo_analisis: tipoFinal };
       const { data, error: ie } = await supabase.from('tactical_analysis').insert(payload).select().single();
       if (ie) throw ie;
       setAnalyses(prev => [data, ...prev]);
       setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]);
+      setPausas([]); setCaptionActual(''); setModo(null);
       setEndTimestamp(null); setFreezeSeconds(DEFAULT_FREEZE_SECONDS);
+      resetZoomClip();
       setDescription(''); setSelectedMatchId(''); setSelectedVideoId(''); setSelectedVideo(null); setMatchVideos([]);
       setTipoAnalisis(''); setTipoAnalisisCustom(''); setShowCustomTipo(false);
       if (teamLogoPreviewUrl) URL.revokeObjectURL(teamLogoPreviewUrl);
@@ -1124,7 +1448,7 @@ const AnalisisTacticoPage: React.FC = () => {
             className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>Volver
           </button>
-          <h2 className="text-lg font-bold text-white">Modo Tracking</h2>
+          <h2 className="text-lg font-bold text-white">Tracking y telestración</h2>
           <span className="text-xs bg-violet-900/40 text-violet-400 border border-violet-800 px-2 py-0.5 rounded">{selectedVideo?.video_file}</span>
           {isRecording && <span className="flex items-center gap-1.5 text-xs bg-red-900/40 text-red-400 border border-red-700 px-2 py-0.5 rounded animate-pulse"><span className="w-2 h-2 bg-red-500 rounded-full inline-block" />Grabando</span>}
         </div>
@@ -1142,7 +1466,13 @@ const AnalisisTacticoPage: React.FC = () => {
 
             {/* Canvas principal */}
             <div className="relative bg-black rounded-xl overflow-hidden border border-gray-700">
-              <video ref={trackingVideoRefCallback} src={videoUrl ?? undefined} className="hidden" playsInline />
+              {/* OJO: nunca usar display:none (className="hidden") aquí — Chrome/Edge
+                  dejan de decodificar los cuadros de un <video> completamente oculto así,
+                  y el canvas que lo dibuja se queda en negro para siempre. Se mantiene
+                  "invisible" pero sí renderizado (tamaño 1x1, opacidad 0) para que el
+                  navegador lo siga reproduciendo de verdad. */}
+              <video ref={trackingVideoRefCallback} src={videoUrl ?? undefined} playsInline
+                style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }} />
               <canvas ref={trackingCanvasRef} className="w-full h-auto block" style={{ cursor: isVideoPaused ? 'crosshair' : 'default' }} onClick={handleTrackingCanvasClick} />
               {/* Controles superpuestos */}
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-4 py-3 flex items-center gap-3">
@@ -1240,10 +1570,11 @@ const AnalisisTacticoPage: React.FC = () => {
         <div className="bg-gray-800 rounded-xl p-4 space-y-2">
           <p className="text-cyan-400 text-sm font-medium">{getMatchLabel(selectedAnalysis.match_id)}</p>
           <div className="flex flex-wrap gap-4 text-xs text-gray-400">
+            <span className="text-gray-300 bg-gray-700 px-2 py-0.5 rounded">{etiquetaTipoAnalisis(selectedAnalysis)}</span>
             <span>⏱ En el video: <span className="text-white font-medium">{formatTime(selectedAnalysis.timestamp_video)}</span></span>
             <span className="text-gray-600">·</span><span>{date}</span>
           </div>
-          {selectedAnalysis.description && <p className="text-gray-300 text-sm bg-gray-700/50 rounded p-2">{selectedAnalysis.description}</p>}
+          {selectedAnalysis.description && <p className="text-gray-300 text-sm bg-gray-700/50 rounded p-2 whitespace-pre-line">{selectedAnalysis.description}</p>}
         </div>
         {loadingClip ? (
           <div className="flex items-center gap-3 bg-gray-800 rounded-xl p-6 text-gray-400"><Spinner /><span className="text-sm">Cargando análisis...</span></div>
@@ -1315,15 +1646,40 @@ const AnalisisTacticoPage: React.FC = () => {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>Volver
           </button>
           <h2 className="text-lg font-bold text-white">Nuevo Análisis Táctico</h2>
+          {modo && (
+            <>
+              <span className="text-xs text-cyan-300 bg-cyan-900/40 border border-cyan-800 px-2 py-0.5 rounded">{MODOS_ANALISIS.find(m => m.id === modo)?.nombre}</span>
+              <button type="button" onClick={() => { setModo(null); setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]); setPausas([]); setCaptionActual(''); setEndTimestamp(null); setError(null); resetZoomClip(); }}
+                className="text-xs text-gray-400 hover:text-cyan-400 underline">Cambiar tipo</button>
+            </>
+          )}
         </div>
         {error && <div className="bg-red-900/40 border border-red-500 rounded-lg p-3 text-red-300 text-sm">{error}</div>}
 
+        {/* Selector de tipo de análisis */}
+        {modo === null && (
+          <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+            <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Elige el tipo de análisis</h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {MODOS_ANALISIS.map(m => (
+                <button key={m.id} type="button" onClick={() => { setModo(m.id); setError(null); }}
+                  className="text-left bg-gray-900/60 hover:bg-gray-700/60 border border-gray-700 hover:border-cyan-500 rounded-lg p-4 transition-colors">
+                  <span className={`inline-block text-[10px] px-2 py-0.5 rounded mb-2 ${m.badgeClass}`}>{m.badge}</span>
+                  <p className="text-white font-medium text-sm">{m.nombre}</p>
+                  <p className="text-gray-400 text-xs mt-1">{m.descripcion}</p>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {modo !== null && (<>
         {/* Paso 1 */}
         <div className="bg-gray-800 rounded-xl p-4 space-y-3">
           <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
             <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">1</span>Selecciona el partido
           </h3>
-          <select value={selectedMatchId} onChange={e => { setSelectedMatchId(e.target.value); setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]); }}
+          <select value={selectedMatchId} onChange={e => { setSelectedMatchId(e.target.value); setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]); setPausas([]); setCaptionActual(''); setEndTimestamp(null); resetZoomClip(); }}
             className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none">
             <option value="">Selecciona un partido</option>
             {matches.map(m => <option key={m.id} value={m.id}>{m.nombre_equipo} vs {m.rival} — J{m.jornada} · {m.torneo} · {m.categoria}</option>)}
@@ -1377,8 +1733,11 @@ const AnalisisTacticoPage: React.FC = () => {
         {videoUrl && selectedVideo && (
           <div className="bg-gray-800 rounded-xl p-4 space-y-3">
             <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
-              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">4</span>Captura el frame a analizar
+              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">4</span>{modo === 'tracking' ? 'Procesa el video para seguir a los jugadores' : modo === 'secuencia' ? 'Captura cada momento de la secuencia' : 'Captura el frame a analizar'}
             </h3>
+            {modo === 'secuencia' && (
+              <p className="text-gray-400 text-xs">Avanza el video al primer momento, captura el frame, dibuja y escribe la explicación. Luego guarda la pausa y repite con el siguiente momento. Al final marca dónde termina el clip y guarda la secuencia.</p>
+            )}
             {frameTimestamp !== null && (
               <div className="flex items-center gap-4 text-xs bg-gray-700/50 rounded-lg px-3 py-2">
                 <span className="text-gray-400">En el video: <span className="text-white font-medium">{formatTime(frameTimestamp)}</span></span>
@@ -1386,7 +1745,34 @@ const AnalisisTacticoPage: React.FC = () => {
                 <span className="text-gray-400">Minuto del partido: <span className="text-cyan-400 font-medium">{formatTime(getAbsoluteTs(selectedVideo, frameTimestamp))}</span></span>
               </div>
             )}
-            <video ref={videoRef} src={videoUrl} className="w-full rounded-lg" controls />
+            <div
+              ref={viewportWrapRef}
+              className="relative w-full rounded-lg overflow-hidden"
+              style={{ cursor: zoom > 1 ? 'grab' : 'default' }}
+              onMouseDown={handleZoomMouseDown}
+              onMouseMove={handleZoomMouseMove}
+              onMouseUp={handleZoomMouseUp}
+              onMouseLeave={handleZoomMouseUp}
+            >
+              <video
+                ref={videoRef} src={videoUrl} className="w-full rounded-lg" controls
+                onLoadedMetadata={e => setVideoDuration(e.currentTarget.duration || 0)}
+                style={{ transform: `translate(${panX}px,${panY}px) scale(${zoom})`, transformOrigin: '0 0' }}
+              />
+            </div>
+            <div className="flex items-center justify-center gap-1.5 bg-gray-700/50 rounded-lg px-3 py-2">
+              <span className="text-xs text-gray-500 mr-1">
+                Zoom {zoomLocked ? '(fijo para este clip)' : '(elige antes de capturar)'}:
+              </span>
+              <button type="button" onClick={() => zoomBy(-0.5)} disabled={zoomLocked}
+                className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed text-gray-200 rounded text-xs font-mono transition-colors">🔍−</button>
+              <span className="text-xs text-gray-400 w-10 text-center">{Math.round(zoom * 100)}%</span>
+              <button type="button" onClick={() => zoomBy(0.5)} disabled={zoomLocked}
+                className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed text-gray-200 rounded text-xs font-mono transition-colors">🔍+</button>
+              <button type="button" onClick={resetZoomUI} disabled={zoomLocked}
+                className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed text-gray-200 rounded text-xs font-mono transition-colors">Zoom 1:1</button>
+              {zoom > 1 && !zoomLocked && <span className="text-xs text-gray-500 ml-1">Arrastra el video para moverte</span>}
+            </div>
             <div className="flex items-center justify-center gap-1.5 bg-gray-700/50 rounded-lg px-3 py-2">
               <span className="text-xs text-gray-500 mr-1">Navegar:</span>
               <button onClick={() => stepVideo(-5)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">-5s</button>
@@ -1394,17 +1780,35 @@ const AnalisisTacticoPage: React.FC = () => {
               <button onClick={() => stepVideo(0.1)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">+0.1s</button>
               <button onClick={() => stepVideo(5)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">+5s</button>
             </div>
+            {modo !== 'tracking' && (<>
             <div className="flex items-center gap-3 bg-gray-700/50 rounded-lg px-3 py-2">
               <span className="text-xs text-gray-400">Segundos de contexto:</span>
               <input type="number" min={3} max={30} value={secondsBefore} onChange={e => setSecondsBefore(Number(e.target.value))} className="w-14 bg-gray-700 text-white text-center rounded px-2 py-1 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none" />
-              <span className="text-xs text-gray-500">seg antes del frame</span>
+              <span className="text-xs text-gray-500">{modo === 'secuencia' ? 'seg antes de la primera pausa' : 'seg antes del frame'}</span>
             </div>
             <div className="flex items-center gap-3 bg-gray-700/50 rounded-lg px-3 py-2">
               <span className="text-xs text-gray-400">Cuadro congelado:</span>
               <input type="number" min={1} max={15} value={freezeSeconds} onChange={e => setFreezeSeconds(Number(e.target.value))} className="w-14 bg-gray-700 text-white text-center rounded px-2 py-1 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none" />
-              <span className="text-xs text-gray-500">seg mostrando las anotaciones</span>
+              <span className="text-xs text-gray-500">{modo === 'secuencia' ? 'seg que dura congelada esta pausa' : 'seg mostrando las anotaciones'}</span>
             </div>
-            {frameTimestamp !== null && (
+            </>)}
+            {modo === 'secuencia' && (pausas.length > 0 || frameTimestamp !== null) && (
+              <div className="bg-gray-700/50 rounded-lg px-3 py-2 space-y-2">
+                <span className="text-xs text-gray-400 block">Fin del clip (opcional): después de la última pausa, el video sigue corriendo sin dibujos hasta este punto. Márcalo al final, por ejemplo después del gol.</span>
+                {endTimestamp === null ? (
+                  <button onClick={markEndTimestamp} type="button" className="flex items-center gap-2 px-3 py-1.5 bg-gray-600 hover:bg-gray-500 text-gray-200 rounded-lg text-xs font-medium transition-colors">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M5 12h14M12 5l7 7-7 7" /></svg>
+                    Marcar aquí el fin del clip
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-3 text-xs">
+                    <span className="text-green-400">Termina en: <span className="font-medium">{formatTime(endTimestamp)}</span></span>
+                    <button onClick={() => setEndTimestamp(null)} type="button" className="text-gray-400 hover:text-red-400 underline">Quitar</button>
+                  </div>
+                )}
+              </div>
+            )}
+            {modo === 'momento' && frameTimestamp !== null && (
               <div className="bg-gray-700/50 rounded-lg px-3 py-2 space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="text-xs text-gray-400">2ª parte (opcional): el video sigue corriendo, sin dibujos, después del cuadro congelado</span>
@@ -1423,14 +1827,42 @@ const AnalisisTacticoPage: React.FC = () => {
               </div>
             )}
             <div className="flex flex-wrap gap-2">
+              {modo !== 'tracking' && (
               <button onClick={captureFrame} className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="12" cy="12" r="3" /></svg>Capturar frame actual
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="12" cy="12" r="3" /></svg>{modo === 'secuencia' && frameDataUrl ? 'Volver a capturar este momento' : 'Capturar frame actual'}
               </button>
+              )}
+              {modo === 'tracking' && (
               <button onClick={handleStartTracking} disabled={isTracking}
                 className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors">
-                {isTracking ? <><Spinner /><span>Procesando...</span></> : <><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /><path d="M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12" /></svg>Modo Tracking</>}
+                {isTracking ? <><Spinner /><span>Procesando...</span></> : <><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /><path d="M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12" /></svg>Iniciar tracking</>}
               </button>
+              )}
             </div>
+            {modo === 'secuencia' && (pausas.length > 0 || frameTimestamp !== null) && videoDuration > 0 && (
+              <div className="bg-gray-700/50 rounded-lg px-3 pt-3 pb-2">
+                <div className="flex items-center justify-between text-xs mb-2">
+                  <span className="text-gray-300 font-medium">Línea de tiempo</span>
+                  <span className="text-gray-500">0:00 – {formatTime(videoDuration)}</span>
+                </div>
+                <div className="relative h-8">
+                  <div className="absolute left-0 right-0 top-3 h-1.5 rounded-full bg-gray-600" />
+                  {pausas.map((p, i) => (
+                    <button key={p.id} type="button" title={`Pausa ${i + 1} · ${formatTime(p.timestamp)}${p.texto ? ' · ' + p.texto : ''}`} onClick={() => editarPausa(p.id)}
+                      className="absolute top-0.5 -ml-2.5 w-5 h-5 rounded-full bg-cyan-500 hover:bg-cyan-400 text-gray-900 text-[10px] font-bold flex items-center justify-center"
+                      style={{ left: `${Math.min(100, (p.timestamp / videoDuration) * 100)}%` }}>{i + 1}</button>
+                  ))}
+                  {frameTimestamp !== null && (
+                    <div title="Pausa que estás dibujando" className="absolute top-0.5 -ml-2.5 w-5 h-5 rounded-full border-2 border-cyan-300 bg-gray-800"
+                      style={{ left: `${Math.min(100, (frameTimestamp / videoDuration) * 100)}%` }} />
+                  )}
+                  {endTimestamp !== null && (
+                    <div title={`Fin del clip · ${formatTime(endTimestamp)}`} className="absolute top-0 -ml-0.5 w-1 h-6 bg-green-500 rounded"
+                      style={{ left: `${Math.min(100, (endTimestamp / videoDuration) * 100)}%` }} />
+                  )}
+                </div>
+              </div>
+            )}
             {isTracking && (
               <div className="space-y-2 bg-gray-700/50 rounded-lg px-4 py-3">
                 <div className="flex items-center justify-between text-xs"><span className="text-violet-300 font-medium">{trackingPhase}</span><span className="text-gray-400">{trackingPercent}%</span></div>
@@ -1452,11 +1884,11 @@ const AnalisisTacticoPage: React.FC = () => {
         )}
 
         {/* Paso 5 */}
-        {frameDataUrl && (
+        {frameDataUrl && modo !== 'tracking' && (
           <div className="space-y-3">
             <div className="bg-gray-800 rounded-xl p-3 space-y-3">
               <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
-                <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">5</span>Dibuja las anotaciones
+                <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">5</span>{modo === 'secuencia' ? `Dibuja esta pausa · ${frameTimestamp !== null ? formatTime(frameTimestamp) : ''}` : 'Dibuja las anotaciones'}
               </h3>
               <div className="flex flex-wrap gap-1.5">
                 {TOOLS.map(tool => (
@@ -1500,6 +1932,44 @@ const AnalisisTacticoPage: React.FC = () => {
             <div className="bg-gray-900 rounded-xl overflow-hidden border border-gray-700">
               <canvas ref={canvasRef} className="w-full h-auto block" style={{ cursor: TOOLS.find(t => t.type === activeTool)?.cursor || 'crosshair' }} onMouseDown={handleCanvasMouseDown} />
             </div>
+            {modo === 'secuencia' && (
+              <div className="bg-gray-800 rounded-xl p-4 space-y-3">
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Explicación de esta pausa (aparece abajo en el video)</label>
+                  <input type="text" value={captionActual} onChange={e => setCaptionActual(e.target.value)} maxLength={140} placeholder="Ej. Los cobradores se comunican entre ellos"
+                    className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none" />
+                </div>
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <span className="text-xs text-gray-500">Congelada {freezeSeconds} seg · {annotations.length} dibujo{annotations.length !== 1 ? 's' : ''}</span>
+                  <button type="button" onClick={agregarPausa} disabled={annotations.length === 0}
+                    className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors">
+                    Guardar pausa y capturar la siguiente
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+        {/* Lista de pausas de la secuencia */}
+        {modo === 'secuencia' && pausas.length > 0 && (
+          <div className="bg-gray-800 rounded-xl p-4 space-y-2">
+            <h3 className="text-sm font-semibold text-gray-300">Pausas ({pausas.length})</h3>
+            {pausas.map((p, i) => (
+              <div key={p.id} className="flex items-center gap-3 bg-gray-900/60 rounded-lg px-3 py-2">
+                <span className="w-6 h-6 rounded-full bg-cyan-600 text-white text-xs font-bold flex items-center justify-center flex-shrink-0">{i + 1}</span>
+                <div className="flex-1 min-w-0">
+                  <p className="text-white text-xs font-medium">{formatTime(p.timestamp)} · {p.freezeSeconds} s · {p.annotations.length} dibujo{p.annotations.length !== 1 ? 's' : ''}</p>
+                  <p className="text-gray-400 text-xs truncate">{p.texto || 'Sin explicación'}</p>
+                </div>
+                <button type="button" onClick={() => editarPausa(p.id)} className="text-xs text-cyan-400 hover:text-cyan-300 underline flex-shrink-0">Editar</button>
+                <button type="button" onClick={() => quitarPausa(p.id)} className="text-xs text-gray-400 hover:text-red-400 underline flex-shrink-0">Quitar</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Guardar */}
+        {((modo === 'momento' && frameDataUrl) || (modo === 'secuencia' && (frameDataUrl || pausas.length > 0))) && (
             <div className="bg-gray-800 rounded-xl p-4 space-y-3">
               <div>
                 <label className="block text-xs text-gray-500 mb-1">Carpeta / tipo de análisis</label>
@@ -1545,17 +2015,25 @@ const AnalisisTacticoPage: React.FC = () => {
               )}
               <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Descripción táctica (opcional)..." rows={2}
                 className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none resize-none" />
+              {modo === 'secuencia' && (pausas.length > 0 || frameTimestamp !== null) && (() => {
+                const todas = [...pausas.map(p => ({ t: p.timestamp, f: p.freezeSeconds })), ...(frameTimestamp !== null && annotations.length > 0 ? [{ t: frameTimestamp, f: freezeSeconds }] : [])];
+                if (todas.length === 0) return null;
+                const inicio = Math.max(0, Math.min(...todas.map(x => x.t)) - secondsBefore);
+                const fin = endTimestamp !== null && endTimestamp > Math.max(...todas.map(x => x.t)) ? endTimestamp : Math.max(...todas.map(x => x.t));
+                const pausasSeg = todas.reduce((a, x) => a + x.f, 0);
+                return <p className="text-xs text-gray-400">Duración aproximada del video: <span className="text-white font-medium">{formatTime(Math.round(fin - inicio + pausasSeg))}</span> ({Math.round(fin - inicio)} s de jugada + {pausasSeg} s de pausas). Generarlo tarda lo mismo; no cambies de pestaña mientras se genera.</p>;
+              })()}
               {(saving || uploadingClip) && uploadProgress && (
                 <div className="flex items-center gap-2 text-cyan-400 text-sm bg-cyan-900/20 rounded-lg px-3 py-2"><Spinner /><span>{uploadProgress}</span></div>
               )}
-              <button onClick={saveAnalysis} disabled={saving || !selectedMatchId || !selectedVideoId || frameTimestamp === null || annotations.length === 0}
+              <button onClick={saveAnalysis} disabled={saving || !selectedMatchId || !selectedVideoId || (pausas.length === 0 && (frameTimestamp === null || annotations.length === 0))}
                 className="flex items-center gap-2 px-5 py-2.5 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors">
                 {saving ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v14a2 2 0 01-2 2z" /><path d="M17 21v-8H7v8M7 3v5h8" /></svg>}
-                Guardar análisis
+                {modo === 'secuencia' ? `Guardar secuencia (${pausas.length + (frameDataUrl && annotations.length > 0 ? 1 : 0)} pausa${pausas.length + (frameDataUrl && annotations.length > 0 ? 1 : 0) !== 1 ? 's' : ''})` : 'Guardar análisis'}
               </button>
             </div>
-          </div>
         )}
+        </>)}
       </div>
     );
   }
@@ -1577,7 +2055,7 @@ const AnalisisTacticoPage: React.FC = () => {
                 {selectMode ? 'Cancelar selección' : 'Seleccionar'}
               </button>
             )}
-            <button onClick={() => setView('create')} className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M12 5v14M5 12h14" /></svg>Nuevo análisis</button>
+            <button onClick={() => { setModo(null); setView('create'); }} className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M12 5v14M5 12h14" /></svg>Nuevo análisis</button>
           </div>
         )}
       </div>
@@ -1634,7 +2112,7 @@ const AnalisisTacticoPage: React.FC = () => {
           <div className="text-center py-16 text-gray-500">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="w-12 h-12 mx-auto mb-3 opacity-40"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M9 21V9" /></svg>
             <p className="text-sm">No hay análisis tácticos{filterMatchId !== 'all' || filterTorneo !== 'all' || filterCategoria !== 'all' ? ' con estos filtros' : ' guardados'}.</p>
-            {isAdmin && <button onClick={() => setView('create')} className="mt-3 text-cyan-400 hover:text-cyan-300 text-sm underline">Crear el primero</button>}
+            {isAdmin && <button onClick={() => { setModo(null); setView('create'); }} className="mt-3 text-cyan-400 hover:text-cyan-300 text-sm underline">Crear el primero</button>}
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -1679,7 +2157,7 @@ const AnalisisTacticoPage: React.FC = () => {
                       <div key={analysis.id} className="bg-gray-800 rounded-xl p-3 border border-gray-700">
                         <div className="mb-2">
                           <p className="text-white font-medium text-sm">{match ? `${match.nombre_equipo} vs ${match.rival}` : 'Partido desconocido'}</p>
-                          <p className="text-gray-500 text-xs">{match ? `${match.torneo} · J${match.jornada}` : ''} · {formatTime(analysis.timestamp_video)}</p>
+                          <p className="text-gray-500 text-xs">{match ? `${match.torneo} · J${match.jornada}` : ''} · {formatTime(analysis.timestamp_video)} · {etiquetaTipoAnalisis(analysis)}</p>
                         </div>
                         {!analysis.clip_storage_path ? (
                           <div className="aspect-video bg-gray-900 rounded-lg flex items-center justify-center text-gray-600 text-xs text-center px-4">Este análisis no tiene video guardado</div>
@@ -1746,6 +2224,7 @@ const AnalisisTacticoPage: React.FC = () => {
                             <div className="flex-1 min-w-0"><p className="text-white font-medium text-sm truncate">{match ? `${match.nombre_equipo} vs ${match.rival}` : 'Partido desconocido'}</p><p className="text-gray-500 text-xs mt-0.5">{match ? `${match.torneo} · J${match.jornada}` : ''}</p></div>
                             <div className="flex flex-col items-end gap-1 ml-2 flex-shrink-0">
                               <span className="text-xs text-cyan-400 bg-cyan-900/30 px-2 py-0.5 rounded">{formatTime(analysis.timestamp_video)}</span>
+                              <span className="text-xs text-gray-300 bg-gray-700 px-2 py-0.5 rounded">{etiquetaTipoAnalisis(analysis)}</span>
                               {analysis.clip_storage_path && (<span className="text-xs text-green-400 bg-green-900/30 px-2 py-0.5 rounded flex items-center gap-1"><svg viewBox="0 0 24 24" fill="currentColor" className="w-3 h-3"><path d="M8 5v14l11-7z" /></svg>Video</span>)}
                             </div>
                           </div>

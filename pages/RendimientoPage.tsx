@@ -13,6 +13,9 @@ import MapaZonas from '../components/charts/MapaZonas';
 import GolesPorTipo from '../components/charts/GolesPorTipo';
 import MapaPorteria from '../components/charts/MapaPorteria';
 import { esAccionBalonParado, contarPenales, PENAL_FAVOR, PENAL_CONTRA } from '../utils/balonParado';
+import type { PlayerMatchStatus } from '../types';
+import { fetchEstatusPorPartidos } from '../services/asistenciaService';
+import { calcularMinutosPorPartidos } from '../services/minutosService';
 
 const RendimientoPage: React.FC = () => {
     const { profile } = useAuth();
@@ -154,6 +157,30 @@ const RendimientoPage: React.FC = () => {
         return new Set(filteredMatches.map(m => m.id));
     }, [filteredMatches]);
 
+    // Alineación/ausencias de los partidos dentro del filtro actual.
+    const [estatusRows, setEstatusRows] = useState<PlayerMatchStatus[]>([]);
+    // Minutos jugados calculados (no capturados) — uno por jugador, sumado
+    // sobre todos los partidos dentro del filtro actual.
+    const [minutosMap, setMinutosMap] = useState<Record<string, number>>({});
+    const [mostrarTablaEquipo, setMostrarTablaEquipo] = useState(false);
+    useEffect(() => {
+        let cancelado = false;
+        (async () => {
+            try {
+                const ids = Array.from(filteredMatchIds);
+                const [rows, minutos] = await Promise.all([
+                    fetchEstatusPorPartidos(ids),
+                    calcularMinutosPorPartidos(ids),
+                ]);
+                if (!cancelado) { setEstatusRows(rows); setMinutosMap(minutos); }
+            } catch (err) {
+                console.error('No se pudo cargar alineación/minutos:', err);
+                if (!cancelado) { setEstatusRows([]); setMinutosMap({}); }
+            }
+        })();
+        return () => { cancelado = true; };
+    }, [filteredMatchIds]);
+
     // Create match lookup map for performance
     const matchLookup = useMemo(() => {
         const map = new Map<string, Match>();
@@ -169,6 +196,16 @@ const RendimientoPage: React.FC = () => {
             filteredMatchIds.has(tag.match_id)
         );
     }, [tags, selectedPlayerId, filteredMatchIds]);
+
+    // Minutos jugados y ausencias del jugador seleccionado, dentro del filtro actual.
+    const asistenciaJugador = useMemo(() => {
+        const filas = estatusRows.filter(r => r.player_id === selectedPlayerId);
+        const minutosJugados = minutosMap[selectedPlayerId] || 0;
+        const lesion = filas.filter(r => r.estatus === 'lesionado').length;
+        const noConvocado = filas.filter(r => r.estatus === 'no_convocado').length;
+        const falta = filas.filter(r => r.estatus === 'falta').length;
+        return { minutosJugados, lesion, noConvocado, falta, totalAusencias: lesion + noConvocado + falta };
+    }, [estatusRows, minutosMap, selectedPlayerId]);
 
     // Clear all filters
     const clearFilters = () => {
@@ -513,6 +550,18 @@ const RendimientoPage: React.FC = () => {
         }
     }, [filteredPlayers, selectedPlayerId]);
 
+    // Tabla de todo el equipo (colapsada por default) — minutos y ausencias por jugador.
+    const tablaEquipoMinutos = useMemo(() => {
+        return filteredPlayers.map(p => {
+            const filas = estatusRows.filter(r => r.player_id === p.id);
+            const minutos = minutosMap[p.id] || 0;
+            const lesion = filas.filter(r => r.estatus === 'lesionado').length;
+            const noConvocado = filas.filter(r => r.estatus === 'no_convocado').length;
+            const falta = filas.filter(r => r.estatus === 'falta').length;
+            return { jugador: p.nombre, minutos, lesion, noConvocado, falta };
+        }).sort((a, b) => b.minutos - a.minutos);
+    }, [filteredPlayers, estatusRows, minutosMap]);
+
     const selectedPlayer = players.find(p => p.id === selectedPlayerId);
 
     // Calculate action stats for AI analysis
@@ -828,7 +877,7 @@ const RendimientoPage: React.FC = () => {
             ) : (
                 <>
                     {/* KPIs */}
-                    <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
                         <div className="bg-gradient-to-br from-cyan-600 to-cyan-700 rounded-lg p-6 shadow-lg">
                             <p className="text-cyan-100 text-sm mb-1">Total Acciones</p>
                             <p className="text-white text-3xl font-bold">{kpis.totalAcciones}</p>
@@ -849,7 +898,18 @@ const RendimientoPage: React.FC = () => {
                                 {kpis.peorJornada ? `J${kpis.peorJornada.jornada} (${kpis.peorJornada.efectividad}%)` : '-'}
                             </p>
                         </div>
+                        <div className="bg-gradient-to-br from-teal-600 to-teal-700 rounded-lg p-6 shadow-lg">
+                            <p className="text-teal-100 text-sm mb-1">Minutos Jugados</p>
+                            <p className="text-white text-3xl font-bold">{asistenciaJugador.minutosJugados}</p>
+                        </div>
+                        <div className="bg-gradient-to-br from-red-600 to-red-700 rounded-lg p-6 shadow-lg">
+                            <p className="text-red-100 text-sm mb-1">Ausencias: {asistenciaJugador.totalAusencias}</p>
+                            <p className="text-white text-sm font-semibold">
+                                Lesión {asistenciaJugador.lesion} · No convocado {asistenciaJugador.noConvocado} · Falta {asistenciaJugador.falta}
+                            </p>
+                        </div>
                     </div>
+
 
                     {/* Charts */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
@@ -1522,6 +1582,43 @@ const RendimientoPage: React.FC = () => {
                     </div>
                 </>
             )}
+
+            {/* Tabla de minutos y ausencias de todo el equipo — colapsada por default */}
+            <div className="bg-gray-800 rounded-lg p-4 mt-8">
+                <button
+                    onClick={() => setMostrarTablaEquipo(v => !v)}
+                    className="w-full flex items-center justify-between text-left"
+                >
+                    <span className="text-lg font-semibold text-white">Minutos y ausencias — todo el equipo</span>
+                    <span className="text-cyan-400">{mostrarTablaEquipo ? '▼' : '▶'}</span>
+                </button>
+                {mostrarTablaEquipo && (
+                    <div className="mt-3 overflow-x-auto">
+                        <table className="w-full text-sm">
+                            <thead>
+                                <tr className="text-left text-gray-400 border-b border-gray-700">
+                                    <th className="py-2 pr-4">Jugador</th>
+                                    <th className="py-2 pr-4">Minutos</th>
+                                    <th className="py-2 pr-4">Lesión</th>
+                                    <th className="py-2 pr-4">No convocado</th>
+                                    <th className="py-2 pr-4">Falta</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {tablaEquipoMinutos.map(row => (
+                                    <tr key={row.jugador} className="border-b border-gray-700/50">
+                                        <td className="py-2 pr-4 text-white">{row.jugador}</td>
+                                        <td className="py-2 pr-4 text-gray-200">{row.minutos}</td>
+                                        <td className="py-2 pr-4 text-gray-200">{row.lesion}</td>
+                                        <td className="py-2 pr-4 text-gray-200">{row.noConvocado}</td>
+                                        <td className="py-2 pr-4 text-gray-200">{row.falta}</td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                )}
+            </div>
         </div>
     );
 };
