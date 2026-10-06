@@ -6,7 +6,7 @@ import { PITCH_BASE64 } from '../constants/pitchBase64';
 import { PORTERIA_ESTADIO_BASE64 } from '../constants/porteriaEstadioBase64';
 import type { Match, Tag, Player, RivalAnalysis, RivalTipo, RivalZona } from '../types';
 import { TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona, etiquetaZona } from '../utils/zonas';
-import { esJugadorFicticio } from '../utils/efectividad';
+import { esJugadorFicticio, cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios } from '../utils/efectividad';
 import { ALTURAS, LADOS, codigoPorteria, detalleGolDe, resumenGol, etiquetaPorteria } from '../utils/goles';
 import { esAccionBalonParado, contarCobros, contarPenales, envioMasUsado, ENVIO_LABEL, CORNER_FAVOR, CORNER_CONTRA, TL_FAVOR, TL_CONTRA, PENAL_FAVOR, PENAL_CONTRA } from '../utils/balonParado';
 
@@ -148,24 +148,16 @@ function stripMd(text: string): string {
   return text.replace(/\*\*(.*?)\*\*/g, '$1').replace(/\*(.*?)\*/g, '$1');
 }
 
-// ── Mismas reglas de efectividad que pages/DashboardPage.tsx ────────────
-const ACCIONES_EXCLUIDAS_EFECTIVIDAD_GLOBAL = new Set<string>(['Tiros a portería']);
-const ACCIONES_SIEMPRE_LOGRADA = new Set<string>([
-  'Atajadas', 'Goles a favor', 'Recuperación de balón', 'Transición ofensiva lograda',
-]);
-const ACCIONES_SIEMPRE_FALLADA = new Set<string>([
-  'Goles recibidos', 'Transición ofensiva no lograda', 'Pérdida de balón',
-]);
-const isElegible = (tag: Tag): boolean => !ACCIONES_EXCLUIDAS_EFECTIVIDAD_GLOBAL.has(tag.accion);
-const isLograda = (tag: Tag): boolean => {
-  if (ACCIONES_SIEMPRE_LOGRADA.has(tag.accion)) return true;
-  if (ACCIONES_SIEMPRE_FALLADA.has(tag.accion)) return false;
-  return tag.resultado === 'logrado';
-};
-function calcularEfectividad(tags: Tag[]): number {
-  const elegibles = tags.filter(isElegible);
+// Mismas reglas de efectividad que usan el Tablero y Rendimiento — viven en
+// utils/efectividad.ts, un solo lugar para toda la plataforma. Antes el
+// PowerPoint tenía su propia copia de estas reglas, separada, y cuando se
+// ajustaron las reglas compartidas esta copia se quedó vieja — por eso el
+// % del PowerPoint no coincidía con el del Tablero. Ya no hay copia aparte.
+function calcularEfectividad(tags: Tag[], players: Player[]): number {
+  const idsFicticios = obtenerIdsJugadoresFicticios(players);
+  const elegibles = tags.filter((t) => cuentaEnEfectividad(t, idsFicticios));
   if (elegibles.length === 0) return 0;
-  const logradas = elegibles.filter(isLograda).length;
+  const logradas = elegibles.filter(esAccionLograda).length;
   return Math.round((logradas / elegibles.length) * 100);
 }
 
@@ -632,7 +624,7 @@ export async function generateMatchReportPptx(
 
   const analysis = await analyzeTeamPerformance(match.nombre_equipo, [match], tags, players);
 
-  const efectividadGeneral = calcularEfectividad(tags);
+  const efectividadGeneral = calcularEfectividad(tags, players);
   const goalsFor = tags.filter((t) => t.accion === 'Goles a favor').length;
   const goalsAgainst = tags.filter((t) => t.accion === 'Goles recibidos').length;
   const recuperaciones = tags.filter((t) => t.accion === 'Recuperación de balón').length;
@@ -649,7 +641,7 @@ export async function generateMatchReportPptx(
     const otherIds = otherMatches.map((m: Match) => m.id);
     const { data: otherTagsData } = await supabase.from('tags').select('*').in('match_id', otherIds);
     const otherTags = ((otherTagsData || []) as Tag[]).filter((t) => !esAccionBalonParado(t.accion));
-    if (otherTags.length > 0) promedioTorneo = calcularEfectividad(otherTags);
+    if (otherTags.length > 0) promedioTorneo = calcularEfectividad(otherTags, players);
   }
 
   const destacadosConDatos = analysis.jugadoresDestacados.slice(0, 4).map((jd) => {
@@ -666,7 +658,7 @@ export async function generateMatchReportPptx(
     }
     const playerTags = player ? tags.filter((t) => t.player_id === player.id) : [];
     const acciones = playerTags.length;
-    const efectividad = acciones > 0 ? calcularEfectividad(playerTags) : null;
+    const efectividad = acciones > 0 ? calcularEfectividad(playerTags, players) : null;
     return { nombre: jd.nombre, razon: stripMd(jd.razon), acciones, efectividad };
   });
 
