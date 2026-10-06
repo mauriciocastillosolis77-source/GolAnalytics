@@ -1131,25 +1131,55 @@ export async function generateMatchReportPptx(
       { title: 'OPORTUNIDADES', sub: 'para nosotros', items: d.oportunidades || [], fill: COLOR.blueLight, color: COLOR.blue },
       { title: 'AMENAZAS', sub: 'para nosotros', items: d.amenazas || [], fill: COLOR.redLight, color: COLOR.red },
     ];
-    const qw = 5.75, qh = 2.3, gapX = 0.3, gapY = 0.2, startX = 0.6, startY = 1.55;
-    quads.forEach((q, i) => {
-      const col = i % 2, row = Math.floor(i / 2);
-      const x = startX + col * (qw + gapX), y = startY + row * (qh + gapY);
-      slide.addShape(pres.ShapeType.roundRect, { x, y, w: qw, h: qh, rectRadius: 0.08, fill: { color: q.fill }, line: { type: 'none' } });
-      slide.addText([
-        { text: q.title, options: { bold: true, color: q.color } },
-        { text: '   ' + q.sub, options: { color: COLOR.gray, italic: true } },
-      ] as any, { x: x + 0.3, y: y + 0.16, w: qw - 0.6, h: 0.32, fontFace: FONT_BODY, fontSize: 12, charSpacing: 0.5, isTextBox: true, margin: 0 });
-      const items = (q.items.length ? q.items : ['Sin datos suficientes.']).slice(0, 4);
-      slide.addText(
-        items.map((t, j) => ({ text: stripMd(t), options: { bullet: { code: '2022' }, breakLine: j < items.length - 1, paraSpaceAfter: 7 } })) as any,
-        { x: x + 0.3, y: y + 0.54, w: qw - 0.6, h: qh - 0.68, fontFace: FONT_BODY, fontSize: 11.5, color: COLOR.ink, valign: 'top', isTextBox: true, margin: 0 }
-      );
-    });
+    const qw = 5.75, gapX = 0.3, gapY = 0.2, startX = 0.6;
+    // Antes qh (alto de cada caja) era fijo — con bullets largos o 4 en vez de
+    // 2-3, el texto se salía por debajo del color. Ahora se mide el contenido
+    // real de cada cuadrante antes de dibujar. Y si las 4 categorías (con
+    // bullets largos) de plano no caben en una sola diapositiva por mucho que
+    // se calcule bien, la fila 2 pasa a una diapositiva nueva — en vez de
+    // forzarla o cortar contenido, mismo criterio que ya se usa en el resto
+    // del reporte (Balón Parado, Jugadores Clave, Plan de Partido).
+    const itemsDe = (q: typeof quads[number]) => (q.items.length ? q.items : ['Sin datos suficientes.']).slice(0, 4);
+    const estimarAltura = (items: string[]) => {
+      let h = 0.56;
+      items.forEach(t => { h += Math.max(1, Math.ceil(stripMd(t).length / 55)) * 0.23 + 0.1; });
+      return Math.max(1.5, h + 0.18);
+    };
+    const dibujarFila = (slideActual: pptxgen.Slide, y: number, izq: typeof quads[number], der: typeof quads[number]) => {
+      const leftItems = itemsDe(izq), rightItems = itemsDe(der);
+      const qh = Math.max(estimarAltura(leftItems), estimarAltura(rightItems));
+      [{ q: izq, items: leftItems, col: 0 }, { q: der, items: rightItems, col: 1 }].forEach(({ q, items, col }) => {
+        const x = startX + col * (qw + gapX);
+        slideActual.addShape(pres.ShapeType.roundRect, { x, y, w: qw, h: qh, rectRadius: 0.08, fill: { color: q.fill }, line: { type: 'none' } });
+        slideActual.addText([
+          { text: q.title, options: { bold: true, color: q.color } },
+          { text: '   ' + q.sub, options: { color: COLOR.gray, italic: true } },
+        ] as any, { x: x + 0.3, y: y + 0.16, w: qw - 0.6, h: 0.32, fontFace: FONT_BODY, fontSize: 12, charSpacing: 0.5, isTextBox: true, margin: 0 });
+        slideActual.addText(
+          items.map((t, j) => ({ text: stripMd(t), options: { bullet: { code: '2022' }, breakLine: j < items.length - 1, paraSpaceAfter: 7 } })) as any,
+          { x: x + 0.3, y: y + 0.54, w: qw - 0.6, h: qh - 0.68, fontFace: FONT_BODY, fontSize: 11.5, color: COLOR.ink, valign: 'top', isTextBox: true, margin: 0 }
+        );
+      });
+      return qh;
+    };
+    let slideActual = slide;
+    let y = 1.55;
+    const alturaFila1 = Math.max(estimarAltura(itemsDe(quads[0])), estimarAltura(itemsDe(quads[1])));
+    const alturaFila2 = Math.max(estimarAltura(itemsDe(quads[2])), estimarAltura(itemsDe(quads[3])));
+    const cabenLasDos = y + alturaFila1 + gapY + alturaFila2 <= 6.85;
+    y += dibujarFila(slideActual, y, quads[0], quads[1]) + gapY;
+    if (!cabenLasDos) {
+      footer(pres, slideActual, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+      slideActual = pres.addSlide();
+      slideActual.background = { color: COLOR.white };
+      sectionHeader(slideActual, 'Próximo partido', `DAFO del rival — ${match.rival} (continuación)`);
+      y = 1.55;
+    }
+    y += dibujarFila(slideActual, y, quads[2], quads[3]) + gapY;
     const fecha = d.generado ? new Date(d.generado).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
-    slide.addText(`Generado con IA en Análisis del Rival${fecha ? ` el ${fecha}` : ''} · con ${d.momentos ?? 0} momentos del rival y ${d.partidos ?? 0} partido${d.partidos === 1 ? '' : 's'} contra él.`,
-      { x: 0.6, y: 6.45, w: 11.8, h: 0.28, fontFace: FONT_BODY, fontSize: 9, italic: true, color: COLOR.gray, isTextBox: true, margin: 0 });
-    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+    slideActual.addText(`Generado con IA en Análisis del Rival${fecha ? ` el ${fecha}` : ''} · con ${d.momentos ?? 0} momentos del rival y ${d.partidos ?? 0} partido${d.partidos === 1 ? '' : 's'} contra él.`,
+      { x: 0.6, y: Math.min(7.05, y - gapY + 0.1), w: 11.8, h: 0.28, fontFace: FONT_BODY, fontSize: 9, italic: true, color: COLOR.gray, isTextBox: true, margin: 0 });
+    footer(pres, slideActual, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
 
   // Slide — Plan de Partido del rival (estrategia + adaptaciones + ABP) y
@@ -1172,9 +1202,15 @@ export async function generateMatchReportPptx(
       y = 1.6;
     };
 
+    // Antes se asumía ~90-110 caracteres por línea en un cuadro de 11.8in de
+    // ancho — midiendo el PowerPoint real contra lo que de verdad ocupó cada
+    // párrafo, el ancho real da más como ~130. Con el número viejo, cada
+    // bloque se creía más alto de lo que en verdad es, y se repartía en más
+    // diapositivas de las necesarias, con mucho espacio vacío en cada una.
+    const CHARS_POR_LINEA = 130;
     if (plan.estrategia) {
-      const alturaTexto = Math.ceil(plan.estrategia.length / 110) * 0.3 + 0.3;
-      nuevoSlideSiNoCabe(alturaTexto + 0.3);
+      const alturaTexto = Math.ceil(plan.estrategia.length / CHARS_POR_LINEA) * 0.3 + 0.3;
+      nuevoSlideSiNoCabe(alturaTexto + 0.15);
       slide.addText(plan.estrategia, { x: 0.6, y, w: 11.8, h: alturaTexto, fontFace: FONT_BODY, fontSize: 12, color: COLOR.ink, isTextBox: true, margin: 0 });
       y += alturaTexto + 0.3;
     }
@@ -1182,9 +1218,9 @@ export async function generateMatchReportPptx(
     const bloquePlan = (titulo: string, contenido: string | string[]) => {
       const esLista = Array.isArray(contenido);
       const alturaContenido = esLista
-        ? (contenido as string[]).reduce((sum, it) => sum + Math.ceil(it.length / 90) * 0.26 + 0.1, 0)
-        : Math.ceil((contenido as string).length / 110) * 0.26 + 0.2;
-      nuevoSlideSiNoCabe(0.4 + alturaContenido + 0.3);
+        ? (contenido as string[]).reduce((sum, it) => sum + Math.ceil(it.length / CHARS_POR_LINEA) * 0.26 + 0.1, 0)
+        : Math.ceil((contenido as string).length / CHARS_POR_LINEA) * 0.26 + 0.2;
+      nuevoSlideSiNoCabe(0.4 + alturaContenido + 0.15);
       slide.addText(titulo, { x: 0.6, y, w: 11.8, h: 0.32, fontFace: FONT_BODY, fontSize: 11.5, bold: true, color: COLOR.indigo, isTextBox: true, margin: 0 });
       y += 0.38;
       if (esLista) {
