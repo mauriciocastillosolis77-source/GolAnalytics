@@ -159,6 +159,47 @@ const GenerarReportesPage: React.FC = () => {
 
   const allSelected = !!(torneo && categoria && jornada && equipo);
 
+  // Análisis del Rival a usar para este reporte — antes se adivinaba
+  // comparando el nombre del rival del partido contra el "rival_name" que se
+  // haya escrito en Análisis del Rival, y si no coincidían letra por letra
+  // (ej. "Pumas Chalco" vs "Pumas Chalco 2012"), todo el bloque del rival se
+  // quedaba fuera del reporte sin avisar. Ahora se elige a mano — también
+  // resuelve el caso de tener varios análisis del mismo equipo en momentos
+  // distintos de la temporada.
+  const [rivalAnalysesDisponibles, setRivalAnalysesDisponibles] = useState<Array<{ id: string; rival_name: string; created_at: string }>>([]);
+  const [selectedRivalAnalysisId, setSelectedRivalAnalysisId] = useState<string>('');
+  const [cargandoRivalAnalyses, setCargandoRivalAnalyses] = useState(false);
+  useEffect(() => {
+    let cancelado = false;
+    setSelectedRivalAnalysisId('');
+    if (!selectedMatch?.team_id) { setRivalAnalysesDisponibles([]); return; }
+    setCargandoRivalAnalyses(true);
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from('rival_analysis')
+          .select('id, rival_name, created_at')
+          .eq('team_id', selectedMatch.team_id)
+          .order('created_at', { ascending: false });
+        if (error) throw error;
+        if (cancelado) return;
+        const lista = data || [];
+        setRivalAnalysesDisponibles(lista);
+        // Preselecciona el que coincida por nombre con el rival del partido,
+        // como punto de partida cómodo — pero el usuario puede cambiarlo.
+        const rivalPartido = (selectedMatch.rival || '').trim().toLowerCase();
+        const coincide = lista.find((r) => (r.rival_name || '').trim().toLowerCase() === rivalPartido);
+        setSelectedRivalAnalysisId(coincide?.id || '');
+      } catch (err) {
+        console.error('No se pudieron cargar los análisis del rival:', err);
+        if (!cancelado) setRivalAnalysesDisponibles([]);
+      } finally {
+        if (!cancelado) setCargandoRivalAnalyses(false);
+      }
+    })();
+    return () => { cancelado = true; };
+  }, [selectedMatch?.team_id, selectedMatch?.rival]);
+
   // Cómo jugamos (estilo de este partido) — el carril y el bloque de presión
   // se precargan con el mismo cálculo real que usa el PowerPoint; el usuario
   // los puede corregir (selector) y reescribir el texto (con lo que vio en
@@ -356,7 +397,7 @@ const GenerarReportesPage: React.FC = () => {
         : undefined;
 
       const estiloOverride = { carrilSide, carrilLabel: carrilTexto.trim(), bloqueAltura, bloqueLabel: bloqueTexto.trim() };
-      await generateMatchReportPptx(selectedMatch, authorName.trim() || undefined, positionsMap || undefined, modeloDeJuego, estiloOverride);
+      await generateMatchReportPptx(selectedMatch, authorName.trim() || undefined, positionsMap || undefined, modeloDeJuego, estiloOverride, selectedRivalAnalysisId || null);
     } catch (err: any) {
       console.error('Error generating report:', err);
       setGenError(err?.message || 'Error al generar el reporte. Intenta de nuevo.');
@@ -375,7 +416,7 @@ const GenerarReportesPage: React.FC = () => {
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
-      <h1 className="text-3xl font-bold mb-2 text-white">Generar Reportes</h1>
+      <h1 className="text-3xl font-bold mb-2 text-white">Análisis Ejecutivo Post Partido</h1>
       <p className="text-gray-400 mb-6">
         Arma el reporte de PowerPoint de un partido específico para compartir con el entrenador.
       </p>
@@ -468,6 +509,28 @@ const GenerarReportesPage: React.FC = () => {
           )}
           {positionsError && <p className="text-xs text-red-400 mt-2">{positionsError}</p>}
         </div>
+
+        {allSelected && (
+          <div className="mt-6 pt-6 border-t border-gray-700">
+            <label className="block text-sm font-medium mb-1 text-gray-300">Análisis del Rival a usar en este reporte</label>
+            <p className="text-xs text-gray-500 mb-2">Si tienes varios análisis guardados del mismo rival (de momentos distintos), elige cuál quieres que traiga el reporte — fases, balón parado, jugadores clave, DAFO del rival y plan de partido.</p>
+            {cargandoRivalAnalyses ? (
+              <p className="text-xs text-gray-500">Cargando…</p>
+            ) : rivalAnalysesDisponibles.length === 0 ? (
+              <p className="text-xs text-amber-400">No hay ningún Análisis del Rival guardado para este equipo todavía — el reporte se generará sin esa sección.</p>
+            ) : (
+              <select value={selectedRivalAnalysisId} onChange={(e) => setSelectedRivalAnalysisId(e.target.value)}
+                className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none">
+                <option value="">— Ninguno (el reporte no incluirá sección del rival) —</option>
+                {rivalAnalysesDisponibles.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.rival_name} — {new Date(r.created_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' })}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
 
         <div className="mt-6 pt-6 border-t border-gray-700">
           <label className="block text-sm font-medium mb-1 text-gray-300">Cómo jugamos — estilo de este partido</label>
