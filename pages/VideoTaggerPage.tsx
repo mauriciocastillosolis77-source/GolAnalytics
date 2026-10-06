@@ -8,7 +8,8 @@ import { analyzeVideoFrames } from '../services/geminiService';
 import { analyzeVideoSegment, extractFramesFromSegment, type SegmentAnalysisProgress, type TeamUniformContext } from '../services/geminiSegmentService';
 import { blobToBase64 } from '../utils/blob';
 import AISuggestionsModal from '../components/ai/AISuggestionsModal';
-import { fetchVideosForMatch, createVideoForMatch, Video as VideoMeta } from '../services/videosService';
+import { fetchVideosForMatch, createVideoForMatch, updateVideoMeta, Video as VideoMeta } from '../services/videosService';
+import { secondsToMmss } from '../utils/time';
 import { fetchTeams, getOrCreateTeam, type Team } from '../services/teamsService';
 import { ACCIONES_CON_ZONA, TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona, etiquetaZona, zonaDesdeVoz } from '../utils/zonas';
 import { esJugadorFicticio } from '../utils/efectividad';
@@ -54,6 +55,30 @@ const VideoTaggerPage: React.FC = () => {
     const [showNewVideoModal, setShowNewVideoModal] = useState(false);
     const [newVideoFileName, setNewVideoFileName] = useState('');
     const [newVideoOffset, setNewVideoOffset] = useState('00:00');
+    const [newVideoDuration, setNewVideoDuration] = useState('');
+    // Para corregir la duración de videos registrados ANTES de que este campo
+    // existiera (como videos ya guardados sin duration_seconds) — sin esto,
+    // los minutos jugados salen cortados porque no se sabe dónde termina
+    // el partido.
+    const [editVideoDuration, setEditVideoDuration] = useState('');
+    const [guardandoVideoDuration, setGuardandoVideoDuration] = useState(false);
+    useEffect(() => {
+        const v = videos.find(x => x.id === selectedVideoId);
+        setEditVideoDuration(v?.duration_seconds ? secondsToMmss(v.duration_seconds) : '');
+    }, [selectedVideoId, videos]);
+    const handleGuardarDuracionVideo = async () => {
+        if (!selectedVideoId || !editVideoDuration) return;
+        setGuardandoVideoDuration(true);
+        try {
+            const updated = await updateVideoMeta(selectedVideoId, editVideoDuration);
+            setVideos(prev => prev.map(v => v.id === updated.id ? updated : v));
+        } catch (err: any) {
+            console.error('Error guardando duración del video', err);
+            alert('No se pudo guardar la duración: ' + (err?.message || err));
+        } finally {
+            setGuardandoVideoDuration(false);
+        }
+    };
     const [isCreatingVideo, setIsCreatingVideo] = useState(false);
 
     // Section 3: Tagging
@@ -733,13 +758,14 @@ const VideoTaggerPage: React.FC = () => {
         
         setIsCreatingVideo(true);
         try {
-            const created = await createVideoForMatch(selectedMatchId, selectedMatch.team_id, newVideoFileName, newVideoOffset, null);
+            const created = await createVideoForMatch(selectedMatchId, selectedMatch.team_id, newVideoFileName, newVideoOffset, null, newVideoDuration);
             setVideos(prev => [...prev, created]);
             setSelectedVideoId(created.id);
             setSelectedVideo(created);
             setShowNewVideoModal(false);
             setNewVideoFileName('');
             setNewVideoOffset('00:00');
+            setNewVideoDuration('');
         } catch (err: any) {
             console.error('Error creating video metadata', err);
             alert('Error creando video: ' + (err?.message || String(err)));
@@ -2281,11 +2307,21 @@ const VideoTaggerPage: React.FC = () => {
                         <select value={selectedVideoId} onChange={e => setSelectedVideoId(e.target.value)} className="flex-1 bg-gray-700 p-2 rounded">
                             <option value="">-- Seleccione video registrado --</option>
                             {videos.map(v => (
-                                <option key={v.id} value={v.id}>{v.video_file} (offset: {v.start_offset_seconds}s)</option>
+                                <option key={v.id} value={v.id}>{v.video_file} (inicia {secondsToMmss(v.start_offset_seconds)}){v.duration_seconds ? ` · dura ${secondsToMmss(v.duration_seconds)}` : ' · ⚠ sin duración'}</option>
                             ))}
                         </select>
                         <button onClick={() => setShowNewVideoModal(true)} className="ml-2 bg-indigo-600 hover:bg-indigo-500 p-2 rounded text-white text-sm">Registrar nuevo</button>
                     </div>
+                    {selectedVideoId && (
+                        <div className="flex items-center gap-2 mt-2 bg-gray-700/40 p-2 rounded">
+                            <span className="text-xs text-gray-400 whitespace-nowrap">Duración de este video (MM:SS):</span>
+                            <input value={editVideoDuration} onChange={e => setEditVideoDuration(e.target.value)} placeholder="ej. 35:00" className="bg-gray-700 p-1.5 rounded text-sm w-24" />
+                            <button onClick={handleGuardarDuracionVideo} disabled={guardandoVideoDuration || !editVideoDuration} className="bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 px-2.5 py-1.5 rounded text-white text-xs">
+                                {guardandoVideoDuration ? 'Guardando…' : 'Guardar duración'}
+                            </button>
+                            <span className="text-xs text-gray-500">Necesario para que los minutos jugados salgan bien (ver "3. Alineación y Minutos").</span>
+                        </div>
+                    )}
 
                     <label className="block text-sm text-gray-400 mt-4 mb-1">Mi equipo (uniforme)</label>
                     <input type="file" accept="image/*" onChange={e => setTeamUniformFile(e.target.files?.[0] || null)} className="w-full text-sm file:mr-4 file:py-1 file:px-2 file:rounded-full file:border-0 file:font-semibold file:bg-gray-600 file:text-white hover:file:bg-gray-500" />
@@ -2807,7 +2843,9 @@ const VideoTaggerPage: React.FC = () => {
                     <div className="bg-gray-800 rounded p-6 w-[420px]">
                         <h3 className="text-lg font-semibold mb-3">Registrar nuevo video</h3>
                         <input placeholder="Nombre del archivo (ej. VID_20251021_1.mp4)" className="w-full bg-gray-700 p-2 rounded mb-2" value={newVideoFileName} onChange={e => setNewVideoFileName(e.target.value)} />
-                        <input placeholder="Inicio del video (MM:SS)" className="w-full bg-gray-700 p-2 rounded mb-4" value={newVideoOffset} onChange={e => setNewVideoOffset(e.target.value)} />
+                        <input placeholder="Inicio del video (MM:SS)" className="w-full bg-gray-700 p-2 rounded mb-2" value={newVideoOffset} onChange={e => setNewVideoOffset(e.target.value)} />
+                        <input placeholder="Duración del video (MM:SS)" className="w-full bg-gray-700 p-2 rounded mb-1" value={newVideoDuration} onChange={e => setNewVideoDuration(e.target.value)} />
+                        <p className="text-xs text-gray-500 mb-4">Importante para que los minutos jugados salgan bien — es cuánto dura ESTE video, no el partido completo.</p>
                         <div className="flex gap-2 justify-end">
                             <button onClick={() => setShowNewVideoModal(false)} className="px-3 py-2 bg-gray-600 rounded">Cancelar</button>
                             <button onClick={handleCreateVideo} disabled={isCreatingVideo || !newVideoFileName} className="px-3 py-2 bg-green-600 rounded text-white">{isCreatingVideo ? <Spinner /> : 'Crear'}</button>
