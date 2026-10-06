@@ -146,7 +146,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
                 onClick={() => setSidebarOpen(false)}
               >
                 <ReportIcon />
-                <span className="ml-3">Generar Reportes</span>
+                <span className="ml-3">Análisis Ejecutivo Post Partido</span>
               </NavLink>
             </>
           )}
