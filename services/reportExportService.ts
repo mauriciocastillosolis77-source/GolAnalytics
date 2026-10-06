@@ -596,7 +596,8 @@ export async function generateMatchReportPptx(
   authorName?: string,
   positionsMap?: Map<string, string>,
   modeloDeJuego?: ModeloDeJuego,
-  estiloOverride?: EstiloDeJuegoOverride
+  estiloOverride?: EstiloDeJuegoOverride,
+  rivalAnalysisId?: string | null
 ): Promise<void> {
   const { data: tagsData, error: tagsError } = await supabase.from('tags').select('*').eq('match_id', match.id);
   if (tagsError) throw tagsError;
@@ -672,9 +673,16 @@ export async function generateMatchReportPptx(
   // la pantalla "Análisis del Rival"). Si no hay ningún análisis para este
   // rival, esta sección viene null y el slide se omite (no se inventa).
   let rivalAnalysis: RivalAnalysis | null = null;
-  {
-    // ilike en vez de eq: "Tigres Xochimilco" vs "tigres xochimilco " (mayúsculas,
-    // espacios) antes fallaba con comparación exacta y el slide se saltaba sin avisar.
+  if (rivalAnalysisId) {
+    // El usuario ya eligió cuál Análisis del Rival usar (puede haber varios del
+    // mismo equipo, de momentos distintos de la temporada) — se usa ese exacto,
+    // sin intentar adivinar por nombre.
+    const { data: rivalData } = await supabase.from('rival_analysis').select('*').eq('id', rivalAnalysisId).single();
+    if (rivalData) rivalAnalysis = rivalData as RivalAnalysis;
+  } else {
+    // Nadie eligió uno explícito (uso anterior a este cambio, o el usuario no
+    // tenía ningún Análisis del Rival guardado todavía) — se intenta por
+    // nombre, como antes, solo como respaldo.
     let query = supabase.from('rival_analysis').select('*').ilike('rival_name', match.rival.trim()).order('created_at', { ascending: false }).limit(1);
     if (match.team_id) query = query.eq('team_id', match.team_id);
     const { data: rivalData } = await query;
