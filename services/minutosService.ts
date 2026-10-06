@@ -6,10 +6,14 @@ import type { Tag, EstatusPartido } from '../types';
 /**
  * Minutos jugados por jugador en UN partido — calculado, no capturado a mano.
  *
- * Regla (sin dobles cambios, confirmado con el usuario):
+ * Regla (cada jugador tiene A LO MÁS una entrada y A LO MÁS una salida —
+ * sigue sin haber "dobles cambios" donde el MISMO jugador entra, sale, y
+ * vuelve a entrar; eso sigue sin estar soportado):
  *  - Titular sin tag de Cambio → jugó el partido completo (0 → fin).
  *  - Titular que aparece como "sale" en un Cambio → 0 → ese minuto.
- *  - Suplente que aparece como "entra" en un Cambio → ese minuto → fin.
+ *  - Suplente que aparece como "entra" en un Cambio → ese minuto → fin,
+ *    SALVO que también aparezca como "sale" en otro Cambio (lo volvieron a
+ *    cambiar) — ahí es: ese minuto de entrada → ese minuto de salida.
  *  - Suplente sin ningún Cambio → nunca entró → 0 minutos.
  *  - No convocado / Lesionado / Falta → 0 minutos, no se calcula nada.
  *
@@ -47,12 +51,17 @@ export async function calcularMinutosPartido(matchId: string): Promise<Record<st
 
     let segundos = 0;
     if (row.estatus === 'titular') {
+      // Un titular no "entra" — si nunca sale, jugó el partido completo.
+      const inicioJugador = 0;
       const finJugador = sale ? (sale.timestamp_absolute ?? sale.timestamp) : finPartido;
-      segundos = Math.max(0, finJugador - 0);
+      segundos = Math.max(0, finJugador - inicioJugador);
     } else if (row.estatus === 'suplente') {
       if (entra) {
         const inicioJugador = entra.timestamp_absolute ?? entra.timestamp;
-        segundos = Math.max(0, finPartido - inicioJugador);
+        // Si también lo volvieron a cambiar (sale), su tramo termina ahí —
+        // no en el fin del partido.
+        const finJugador = sale ? (sale.timestamp_absolute ?? sale.timestamp) : finPartido;
+        segundos = Math.max(0, finJugador - inicioJugador);
       } else {
         segundos = 0; // suplente que nunca entró
       }
