@@ -248,7 +248,7 @@ const AnalisisRivalPage: React.FC = () => {
       setSaveMsg({ text: 'Jugadores clave guardados', ok: true });
     } catch (err: any) {
       console.error('Error guardando jugadores clave:', err);
-      setSaveMsg({ text: 'No se pudieron guardar los jugadores clave.', ok: false });
+      setSaveMsg({ text: `No se pudieron guardar los jugadores clave: ${err?.message || err?.details || 'error desconocido'}`, ok: false });
     } finally {
       setGuardandoJugadoresClave(false);
     }
