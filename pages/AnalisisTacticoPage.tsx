@@ -265,10 +265,27 @@ function renderFrame(canvas: HTMLCanvasElement, frameDataUrl: string, annotation
 
 // ─── Telestración canvas ──────────────────────────────────────────────────────
 
-function drawTelestration(ctx: CanvasRenderingContext2D, W: number, H: number, players: InterpolatedPlayer[], markedPlayers: MarkedPlayer[]) {
-  if (!markedPlayers.length) return;
+function drawTelestration(ctx: CanvasRenderingContext2D, W: number, H: number, players: Array<InterpolatedPlayer & { localCx: number; localCy: number }>, markedPlayers: MarkedPlayer[]) {
   const markedMap = new Map(markedPlayers.map(m => [m.track_id, m]));
-  const visible: Array<{ player: InterpolatedPlayer; marked: MarkedPlayer }> = [];
+
+  // Punto discreto en CADA jugador detectado, esté marcado o no — antes no
+  // se dibujaba nada hasta que ya habías logrado marcar a alguien, así que no
+  // había forma de saber dónde darle clic. Esto es justo lo que faltaba.
+  for (const p of players) {
+    if (markedMap.has(p.track_id)) continue; // los marcados se dibujan más abajo, más grandes
+    const cx = p.localCx * W, cy = p.localCy * H;
+    if (cx < -20 || cx > W + 20 || cy < -20 || cy > H + 20) continue; // fuera del recorte actual
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 4;
+    ctx.beginPath(); ctx.arc(cx, cy, Math.max(5, W * 0.006), 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 1; ctx.stroke();
+    ctx.restore();
+  }
+
+  if (!markedPlayers.length) return;
+  const visible: Array<{ player: InterpolatedPlayer & { localCx: number; localCy: number }; marked: MarkedPlayer }> = [];
   for (const p of players) {
     const marked = markedMap.get(p.track_id);
     if (marked) visible.push({ player: p, marked });
@@ -279,12 +296,12 @@ function drawTelestration(ctx: CanvasRenderingContext2D, W: number, H: number, p
     ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
     for (let i = 0; i < visible.length - 1; i++) {
       const a = visible[i].player, b = visible[i + 1].player;
-      ctx.beginPath(); ctx.moveTo(a.cx * W, a.cy * H); ctx.lineTo(b.cx * W, b.cy * H); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(a.localCx * W, a.localCy * H); ctx.lineTo(b.localCx * W, b.localCy * H); ctx.stroke();
     }
     ctx.setLineDash([]); ctx.restore();
   }
   for (const { player, marked } of visible) {
-    const cx = player.cx * W, cy = player.cy * H;
+    const cx = player.localCx * W, cy = player.localCy * H;
     const r = Math.max(18, player.width * W * 0.7);
     ctx.save();
     ctx.shadowColor = 'rgba(0,0,0,0.7)'; ctx.shadowBlur = 8;
@@ -772,6 +789,25 @@ const AnalisisTacticoPage: React.FC = () => {
   const [currentPlayers, setCurrentPlayers] = useState<InterpolatedPlayer[]>([]);
   const [isVideoPaused, setIsVideoPaused] = useState(true);
   const [currentVideoTime, setCurrentVideoTime] = useState(0);
+  // Zoom del canvas de tracking — aquí el video sigue en vivo (no se congela
+  // un cuadro como en la captura normal), así que el zoom se aplica siempre
+  // al dibujar, cuadro a cuadro, directo en el recorte que se dibuja al
+  // canvas — no es un CSS transform, por eso no sufre el mismo bug de
+  // "getBoundingClientRect ya viene con el zoom aplicado" que tuvimos antes.
+  const [trackZoom, setTrackZoom] = useState(1);
+  const [trackPanX, setTrackPanX] = useState(0);
+  const [trackPanY, setTrackPanY] = useState(0);
+  const trackCropRef = useRef<{ sx: number; sy: number; sWidth: number; sHeight: number }>({ sx: 0, sy: 0, sWidth: 1, sHeight: 1 });
+  const trackDraggingRef = useRef(false);
+  const trackDragStartRef = useRef({ x: 0, y: 0, panX: 0, panY: 0 });
+  // drawTrackingCanvas se vuelve a llamar a sí misma con requestAnimationFrame
+  // (igual que markedPlayersRef, un poco más abajo) — si leyera trackZoom
+  // directo del estado, se quedaría con el valor de cuando se armó esa cadena
+  // de llamadas, no con el valor actual. Por eso van en refs.
+  const trackZoomRef = useRef(1);
+  const trackPanXRef = useRef(0);
+  const trackPanYRef = useRef(0);
+  useEffect(() => { trackZoomRef.current = trackZoom; trackPanXRef.current = trackPanX; trackPanYRef.current = trackPanY; }, [trackZoom, trackPanX, trackPanY]);
   const animFrameRef = useRef<number | null>(null);
 
   // ── Grabación ─────────────────────────────────────────────────────────────
@@ -952,17 +988,37 @@ const AnalisisTacticoPage: React.FC = () => {
     if (!video || !canvas || video.readyState < 2) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
-    if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-      canvas.width = video.videoWidth || 1280;
-      canvas.height = video.videoHeight || 720;
+
+    const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+    const zoom = trackZoomRef.current;
+    let sx = 0, sy = 0, sWidth = vw, sHeight = vh;
+    if (zoom > 1) {
+      // El propio canvas (no el video, que está oculto 1x1) es la referencia
+      // de tamaño en pantalla — así no hay ningún CSS transform de por medio
+      // y no se repite el bug de "el tamaño ya viene multiplicado por el zoom".
+      const dispW = canvas.clientWidth || vw, dispH = canvas.clientHeight || vh;
+      const scaleX = vw / dispW, scaleY = vh / dispH;
+      sWidth = vw / zoom; sHeight = vh / zoom;
+      sx = Math.max(0, Math.min(vw - sWidth, (-trackPanXRef.current / zoom) * scaleX));
+      sy = Math.max(0, Math.min(vh - sHeight, (-trackPanYRef.current / zoom) * scaleY));
+    }
+    trackCropRef.current = { sx, sy, sWidth, sHeight };
+
+    if (canvas.width !== sWidth || canvas.height !== sHeight) {
+      canvas.width = sWidth;
+      canvas.height = sHeight;
     }
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
-    ctx.drawImage(video, 0, 0, W, H);
+    ctx.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, W, H);
+
     const interpolated = interpolatePlayers(trackingFramesRef.current, video.currentTime);
     setCurrentPlayers(interpolated);
     setCurrentVideoTime(video.currentTime);
-    drawTelestration(ctx, W, H, interpolated, markedPlayersRef.current);
+    // Jugadores detectados → posición dentro del recorte actual (si no hay
+    // zoom, sx=sy=0 y vw/vh=W/H, así que esto da lo mismo que antes).
+    const enRecorte = interpolated.map(p => ({ ...p, localCx: (p.cx * vw - sx) / sWidth, localCy: (p.cy * vh - sy) / sHeight }));
+    drawTelestration(ctx, W, H, enRecorte, markedPlayersRef.current);
     if (!video.paused && !video.ended) {
       animFrameRef.current = requestAnimationFrame(drawTrackingCanvas);
     }
@@ -1034,6 +1090,7 @@ const AnalisisTacticoPage: React.FC = () => {
 
   // ─── Clic en canvas tracking: marcar/desmarcar ───────────────────────────
   const handleTrackingCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (trackDidDragRef.current) { trackDidDragRef.current = false; return; }
     const canvas = trackingCanvasRef.current;
     const video = trackingVideoRef.current;
     if (!canvas || !video || !video.paused) return;
@@ -1043,10 +1100,16 @@ const AnalisisTacticoPage: React.FC = () => {
     const clickY = (e.clientY - rect.top) * scaleY;
     const W = canvas.width, H = canvas.height;
     const HIT_RADIUS = Math.max(30, W * 0.04);
+    const vw = video.videoWidth || 1, vh = video.videoHeight || 1;
+    const crop = trackCropRef.current;
     let closest: InterpolatedPlayer | null = null;
     let closestDist = Infinity;
     for (const p of currentPlayers) {
-      const dist = Math.sqrt((clickX - p.cx * W) ** 2 + (clickY - p.cy * H) ** 2);
+      // p.cx/cy son relativos al video COMPLETO — hay que pasarlos al mismo
+      // recorte (zoom) que se está mostrando ahora mismo en el canvas.
+      const localX = (p.cx * vw - crop.sx) / crop.sWidth * W;
+      const localY = (p.cy * vh - crop.sy) / crop.sHeight * H;
+      const dist = Math.sqrt((clickX - localX) ** 2 + (clickY - localY) ** 2);
       if (dist < HIT_RADIUS && dist < closestDist) { closest = p; closestDist = dist; }
     }
     if (!closest) return;
@@ -1057,6 +1120,29 @@ const AnalisisTacticoPage: React.FC = () => {
       return [...prev, { track_id: trackId, color: TRACKING_COLORS[colorIndex], label: String(prev.length + 1) }];
     });
   }, [currentPlayers]);
+
+  const trackZoomBy = (delta: number) => {
+    setTrackZoom(z => {
+      const nz = Math.min(4, Math.max(1, z + delta));
+      if (nz === 1) { setTrackPanX(0); setTrackPanY(0); }
+      return nz;
+    });
+  };
+  const trackResetZoom = () => { setTrackZoom(1); setTrackPanX(0); setTrackPanY(0); };
+  const trackDidDragRef = useRef(false);
+  const handleTrackMouseDown = (e: React.MouseEvent) => {
+    if (trackZoom <= 1) return;
+    trackDraggingRef.current = true;
+    trackDidDragRef.current = false;
+    trackDragStartRef.current = { x: e.clientX, y: e.clientY, panX: trackPanX, panY: trackPanY };
+  };
+  const handleTrackMouseMove = (e: React.MouseEvent) => {
+    if (!trackDraggingRef.current) return;
+    if (Math.abs(e.clientX - trackDragStartRef.current.x) > 3 || Math.abs(e.clientY - trackDragStartRef.current.y) > 3) trackDidDragRef.current = true;
+    setTrackPanX(trackDragStartRef.current.panX + (e.clientX - trackDragStartRef.current.x));
+    setTrackPanY(trackDragStartRef.current.panY + (e.clientY - trackDragStartRef.current.y));
+  };
+  const handleTrackMouseUp = () => { trackDraggingRef.current = false; };
 
   // ─── Grabación ────────────────────────────────────────────────────────────
   const handleStartRecording = async () => {
@@ -1245,7 +1331,6 @@ const AnalisisTacticoPage: React.FC = () => {
     if (!cropRectRef.current) {
       cropRectRef.current = computeCropRect(v);
       setZoomLocked(true);
-      console.log('[DEBUG ZOOM] cropRectRef fijado al capturar:', cropRectRef.current, '— zoom/pan en ese momento:', zoom, panX, panY);
     }
     const crop = cropRectRef.current;
     const off = makeOffscreen(crop.sWidth, crop.sHeight);
@@ -1357,7 +1442,6 @@ const AnalisisTacticoPage: React.FC = () => {
         // nunca se tocó el zoom, cropRectRef sigue null y esto es el cuadro
         // completo — mismo comportamiento de siempre.
         const crop: CropRect = cropRectRef.current || { sx: 0, sy: 0, sWidth: video.videoWidth, sHeight: video.videoHeight };
-        console.log('[DEBUG ZOOM] cropRectRef.current al guardar:', cropRectRef.current, '— crop que se va a usar:', crop, '— video nativo:', video.videoWidth, 'x', video.videoHeight);
         if (usarSecuencia) {
           setUploadProgress(`Generando video con ${pausasFinales.length} pausa${pausasFinales.length !== 1 ? 's' : ''}... no cambies de pestaña`);
           clipBlob = await extractSequenceClip(video, pausasFinales, secondsBefore, teamLogoImg, endTimestamp, crop);
@@ -1444,7 +1528,7 @@ const AnalisisTacticoPage: React.FC = () => {
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-3 flex-wrap">
-          <button onClick={() => { setView('create'); setMarkedPlayers([]); setRecordedBlob(null); setIsRecording(false); if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current); }}
+          <button onClick={() => { setView('create'); setMarkedPlayers([]); setRecordedBlob(null); setIsRecording(false); setTrackZoom(1); setTrackPanX(0); setTrackPanY(0); if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current); }}
             className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>Volver
           </button>
@@ -1473,9 +1557,28 @@ const AnalisisTacticoPage: React.FC = () => {
                   navegador lo siga reproduciendo de verdad. */}
               <video ref={trackingVideoRefCallback} src={videoUrl ?? undefined} playsInline
                 style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }} />
-              <canvas ref={trackingCanvasRef} className="w-full h-auto block" style={{ cursor: isVideoPaused ? 'crosshair' : 'default' }} onClick={handleTrackingCanvasClick} />
+              <canvas ref={trackingCanvasRef} className="w-full h-auto block"
+                style={{ cursor: trackZoom > 1 ? 'grab' : (isVideoPaused ? 'crosshair' : 'default') }}
+                onClick={handleTrackingCanvasClick}
+                onMouseDown={handleTrackMouseDown} onMouseMove={handleTrackMouseMove} onMouseUp={handleTrackMouseUp} onMouseLeave={handleTrackMouseUp} />
               {/* Controles superpuestos */}
-              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent px-4 py-3 flex items-center gap-3">
+              <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/70 to-transparent px-4 pt-6 pb-3 flex flex-col gap-2">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <button onClick={() => { const v = trackingVideoRef.current; if (v) v.currentTime = Math.max(0, v.currentTime - 10); }}
+                    className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs font-mono">⏪ -10s</button>
+                  <button onClick={() => { const v = trackingVideoRef.current; if (v) v.currentTime += 10; }}
+                    className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs font-mono">+10s ⏩</button>
+                  <select onChange={e => { const v = trackingVideoRef.current; if (v) v.playbackRate = parseFloat(e.target.value); }} defaultValue="1"
+                    className="bg-white/15 hover:bg-white/25 rounded text-white text-xs px-1.5 py-1">
+                    <option value="0.5">0.5x</option><option value="0.7">0.7x</option><option value="1">1x</option><option value="1.5">1.5x</option><option value="2">2x</option>
+                  </select>
+                  <button onClick={() => trackZoomBy(-0.5)} className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs">🔍−</button>
+                  <span className="text-white/70 text-xs w-10 text-center">{Math.round(trackZoom * 100)}%</span>
+                  <button onClick={() => trackZoomBy(0.5)} className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs">🔍+</button>
+                  <button onClick={trackResetZoom} className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs">Zoom 1:1</button>
+                  {trackZoom > 1 && <span className="text-white/50 text-[11px]">Arrastra para moverte</span>}
+                </div>
+                <div className="flex items-center gap-3">
                 <button onClick={() => { const v = trackingVideoRef.current; if (!v) return; v.paused ? v.play() : v.pause(); }}
                   className="w-8 h-8 flex items-center justify-center bg-white/20 hover:bg-white/30 rounded-full transition-colors">
                   {isVideoPaused
@@ -1495,6 +1598,7 @@ const AnalisisTacticoPage: React.FC = () => {
                     <span className="w-2 h-2 bg-red-400 rounded-sm" />Detener
                   </button>
                 )}
+                </div>
               </div>
             </div>
 

@@ -1,3 +1,10 @@
+export function secondsToMmss(totalSeconds: number | null | undefined): string {
+  const s = Math.max(0, Math.round(totalSeconds || 0));
+  const mm = Math.floor(s / 60);
+  const ss = s % 60;
+  return `${mm}:${String(ss).padStart(2, '0')}`;
+}
+
 export function mmssToSeconds(mmss: string): number {
   if (!mmss) return 0;
   const parts = mmss.split(':').map(p => p.trim()).filter(p => p.length > 0);

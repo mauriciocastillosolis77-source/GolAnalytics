@@ -43,20 +43,47 @@ export async function fetchVideosForMatch(matchId: string): Promise<Video[]> {
  * - offsetMmss: formato esperado MM:SS o HH:MM:SS o SS.
  * - teamId: ID del equipo asociado al partido.
  */
-export async function createVideoForMatch(matchId: string, teamId: string, videoFileName: string, offsetMmss: string, createdBy?: string | null): Promise<Video> {
+export async function createVideoForMatch(matchId: string, teamId: string, videoFileName: string, offsetMmss: string, createdBy?: string | null, durationMmss?: string): Promise<Video> {
   const start_offset_seconds = mmssToSeconds(offsetMmss || '0');
+  // OJO: durante mucho tiempo este payload no incluía duration_seconds, así
+  // que se guardaba en null — y los minutos jugados (services/minutosService.ts)
+  // usan start_offset_seconds + duration_seconds del último video para saber
+  // dónde termina el partido. Sin duración, el "fin del partido" calculado
+  // caía en el START del último video, no en su fin — dando minutos cortados
+  // en TODOS los jugadores. Por eso ahora se pide y se guarda siempre.
+  const duration_seconds = durationMmss ? mmssToSeconds(durationMmss) : null;
 
   const payload = {
     match_id: matchId,
     team_id: teamId,
     video_file: videoFileName,
     start_offset_seconds,
+    duration_seconds,
     created_by: createdBy || null
   };
 
   const { data, error } = await supabase
     .from('videos')
     .insert([payload])
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data as Video;
+}
+
+/**
+ * Corrige la duración (y opcionalmente el inicio) de un video YA registrado
+ * — para los videos que se crearon antes de que este campo existiera.
+ */
+export async function updateVideoMeta(videoId: string, durationMmss: string, offsetMmss?: string): Promise<Video> {
+  const payload: Record<string, number> = { duration_seconds: mmssToSeconds(durationMmss || '0') };
+  if (offsetMmss !== undefined) payload.start_offset_seconds = mmssToSeconds(offsetMmss);
+
+  const { data, error } = await supabase
+    .from('videos')
+    .update(payload)
+    .eq('id', videoId)
     .select()
     .single();
 
