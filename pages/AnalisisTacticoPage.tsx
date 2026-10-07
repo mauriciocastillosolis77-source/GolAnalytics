@@ -976,6 +976,9 @@ const AnalisisTacticoPage: React.FC = () => {
   // Copia en ref de isRecording: drawTrackingCanvas se llama a sí misma con
   // requestAnimationFrame y no ve el estado actualizado (mismo motivo que trackZoomRef).
   const isRecordingRef = useRef(false);
+  // Logos que se dibujan en el clip de telestración mientras se graba (GolAnalytics a la
+  // derecha, equipo a la izquierda), igual que en los clips de momento clave y de secuencia.
+  const trackLogosRef = useRef<{ gol: HTMLImageElement | null; team: HTMLImageElement | null }>({ gol: null, team: null });
   const recordStartTimeRef = useRef(0);
 
   // ── Refs dibujo ───────────────────────────────────────────────────────────
@@ -1228,6 +1231,9 @@ const AnalisisTacticoPage: React.FC = () => {
       }
       drawMarcasManuales(ctx, W, items, rx, man.linea, exacta);
     }
+
+    // Logos: solo mientras se graba, para que salgan en el clip sin estorbar al marcar.
+    if (isRecordingRef.current) drawWatermarkLogos(ctx, W, H, trackLogosRef.current.gol, trackLogosRef.current.team);
     if (!video.paused && !video.ended) {
       animFrameRef.current = requestAnimationFrame(drawTrackingCanvas);
     }
@@ -1451,6 +1457,22 @@ const AnalisisTacticoPage: React.FC = () => {
         video.addEventListener('seeked', done);
         video.currentTime = rango.start;
       });
+    }
+    // Logos del clip. Si alguno no carga, se graba sin él: no debe impedir la grabación.
+    try {
+      const gol = await loadGolLogo();
+      let team: HTMLImageElement | null = null;
+      if (teamLogoPath) {
+        if (teamLogoImgCache.has(teamLogoPath)) {
+          team = teamLogoImgCache.get(teamLogoPath) ?? null;
+        } else {
+          const { data: signed } = await supabase.storage.from(TEAM_LOGO_BUCKET).createSignedUrl(teamLogoPath, 3600);
+          if (signed?.signedUrl) { team = await loadImageFromUrl(signed.signedUrl); teamLogoImgCache.set(teamLogoPath, team); }
+        }
+      }
+      trackLogosRef.current = { gol, team };
+    } catch (err) {
+      console.warn('No se pudieron cargar los logos para el clip de telestración:', err);
     }
     setRecordedBlob(null); setIsRecording(true);
     // Quitar los puntos de detección ANTES de empezar a grabar, para que no salgan en el clip.
