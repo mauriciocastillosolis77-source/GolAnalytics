@@ -68,7 +68,7 @@ type ModoAnalisis = 'momento' | 'secuencia' | 'tracking';
 const MODOS_ANALISIS: { id: ModoAnalisis; nombre: string; descripcion: string; badge: string; badgeClass: string }[] = [
   { id: 'momento', nombre: 'Análisis momento clave', descripcion: 'El video se detiene en un momento, muestra tus dibujos y continúa.', badge: 'Funciona hoy', badgeClass: 'bg-green-900/50 text-green-300' },
   { id: 'secuencia', nombre: 'Análisis de secuencia', descripcion: 'El video se detiene en varios momentos. En cada pausa muestra dibujos y una explicación que se borran antes de continuar.', badge: 'Nuevo', badgeClass: 'bg-cyan-900/50 text-cyan-300' },
-  { id: 'tracking', nombre: 'Tracking y telestración', descripcion: `Marcas una jugada de hasta ${MAX_PLAY_SECONDS} segundos; la plataforma detecta a los jugadores y marcas a 2, 3 o 4 para mostrar cómo se mueven juntos.`, badge: 'En revisión', badgeClass: 'bg-amber-900/50 text-amber-300' },
+  { id: 'tracking', nombre: 'Telestración en movimiento', descripcion: `Marcas con clics a 2, 3 o 4 jugadores durante una jugada de hasta ${MAX_PLAY_SECONDS} segundos, y el círculo y la línea los van siguiendo.`, badge: 'Nuevo', badgeClass: 'bg-cyan-900/50 text-cyan-300' },
 ];
 
 // Un análisis guardado es de secuencia si sus dibujos traen número de pausa.
@@ -80,7 +80,7 @@ const contarPausasGuardadas = (analysis: TacticalAnalysis): number => {
 const etiquetaTipoAnalisis = (analysis: TacticalAnalysis): string => {
   // Las telestraciones con seguimiento se guardan como un análisis más, pero sin
   // dibujos (los círculos y la línea ya van dentro del video). Así se distinguen.
-  if ((analysis.annotations || []).length === 0) return 'Tracking y telestración';
+  if ((analysis.annotations || []).length === 0) return 'Telestración en movimiento';
   const n = contarPausasGuardadas(analysis);
   return n > 0 ? `Secuencia · ${n} pausa${n !== 1 ? 's' : ''}` : 'Momento clave';
 };
@@ -117,6 +117,81 @@ type JugadorEnCanvas = InterpolatedPlayer & { localCx: number; localCy: number; 
 // ~3280 px: dibujarlo y grabarlo a ese tamaño 30 veces por segundo traba una
 // laptop normal, y para el clip final 1920 px es más que suficiente.
 const MAX_TRACK_CANVAS_WIDTH = 1920;
+
+// ─── Telestración por marcas (manual) ─────────────────────────────────────────
+// El analista da clic en los pies de cada jugador en varios momentos de la jugada
+// y el aro se mueve en línea recta de una marca a la siguiente. El sistema NO
+// reconoce a nadie: pinta donde se dio clic. Por eso funciona con cualquier video
+// (cámara fija o en movimiento) y no usa Railway.
+// El seguimiento automático (YOLO en Railway) no dio resultado aceptable con las
+// grabaciones reales (panorámico de 2 celulares ni un celular en movimiento), así
+// que se oculta de la pantalla. El código sigue aquí por si algún día se retoma.
+const MOSTRAR_TRACKING_AUTOMATICO = false;
+const MAX_JUGADORES_MANUALES = 6;
+interface MarcaManual { t: number; x: number; y: number }   // t = segundo del video; x,y de 0 a 1 sobre el video COMPLETO (los pies)
+interface JugadorManual { id: number; color: string; label: string; marcas: MarcaManual[] }   // marcas ordenadas por t
+// Radio del aro como fracción del ancho del video (no del recorte con zoom).
+const TAMANOS_CIRCULO: Record<string, number> = { chico: 0.012, mediano: 0.02, grande: 0.03 };
+// Segundos que el video avanza solo después de cada clic. Medido con un clip real
+// de cámara en movimiento: cada 0.5 s el aro va pegado al jugador (desviación típica
+// de 3% de su estatura); cada 1 s se despega en los cambios de ritmo; cada 2 s no sirve.
+const AVANCES_MANUALES = [0.25, 0.5, 1, 2];
+
+// Dónde está el aro de un jugador en el segundo t: línea recta entre su marca anterior
+// y la siguiente. Antes de la primera marca y después de la última no se dibuja.
+const posicionManual = (j: JugadorManual, t: number): { x: number; y: number } | null => {
+  const m = j.marcas;
+  if (!m.length) return null;
+  if (m.length === 1) return Math.abs(t - m[0].t) <= 0.6 ? m[0] : null;
+  if (t < m[0].t - 0.05 || t > m[m.length - 1].t + 0.05) return null;
+  for (let i = 0; i < m.length - 1; i++) {
+    if (t <= m[i + 1].t) {
+      const a = m[i], b = m[i + 1];
+      const k = Math.max(0, Math.min(1, (t - a.t) / Math.max(b.t - a.t, 1e-6)));
+      return { x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k };
+    }
+  }
+  return m[m.length - 1];
+};
+
+// Dibuja aros, números y la línea de la telestración por marcas. Las posiciones ya
+// vienen en pixeles del canvas. El número va DEBAJO del aro porque aquí no se conoce
+// la estatura del jugador (no hay detección), así nunca le tapa el cuerpo.
+function drawMarcasManuales(ctx: CanvasRenderingContext2D, W: number, items: Array<{ x: number; y: number; color: string; label: string }>, rx: number, conLinea: boolean, marcaExacta: { x: number; y: number } | null) {
+  const ry = rx * 0.42;
+  if (conLinea && items.length > 1) {
+    const orden = [...items].sort((a, b) => a.x - b.x);   // de izquierda a derecha: la línea nunca se cruza
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 4;
+    ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+    ctx.lineWidth = Math.max(2, W * 0.002); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    orden.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)));
+    ctx.stroke(); ctx.restore();
+  }
+  for (const q of items) {
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.7)'; ctx.shadowBlur = 6;
+    ctx.beginPath(); ctx.ellipse(q.x, q.y, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fillStyle = q.color + '33'; ctx.fill();
+    ctx.strokeStyle = q.color; ctx.lineWidth = Math.max(3, W * 0.0025); ctx.stroke();
+    ctx.shadowBlur = 0;
+    const fontPx = Math.max(13, rx * 0.8);
+    ctx.font = `bold ${fontPx}px monospace`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.lineWidth = Math.max(3, fontPx * 0.22); ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.lineJoin = 'round';
+    ctx.strokeText(q.label.slice(0, 3), q.x, q.y + ry + 3);
+    ctx.fillStyle = q.color;
+    ctx.fillText(q.label.slice(0, 3), q.x, q.y + ry + 3);
+    ctx.restore();
+  }
+  if (marcaExacta) {   // punto blanco: aquí exactamente está la marca de este momento (no sale al grabar)
+    ctx.save();
+    ctx.fillStyle = '#fff'; ctx.strokeStyle = '#000'; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(marcaExacta.x, marcaExacta.y, Math.max(3, W * 0.003), 0, Math.PI * 2);
+    ctx.fill(); ctx.stroke(); ctx.restore();
+  }
+}
 
 // mm:ss.d — para marcar inicio y fin de la jugada con décimas de segundo.
 const formatTimeDec = (s: number): string => `${formatTime(s)}.${Math.floor((s % 1) * 10)}`;
@@ -846,6 +921,19 @@ const AnalisisTacticoPage: React.FC = () => {
   const aplicarRango = (r: { start: number; end: number } | null) => { trackRangeRef.current = r; setTrackRange(r); };
   // Marca que se está corrigiendo (el siguiente clic en un jugador la reasigna).
   const [reassignId, setReassignId] = useState<number | null>(null);
+  // ── Telestración por marcas (manual) ──
+  const [trackManual, setTrackManual] = useState(false);              // la vista abierta es la manual (sin Railway)
+  const [manualPlayers, setManualPlayers] = useState<JugadorManual[]>([]);
+  const [activeManualId, setActiveManualId] = useState<number | null>(null);   // a qué jugador se le ponen los clics
+  const [manualAdvance, setManualAdvance] = useState(0.5);
+  const [manualSize, setManualSize] = useState('mediano');
+  const [manualLinea, setManualLinea] = useState(true);
+  // Copia en ref: drawTrackingCanvas se llama a sí misma con requestAnimationFrame y no
+  // ve el estado actualizado (mismo motivo que trackZoomRef e isRecordingRef).
+  const manualRef = useRef<{ on: boolean; players: JugadorManual[]; activeId: number | null; size: string; linea: boolean }>({ on: false, players: [], activeId: null, size: 'mediano', linea: true });
+  useEffect(() => {
+    manualRef.current = { on: trackManual, players: manualPlayers, activeId: activeManualId, size: manualSize, linea: manualLinea };
+  }, [trackManual, manualPlayers, activeManualId, manualSize, manualLinea]);
 
   // ── Vista Tracking ────────────────────────────────────────────────────────
   const trackingVideoRef = useRef<HTMLVideoElement>(null);
@@ -1040,7 +1128,7 @@ const AnalisisTacticoPage: React.FC = () => {
 
   // ─── Jugadas ya procesadas del video elegido (solo en modo tracking) ─────
   useEffect(() => {
-    if (modo !== 'tracking' || !selectedVideoId) { setProcessedPlays([]); return; }
+    if (!MOSTRAR_TRACKING_AUTOMATICO || modo !== 'tracking' || !selectedVideoId) { setProcessedPlays([]); return; }
     let cancelado = false;
     listProcessedPlays(selectedVideoId)
       .then(plays => { if (!cancelado) setProcessedPlays(plays); })
@@ -1122,6 +1210,24 @@ const AnalisisTacticoPage: React.FC = () => {
     // Cada marca sigue al track_id que le toca en ESTE segundo (ver MarkedPlayer.tramos).
     const activos: MarcaActiva[] = markedPlayersRef.current.map(m => ({ track_id: trackActivo(m, t), color: m.color, label: m.label }));
     drawTelestration(ctx, W, H, enRecorte, activos, !isRecordingRef.current);
+
+    // Telestración por marcas: las posiciones salen de los clics del analista.
+    const man = manualRef.current;
+    if (man.on) {
+      const aCanvas = (q: { x: number; y: number }) => ({ x: ((q.x * vw - sx) / sWidth) * W, y: ((q.y * vh - sy) / sHeight) * H });
+      const rx = vw * (TAMANOS_CIRCULO[man.size] ?? TAMANOS_CIRCULO.mediano) * (W / sWidth);
+      const items: Array<{ x: number; y: number; color: string; label: string }> = [];
+      for (const j of man.players) {
+        const q = posicionManual(j, t);
+        if (q) items.push({ ...aCanvas(q), color: j.color, label: j.label });
+      }
+      let exacta: { x: number; y: number } | null = null;
+      if (video.paused && !isRecordingRef.current) {
+        const m = man.players.find(j => j.id === man.activeId)?.marcas.find(k => Math.abs(k.t - t) < 0.06);
+        if (m) exacta = aCanvas(m);
+      }
+      drawMarcasManuales(ctx, W, items, rx, man.linea, exacta);
+    }
     if (!video.paused && !video.ended) {
       animFrameRef.current = requestAnimationFrame(drawTrackingCanvas);
     }
@@ -1199,19 +1305,54 @@ const AnalisisTacticoPage: React.FC = () => {
   useEffect(() => {
     const video = trackingVideoRef.current;
     if (video?.paused) drawTrackingCanvas();
-  }, [markedPlayers, trackZoom, trackPanX, trackPanY, drawTrackingCanvas]);
+  }, [markedPlayers, manualPlayers, activeManualId, manualSize, manualLinea, trackManual, trackZoom, trackPanX, trackPanY, drawTrackingCanvas]);
 
   // ─── Clic en canvas tracking: marcar/desmarcar ───────────────────────────
   const handleTrackingCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     if (trackDidDragRef.current) { trackDidDragRef.current = false; return; }
     const canvas = trackingCanvasRef.current;
     const video = trackingVideoRef.current;
-    if (!canvas || !video || !video.paused) return;
+    if (!canvas || !video) return;
+    if (trackManual && isRecordingRef.current) return;                 // grabando: los clics no hacen nada
+    if (trackManual && !video.paused) { video.pause(); return; }       // un clic con el video corriendo solo lo pausa
+    if (!video.paused) return;
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width, scaleY = canvas.height / rect.height;
     const clickX = (e.clientX - rect.left) * scaleX;
     const clickY = (e.clientY - rect.top) * scaleY;
     const W = canvas.width, H = canvas.height;
+
+    // ── Telestración por marcas: el clic pone (o mueve) la marca del jugador elegido en este momento ──
+    if (trackManual) {
+      const cr = trackCropRef.current;
+      const vwM = video.videoWidth || 1, vhM = video.videoHeight || 1;
+      // del canvas (que puede traer zoom) a coordenadas 0-1 del video completo
+      const x = Math.max(0, Math.min(1, (cr.sx + (clickX / W) * cr.sWidth) / vwM));
+      const y = Math.max(0, Math.min(1, (cr.sy + (clickY / H) * cr.sHeight) / vhM));
+      const tM = Math.round(video.currentTime * 30) / 30;
+      let id = activeManualId;
+      if (id === null || !manualPlayers.some(j => j.id === id)) {
+        // todavía no hay jugador elegido: se crea el siguiente
+        if (manualPlayers.length >= MAX_JUGADORES_MANUALES) return;
+        const usados = new Set(manualPlayers.map(j => Number(j.label)));
+        let n = 1; while (usados.has(n)) n++;
+        const nuevo: JugadorManual = { id: Date.now() + Math.random(), color: TRACKING_COLORS[(n - 1) % TRACKING_COLORS.length], label: String(n), marcas: [{ t: tM, x, y }] };
+        id = nuevo.id;
+        setManualPlayers(prev => [...prev, nuevo]);
+        setActiveManualId(nuevo.id);
+      } else {
+        const idFijo = id;
+        setManualPlayers(prev => prev.map(j => j.id !== idFijo ? j : {
+          ...j,
+          // una marca muy cercana en el tiempo se reemplaza (así se corrige un clic mal puesto)
+          marcas: [...j.marcas.filter(k => Math.abs(k.t - tM) > 0.12), { t: tM, x, y }].sort((a, b) => a.t - b.t),
+        }));
+      }
+      const r = trackRangeRef.current;
+      const fin = r ? r.end : (video.duration || tM);
+      if (manualAdvance > 0 && tM < fin - 0.05) video.currentTime = Math.min(fin, tM + manualAdvance);
+      return;
+    }
     const HIT_RADIUS = Math.max(24, W * 0.025);
     const vw = video.videoWidth || 1, vh = video.videoHeight || 1;
     const crop = trackCropRef.current;
@@ -1249,7 +1390,7 @@ const AnalisisTacticoPage: React.FC = () => {
       let n = 1; while (usados.has(n)) n++;
       return [...prev, { id: Date.now() + Math.random(), color: TRACKING_COLORS[(n - 1) % TRACKING_COLORS.length], label: String(n), tramos: [{ desde: -Infinity, track_id: trackId }] }];
     });
-  }, [currentPlayers, markedPlayers, reassignId]);
+  }, [currentPlayers, markedPlayers, reassignId, trackManual, manualPlayers, activeManualId, manualAdvance]);
 
   // Controles de reproducción dentro del tramo de la jugada.
   const trackTogglePlay = () => {
@@ -1515,6 +1656,7 @@ const AnalisisTacticoPage: React.FC = () => {
     setPausas([]); setCaptionActual(''); setEndTimestamp(null);
     setTrackingJobId(null); setTrackingError(null);
     setPlayStart(null); setPlayEnd(null); setPlayMsg(null); aplicarRango(null);
+    setTrackManual(false); setManualPlayers([]); setActiveManualId(null);
     resetZoomClip();
   };
 
@@ -1598,10 +1740,38 @@ const AnalisisTacticoPage: React.FC = () => {
     setPlayMsg(null); setPlayEnd(t);
   };
 
+  // Abre la telestración por marcas sobre la jugada marcada. No manda nada a Railway.
+  const openManualTelestration = () => {
+    if (playStart === null || playEnd === null) { setPlayMsg('Marca el inicio y el fin de la jugada.'); return; }
+    if (playEnd - playStart < 1) { setPlayMsg('La jugada debe durar al menos 1 segundo.'); return; }
+    if (playEnd - playStart > MAX_PLAY_SECONDS) { setPlayMsg(`La jugada no puede durar más de ${MAX_PLAY_SECONDS} segundos.`); return; }
+    videoRef.current?.pause();
+    // Si es la misma jugada que ya estaba abierta, se conservan las marcas (para no perder
+    // el trabajo por dar clic en Volver); si es otra, se empieza de cero.
+    const misma = trackManual && trackRange !== null && Math.abs(trackRange.start - playStart) < 0.01 && Math.abs(trackRange.end - playEnd) < 0.01;
+    if (!misma) { setManualPlayers([]); setActiveManualId(null); }
+    setTrackingError(null); setPlayMsg(null); setTrackingJobId(null); setTrackingFrames([]); setCurrentPlayers([]);
+    setMarkedPlayers([]); setReassignId(null); setRecordedBlob(null); setTelestrationSavedMsg(null);
+    setTrackManual(true);
+    aplicarRango({ start: playStart, end: playEnd });
+    setView('tracking');
+  };
+
+  const addManualPlayer = () => {
+    if (manualPlayers.length >= MAX_JUGADORES_MANUALES) return;
+    const usados = new Set(manualPlayers.map(j => Number(j.label)));
+    let n = 1; while (usados.has(n)) n++;
+    const nuevo: JugadorManual = { id: Date.now() + Math.random(), color: TRACKING_COLORS[(n - 1) % TRACKING_COLORS.length], label: String(n), marcas: [] };
+    setManualPlayers(prev => [...prev, nuevo]);
+    setActiveManualId(nuevo.id);
+    trackGoToStart();   // el siguiente jugador se marca desde el inicio de la jugada
+  };
+
   // Abre una jugada que ya se había procesado antes, sin volver a mandarla a analizar.
   const openProcessedPlay = (p: ProcessedPlay) => {
     videoRef.current?.pause();
     setTrackingError(null); setMarkedPlayers([]); setReassignId(null); setRecordedBlob(null);
+    setTrackManual(false);
     setTrackingJobId(p.jobId);
     aplicarRango({ start: p.startSecond, end: p.endSecond });
     setView('tracking');
@@ -1625,6 +1795,7 @@ const AnalisisTacticoPage: React.FC = () => {
       const jobId = await createTrackingJob({ videoId: selectedVideoId, matchId: selectedMatchId, teamId: profile.team_id, createdBy: user.id });
       await uploadToRailway({ videoBlob: compressed, jobId, videoId: selectedVideoId, matchId: selectedMatchId, teamId: profile.team_id, startSecond: start, onProgress });
       await pollJobStatus(jobId, onProgress);
+      setTrackManual(false);
       setTrackingJobId(jobId); setTrackingPercent(100);
       aplicarRango({ start, end });
       setProcessedPlays(prev => [...prev.filter(p => p.jobId !== jobId), { jobId, startSecond: start, endSecond: end }].sort((x, y) => x.startSecond - y.startSecond));
@@ -1762,7 +1933,7 @@ const AnalisisTacticoPage: React.FC = () => {
             className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>Volver
           </button>
-          <h2 className="text-lg font-bold text-white">Tracking y telestración</h2>
+          <h2 className="text-lg font-bold text-white">Telestración en movimiento</h2>
           <span className="text-xs bg-violet-900/40 text-violet-400 border border-violet-800 px-2 py-0.5 rounded">{selectedVideo?.video_file}</span>
           {trackRange && <span className="text-xs bg-gray-800 text-gray-300 border border-gray-700 px-2 py-0.5 rounded font-mono">Jugada {formatTime(trackRange.start)} → {formatTime(trackRange.end)} · {(trackRange.end - trackRange.start).toFixed(1)} s</span>}
           {isRecording && <span className="flex items-center gap-1.5 text-xs bg-red-900/40 text-red-400 border border-red-700 px-2 py-0.5 rounded animate-pulse"><span className="w-2 h-2 bg-red-500 rounded-full inline-block" />Grabando</span>}
@@ -1783,7 +1954,14 @@ const AnalisisTacticoPage: React.FC = () => {
           <>
             <div className="bg-gray-800/60 border border-gray-700 rounded-lg px-4 py-2 text-xs text-gray-400 flex items-center gap-2">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-violet-400 flex-shrink-0"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>
-              {reassignId !== null ? (
+              {trackManual ? (
+                <span>
+                  {isRecording ? 'Grabando el clip con los círculos y la línea.'
+                    : !isVideoPaused ? 'Reproduciendo: así se ve con las marcas que llevas. Da clic en el video para pausar.'
+                    : manualPlayers.length === 0 ? 'Da clic sobre los pies del primer jugador que quieres mostrar. Después de cada clic el video avanza solo; sigue dando clic sobre él hasta el final de la jugada.'
+                    : `Marcando al jugador #${manualPlayers.find(j => j.id === activeManualId)?.label ?? '—'}: da clic sobre sus pies. Al llegar al final, agrega al siguiente jugador o da clic en ▶ para ver cómo queda.`}
+                </span>
+              ) : reassignId !== null ? (
                 <span className="flex items-center gap-3 flex-wrap text-amber-300">
                   <span>Corrigiendo al jugador #{markedPlayers.find(m => m.id === reassignId)?.label}: da clic sobre el punto del jugador correcto. Desde este momento del video el círculo lo seguirá a él. Si no tiene punto, avanza 0.1 s e intenta de nuevo.</span>
                   <button type="button" onClick={() => setReassignId(null)} className="underline text-gray-300 hover:text-white">Cancelar</button>
@@ -1856,8 +2034,79 @@ const AnalisisTacticoPage: React.FC = () => {
               </div>
             </div>
 
+            {/* Telestración por marcas: jugadores, opciones y línea de tiempo de las marcas */}
+            {trackManual && (
+              <div className="bg-gray-800 rounded-xl p-3 space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs text-gray-500 font-medium uppercase tracking-wider mr-1">Jugadores</p>
+                  {manualPlayers.map(j => (
+                    <div key={j.id} className={`flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-lg border text-xs ${activeManualId === j.id ? 'bg-white/10' : ''}`} style={{ borderColor: j.color, color: j.color }}>
+                      <button type="button" disabled={isRecording} onClick={() => setActiveManualId(j.id)} className="flex items-center gap-1.5 disabled:opacity-50"
+                        title="Elegir a este jugador para ponerle marcas">
+                        <span className="w-3 h-3 rounded-full border" style={{ backgroundColor: activeManualId === j.id ? j.color : j.color + '44', borderColor: j.color }} />
+                        <span className="font-medium">Jugador #{j.label}</span>
+                        <span className="text-gray-400">{j.marcas.length} {j.marcas.length === 1 ? 'marca' : 'marcas'}</span>
+                      </button>
+                      <button type="button" disabled={isRecording} title="Quitar a este jugador y sus marcas"
+                        onClick={() => { setManualPlayers(prev => prev.filter(x => x.id !== j.id)); if (activeManualId === j.id) setActiveManualId(null); }}
+                        className="px-1 opacity-60 hover:opacity-100 disabled:opacity-30">✕</button>
+                    </div>
+                  ))}
+                  <button type="button" onClick={addManualPlayer} disabled={isRecording || manualPlayers.length >= MAX_JUGADORES_MANUALES || (manualPlayers.length > 0 && manualPlayers.some(j => j.marcas.length === 0))}
+                    title={manualPlayers.some(j => j.marcas.length === 0) ? 'Primero ponle marcas al jugador que agregaste' : 'Agregar otro jugador y marcarlo desde el inicio de la jugada'}
+                    className="px-2.5 py-1 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-medium transition-colors">+ Agregar jugador</button>
+                  {(() => {
+                    const j = manualPlayers.find(x => x.id === activeManualId);
+                    const m = j?.marcas.find(k => Math.abs(k.t - currentVideoTime) < 0.06);
+                    if (!j || !m || !isVideoPaused || isRecording) return null;
+                    return (
+                      <button type="button" onClick={() => setManualPlayers(prev => prev.map(x => x.id !== j.id ? x : { ...x, marcas: x.marcas.filter(k => k !== m) }))}
+                        className="px-2 py-1 text-xs text-gray-400 hover:text-red-400 underline">Quitar la marca de este momento</button>
+                    );
+                  })()}
+                </div>
+                {trackRange && (
+                  <div>
+                    <div className="flex justify-between text-[11px] text-gray-500 mb-1"><span>Cada rayita es una marca</span><span>clic para ir a ese momento</span></div>
+                    <div className="relative bg-gray-900 border border-gray-700 rounded cursor-pointer overflow-hidden" style={{ height: 14 + Math.max(1, manualPlayers.length) * 10 }}
+                      onClick={e => {
+                        const v = trackingVideoRef.current; if (!v || isRecording) return;
+                        const r = e.currentTarget.getBoundingClientRect();
+                        v.pause();
+                        v.currentTime = trackRange.start + (trackRange.end - trackRange.start) * Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+                      }}>
+                      {manualPlayers.map((j, i) => j.marcas.map(m => (
+                        <span key={`${j.id}-${m.t}`} className="absolute rounded" style={{ width: 3, height: 7, marginLeft: -1.5, top: 7 + i * 10, left: `${Math.max(0, Math.min(100, ((m.t - trackRange.start) / Math.max(trackRange.end - trackRange.start, 0.001)) * 100))}%`, backgroundColor: j.color }} />
+                      )))}
+                      <span className="absolute top-0 bottom-0 bg-white pointer-events-none" style={{ width: 2, marginLeft: -1, left: `${Math.max(0, Math.min(100, ((currentVideoTime - trackRange.start) / Math.max(trackRange.end - trackRange.start, 0.001)) * 100))}%` }} />
+                    </div>
+                  </div>
+                )}
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-400">
+                  <label className="flex items-center gap-2">Después de cada clic, avanzar
+                    <select value={manualAdvance} onChange={e => setManualAdvance(parseFloat(e.target.value))} className="bg-gray-700 text-white rounded px-1.5 py-1 border border-gray-600">
+                      <option value={0}>nada</option>
+                      {AVANCES_MANUALES.map(a => <option key={a} value={a}>{a} s</option>)}
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-2">Tamaño del círculo
+                    <select value={manualSize} onChange={e => setManualSize(e.target.value)} className="bg-gray-700 text-white rounded px-1.5 py-1 border border-gray-600">
+                      <option value="chico">chico</option><option value="mediano">mediano</option><option value="grande">grande</option>
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={manualLinea} onChange={e => setManualLinea(e.target.checked)} className="accent-violet-500" />Unir a los jugadores con una línea
+                  </label>
+                  {manualPlayers.some(j => j.marcas.length > 0) && (
+                    <button type="button" disabled={isRecording} onClick={() => { setManualPlayers([]); setActiveManualId(null); }} className="text-gray-500 hover:text-red-400 disabled:opacity-40 underline">Borrar todas las marcas</button>
+                  )}
+                </div>
+                <p className="text-[11px] text-gray-500">Con la cámara en movimiento conviene una marca cada 0.5 s; con la cámara fija alcanza con una por segundo. Si un clic quedó mal, regresa a ese momento y da clic otra vez: la marca se reemplaza.</p>
+              </div>
+            )}
+
             {/* Jugadores marcados */}
-            {markedPlayers.length > 0 && (
+            {!trackManual && markedPlayers.length > 0 && (
               <div className="bg-gray-800 rounded-xl p-3 space-y-2">
                 <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">Jugadores marcados</p>
                 <div className="flex flex-wrap gap-2">
@@ -2115,7 +2364,7 @@ const AnalisisTacticoPage: React.FC = () => {
         {videoUrl && selectedVideo && (
           <div className="bg-gray-800 rounded-xl p-4 space-y-3">
             <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
-              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">4</span>{modo === 'tracking' ? 'Marca la jugada y procésala para seguir a los jugadores' : modo === 'secuencia' ? 'Captura cada momento de la secuencia' : 'Captura el frame a analizar'}
+              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">4</span>{modo === 'tracking' ? 'Marca la jugada que quieres mostrar' : modo === 'secuencia' ? 'Captura cada momento de la secuencia' : 'Captura el frame a analizar'}
             </h3>
             {modo === 'secuencia' && (
               <p className="text-gray-400 text-xs">Avanza el video al primer momento, captura el frame, dibuja y escribe la explicación. Luego guarda la pausa y repite con el siguiente momento. Al final marca dónde termina el clip y guarda la secuencia.</p>
@@ -2210,7 +2459,7 @@ const AnalisisTacticoPage: React.FC = () => {
             )}
             {modo === 'tracking' && (
               <div className="bg-gray-700/50 rounded-lg px-3 py-3 space-y-2">
-                <p className="text-xs text-gray-400">Lleva el video al inicio de la jugada y da clic en <span className="text-gray-200">Marcar inicio</span>; avanza hasta donde termina y da clic en <span className="text-gray-200">Marcar fin</span>. Máximo {MAX_PLAY_SECONDS} segundos: solo se analiza ese tramo, a resolución completa.</p>
+                <p className="text-xs text-gray-400">Lleva el video al inicio de la jugada y da clic en <span className="text-gray-200">Marcar inicio</span>; avanza hasta donde termina y da clic en <span className="text-gray-200">Marcar fin</span>. Máximo {MAX_PLAY_SECONDS} segundos. Después marcas a los jugadores con clics y el círculo los va siguiendo.</p>
                 <div className="flex flex-wrap items-center gap-2">
                   <button onClick={markPlayStart} disabled={isTracking} type="button" className="flex items-center gap-2 px-3 py-1.5 bg-gray-600 hover:bg-gray-500 disabled:opacity-40 disabled:cursor-not-allowed text-gray-200 rounded-lg text-xs font-medium transition-colors">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M5 4v16M9 12h10M15 8l4 4-4 4" /></svg>
@@ -2238,7 +2487,7 @@ const AnalisisTacticoPage: React.FC = () => {
                   </div>
                 )}
                 {playMsg && <p className="text-xs text-amber-400">{playMsg}</p>}
-                {processedPlays.length > 0 && (
+                {MOSTRAR_TRACKING_AUTOMATICO && processedPlays.length > 0 && (
                   <div className="pt-2 border-t border-gray-600/60 space-y-1.5">
                     <p className="text-xs text-gray-400">Jugadas de este video que ya procesaste (se abren sin volver a esperar):</p>
                     <div className="flex flex-wrap gap-1.5">
@@ -2260,6 +2509,13 @@ const AnalisisTacticoPage: React.FC = () => {
               </button>
               )}
               {modo === 'tracking' && (
+              <button onClick={openManualTelestration} disabled={playStart === null || playEnd === null}
+                title={playStart === null || playEnd === null ? 'Primero marca el inicio y el fin de la jugada' : undefined}
+                className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></svg>Marcar jugadores
+              </button>
+              )}
+              {MOSTRAR_TRACKING_AUTOMATICO && modo === 'tracking' && (
               <button onClick={handleStartTracking} disabled={isTracking || playStart === null || playEnd === null}
                 title={playStart === null || playEnd === null ? 'Primero marca el inicio y el fin de la jugada' : undefined}
                 className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors">
