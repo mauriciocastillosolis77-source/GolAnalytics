@@ -78,6 +78,9 @@ const contarPausasGuardadas = (analysis: TacticalAnalysis): number => {
   return nums.size;
 };
 const etiquetaTipoAnalisis = (analysis: TacticalAnalysis): string => {
+  // Las telestraciones con seguimiento se guardan como un análisis más, pero sin
+  // dibujos (los círculos y la línea ya van dentro del video). Así se distinguen.
+  if ((analysis.annotations || []).length === 0) return 'Tracking y telestración';
   const n = contarPausasGuardadas(analysis);
   return n > 0 ? `Secuencia · ${n} pausa${n !== 1 ? 's' : ''}` : 'Momento clave';
 };
@@ -648,7 +651,10 @@ async function extractSequenceClip(videoElement: HTMLVideoElement, pausas: Pausa
 // ─── Grabación de canvas como clip ───────────────────────────────────────────
 
 async function recordCanvasClip(canvasEl: HTMLCanvasElement, onStop: (blob: Blob) => void): Promise<{ stop: () => void }> {
-  const mimeType = MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
+  // Mismo criterio que los clips de momento clave y de secuencia: mp4 si el navegador
+  // puede (se comparte mejor, por ejemplo por WhatsApp); si no, webm.
+  const mimeType = MediaRecorder.isTypeSupported('video/mp4;codecs=avc1') ? 'video/mp4;codecs=avc1'
+    : MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm';
   const canvasStream = (canvasEl as any).captureStream(30);
   const recorder = new MediaRecorder(canvasStream, { mimeType });
   const chunks: BlobPart[] = [];
@@ -876,6 +882,8 @@ const AnalisisTacticoPage: React.FC = () => {
   const [recordedBlob, setRecordedBlob] = useState<Blob | null>(null);
   const [savingTelestration, setSavingTelestration] = useState(false);
   const [telestrationDescription, setTelestrationDescription] = useState('');
+  // Confirmación visible en la misma pantalla donde se guarda (dónde quedó la telestración).
+  const [telestrationSavedMsg, setTelestrationSavedMsg] = useState<string | null>(null);
   const recorderRef = useRef<{ stop: () => void } | null>(null);
   // Copia en ref de isRecording: drawTrackingCanvas se llama a sí misma con
   // requestAnimationFrame y no ve el estado actualizado (mismo motivo que trackZoomRef).
@@ -1292,7 +1300,7 @@ const AnalisisTacticoPage: React.FC = () => {
     const canvas = trackingCanvasRef.current;
     const video = trackingVideoRef.current;
     if (!canvas || !video) return;
-    setReassignId(null);
+    setReassignId(null); setTelestrationSavedMsg(null);
     // Si el video ya está al final de la jugada (o fuera de ella), se graba desde el inicio.
     const rango = trackRangeRef.current;
     if (rango && (video.currentTime >= rango.end - 0.15 || video.currentTime < rango.start)) {
@@ -1318,29 +1326,55 @@ const AnalisisTacticoPage: React.FC = () => {
     trackingVideoRef.current?.pause();
   };
 
+  // La telestración con seguimiento se guarda IGUAL que cualquier análisis táctico:
+  // misma tabla (tactical_analysis), mismo bucket de clips y con carpeta. Así aparece
+  // en la biblioteca con los mismos filtros (torneo, categoría, partido) y se puede
+  // abrir, descargar, mover de carpeta y eliminar como las demás.
+  // (Antes se guardaba aparte, en telestration_clips, y solo se veía al fondo de otro
+  // análisis del mismo partido: si el partido no tenía ninguno, no había cómo llegar.)
   const handleSaveTelestration = async () => {
-    if (!recordedBlob || !selectedMatchId || !selectedVideoId || !user?.id || !profile?.team_id) return;
-    setSavingTelestration(true);
+    if (!recordedBlob || !selectedMatchId || !selectedVideoId || !user?.id) return;
+    setSavingTelestration(true); setTrackingError(null); setTelestrationSavedMsg(null);
     try {
+      const matchTeamId = matches.find(m => m.id === selectedMatchId)?.team_id ?? profile?.team_id ?? '';
       const ext = recordedBlob.type.includes('mp4') ? 'mp4' : 'webm';
-      const fileName = `${profile.team_id}/${selectedMatchId}/${Date.now()}.${ext}`;
-      const { data: ud, error: ue } = await supabase.storage.from(TELESTRATION_BUCKET).upload(fileName, recordedBlob, { contentType: recordedBlob.type, upsert: false });
+      const fileName = `${user.id}/${selectedMatchId}/${Date.now()}.${ext}`;
+      const { data: ud, error: ue } = await supabase.storage.from(CLIP_BUCKET).upload(fileName, recordedBlob, { contentType: recordedBlob.type, upsert: false });
       if (ue) throw ue;
-      const duration = (trackingVideoRef.current?.currentTime ?? 0) - recordStartTimeRef.current;
-      await supabase.from('telestration_clips').insert({
-        match_id: selectedMatchId, video_id: selectedVideoId,
-        team_id: profile.team_id, job_id: trackingJobId,
-        clip_storage_path: ud.path,
-        duration_seconds: Math.round(duration),
-        description: telestrationDescription.trim() || null,
-        created_by: user.id,
-      });
-      setRecordedBlob(null); setTelestrationDescription(''); setMarkedPlayers([]);
-      alert('¡Clip de telestración guardado! Los auxiliares ya pueden verlo.');
-    } catch (err) {
+      const tipoFinal = (showCustomTipo ? tipoAnalisisCustom.trim() : tipoAnalisis.trim()) || null;
+      const payload: TacticalAnalysisInsert = {
+        match_id: selectedMatchId, team_id: matchTeamId, video_id: selectedVideoId,
+        // Segundo del video donde empieza la jugada (igual que "En el video" de los demás análisis)
+        timestamp_video: trackRangeRef.current ? trackRangeRef.current.start : recordStartTimeRef.current,
+        annotations: [],
+        description: telestrationDescription.trim() || undefined,
+        created_by: user.id, clip_storage_path: ud.path, tipo_analisis: tipoFinal,
+      };
+      const { data, error: ie } = await supabase.from('tactical_analysis').insert(payload).select().single();
+      if (ie) {
+        // Si no se pudo registrar el análisis, no dejar el video suelto en Storage
+        await supabase.storage.from(CLIP_BUCKET).remove([ud.path]);
+        throw ie;
+      }
+      setAnalyses(prev => [data, ...prev]);
+      setRecordedBlob(null); setTelestrationDescription('');
+      setTipoAnalisis(''); setTipoAnalisisCustom(''); setShowCustomTipo(false);
+      setTelestrationSavedMsg(`Telestración guardada en la carpeta “${tipoFinal ?? SIN_CATEGORIA}”. La encuentras en la biblioteca de Análisis Táctico, junto con los demás análisis de este partido.`);
+    } catch (err: any) {
       console.error(err);
-      setTrackingError('Error al guardar el clip de telestración.');
+      setTrackingError(`No se pudo guardar la telestración (${err?.message || err}). El clip sigue aquí: puedes intentar guardarlo otra vez.`);
     } finally { setSavingTelestration(false); }
+  };
+
+  // Salir de la vista de telestración (a crear otro análisis o a la biblioteca).
+  const salirDeTracking = (destino: 'create' | 'list') => {
+    trackingVideoRef.current?.pause(); recorderRef.current?.stop(); isRecordingRef.current = false;
+    setMarkedPlayers([]); setReassignId(null); setRecordedBlob(null); setIsRecording(false);
+    setTelestrationSavedMsg(null);
+    setTrackZoom(1); setTrackPanX(0); setTrackPanY(0);
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    if (destino === 'list') setModo(null);
+    setView(destino);
   };
 
   // ─── Canvas anotaciones estáticas ────────────────────────────────────────
@@ -1724,7 +1758,7 @@ const AnalisisTacticoPage: React.FC = () => {
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-3 flex-wrap">
-          <button onClick={() => { trackingVideoRef.current?.pause(); recorderRef.current?.stop(); isRecordingRef.current = false; setView('create'); setMarkedPlayers([]); setReassignId(null); setRecordedBlob(null); setIsRecording(false); setTrackZoom(1); setTrackPanX(0); setTrackPanY(0); if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current); }}
+          <button onClick={() => salirDeTracking('create')}
             className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>Volver
           </button>
@@ -1735,6 +1769,13 @@ const AnalisisTacticoPage: React.FC = () => {
         </div>
 
         {trackingError && <div className="bg-red-900/40 border border-red-700 rounded-lg px-4 py-3 text-red-300 text-sm">{trackingError}</div>}
+        {telestrationSavedMsg && (
+          <div className="bg-green-900/30 border border-green-700 rounded-lg px-4 py-3 text-green-300 text-sm flex items-center gap-3 flex-wrap">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 flex-shrink-0"><path d="M5 13l4 4L19 7" /></svg>
+            <span className="flex-1 min-w-0">{telestrationSavedMsg}</span>
+            <button type="button" onClick={() => salirDeTracking('list')} className="px-3 py-1.5 bg-green-700 hover:bg-green-600 text-white rounded-lg text-xs font-medium transition-colors">Ir a la biblioteca</button>
+          </div>
+        )}
 
         {loadingFrames ? (
           <div className="flex items-center gap-3 bg-gray-800 rounded-xl p-8 text-gray-400"><Spinner /><span className="text-sm">Cargando datos de tracking...</span></div>
@@ -1844,13 +1885,32 @@ const AnalisisTacticoPage: React.FC = () => {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M5 13l4 4L19 7" /></svg>
                   Clip grabado — {(recordedBlob.size / 1024 / 1024).toFixed(1)} MB
                 </p>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Carpeta / tipo de análisis (donde va a quedar en la biblioteca)</label>
+                  <select
+                    value={showCustomTipo ? '__new__' : tipoAnalisis}
+                    onChange={e => {
+                      if (e.target.value === '__new__') { setShowCustomTipo(true); setTipoAnalisis(''); }
+                      else { setShowCustomTipo(false); setTipoAnalisis(e.target.value); }
+                    }}
+                    className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-violet-500 focus:outline-none"
+                  >
+                    <option value="">Sin categoría</option>
+                    {existingTipos.map(t => <option key={t} value={t}>{t}</option>)}
+                    <option value="__new__">+ Nueva carpeta...</option>
+                  </select>
+                  {showCustomTipo && (
+                    <input type="text" value={tipoAnalisisCustom} onChange={e => setTipoAnalisisCustom(e.target.value)} placeholder="Ej. Línea defensiva, Presión, Basculación"
+                      className="w-full mt-2 bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-violet-500 focus:outline-none" autoFocus />
+                  )}
+                </div>
                 <textarea value={telestrationDescription} onChange={e => setTelestrationDescription(e.target.value)} placeholder="Descripción del clip (opcional)..." rows={2}
                   className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-violet-500 focus:outline-none resize-none" />
                 <div className="flex gap-2">
                   <button onClick={handleSaveTelestration} disabled={savingTelestration}
                     className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white rounded-lg text-sm font-medium transition-colors">
                     {savingTelestration ? <Spinner /> : <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v14a2 2 0 01-2 2z" /><path d="M17 21v-8H7v8M7 3v5h8" /></svg>}
-                    Guardar clip
+                    Guardar en la biblioteca
                   </button>
                   <button onClick={() => setRecordedBlob(null)} className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg text-sm transition-colors">Descartar</button>
                 </div>
