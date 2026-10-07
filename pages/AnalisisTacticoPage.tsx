@@ -11,7 +11,10 @@ import {
   createTrackingJob,
   uploadToRailway,
   pollJobStatus,
-  findCompletedJob,
+  checkTrackingService,
+  listProcessedPlays,
+  MAX_PLAY_SECONDS,
+  type ProcessedPlay,
   fetchTrackingFrames,
   interpolatePlayers,
   type TrackingFrame,
@@ -65,7 +68,7 @@ type ModoAnalisis = 'momento' | 'secuencia' | 'tracking';
 const MODOS_ANALISIS: { id: ModoAnalisis; nombre: string; descripcion: string; badge: string; badgeClass: string }[] = [
   { id: 'momento', nombre: 'Análisis momento clave', descripcion: 'El video se detiene en un momento, muestra tus dibujos y continúa.', badge: 'Funciona hoy', badgeClass: 'bg-green-900/50 text-green-300' },
   { id: 'secuencia', nombre: 'Análisis de secuencia', descripcion: 'El video se detiene en varios momentos. En cada pausa muestra dibujos y una explicación que se borran antes de continuar.', badge: 'Nuevo', badgeClass: 'bg-cyan-900/50 text-cyan-300' },
-  { id: 'tracking', nombre: 'Tracking y telestración', descripcion: 'La plataforma sigue a los jugadores en movimiento y puedes marcarlos durante la jugada.', badge: 'En revisión', badgeClass: 'bg-amber-900/50 text-amber-300' },
+  { id: 'tracking', nombre: 'Tracking y telestración', descripcion: `Marcas una jugada de hasta ${MAX_PLAY_SECONDS} segundos; la plataforma detecta a los jugadores y marcas a 2, 3 o 4 para mostrar cómo se mueven juntos.`, badge: 'En revisión', badgeClass: 'bg-amber-900/50 text-amber-300' },
 ];
 
 // Un análisis guardado es de secuencia si sus dibujos traen número de pausa.
@@ -81,11 +84,39 @@ const etiquetaTipoAnalisis = (analysis: TacticalAnalysis): string => {
 
 // ─── Tipos internos ───────────────────────────────────────────────────────────
 
+// Un jugador marcado en la telestración con seguimiento. El tracking le da a cada
+// persona detectada un identificador (track_id), pero ese identificador puede
+// cambiar a media jugada: cuando dos jugadores se cruzan el sistema a veces los
+// confunde, o pierde a uno y lo vuelve a encontrar con otro número. Por eso la
+// marca no guarda un solo track_id sino una lista de "tramos": a quién sigue y
+// desde qué segundo del video. Al corregir se agrega un tramo nuevo desde ese momento.
 interface MarkedPlayer {
-  track_id: number;
+  id: number;      // identificador propio de la marca; no cambia al corregir
   color: string;
   label: string;
+  tramos: { desde: number; track_id: number }[]; // ordenados por "desde"; el primero aplica desde el inicio
 }
+
+// A qué track_id sigue esta marca en un segundo dado del video.
+const trackActivo = (m: MarkedPlayer, second: number): number => {
+  let id = m.tramos[0].track_id;
+  for (const t of m.tramos) { if (t.desde <= second) id = t.track_id; else break; }
+  return id;
+};
+
+// Lo que drawTelestration necesita de cada marca en el cuadro que se está dibujando.
+interface MarcaActiva { track_id: number; color: string; label: string }
+
+// Jugador detectado, ya ubicado dentro del recorte (zoom) que se muestra en el canvas.
+type JugadorEnCanvas = InterpolatedPlayer & { localCx: number; localCy: number; localW: number; localH: number };
+
+// El canvas de tracking se dibuja como máximo a este ancho. Un panorámico mide
+// ~3280 px: dibujarlo y grabarlo a ese tamaño 30 veces por segundo traba una
+// laptop normal, y para el clip final 1920 px es más que suficiente.
+const MAX_TRACK_CANVAS_WIDTH = 1920;
+
+// mm:ss.d — para marcar inicio y fin de la jugada con décimas de segundo.
+const formatTimeDec = (s: number): string => `${formatTime(s)}.${Math.floor((s % 1) * 10)}`;
 
 // Una pausa de la secuencia: un momento del video donde el clip se congela, muestra sus
 // dibujos y su explicación, y luego los borra y sigue corriendo.
@@ -265,55 +296,72 @@ function renderFrame(canvas: HTMLCanvasElement, frameDataUrl: string, annotation
 
 // ─── Telestración canvas ──────────────────────────────────────────────────────
 
-function drawTelestration(ctx: CanvasRenderingContext2D, W: number, H: number, players: Array<InterpolatedPlayer & { localCx: number; localCy: number }>, markedPlayers: MarkedPlayer[]) {
-  const markedMap = new Map(markedPlayers.map(m => [m.track_id, m]));
+function drawTelestration(ctx: CanvasRenderingContext2D, W: number, H: number, players: JugadorEnCanvas[], marcas: MarcaActiva[], mostrarPuntos: boolean) {
+  const markedMap = new Map(marcas.map(m => [m.track_id, m]));
 
-  // Punto discreto en CADA jugador detectado, esté marcado o no — antes no
-  // se dibujaba nada hasta que ya habías logrado marcar a alguien, así que no
-  // había forma de saber dónde darle clic. Esto es justo lo que faltaba.
-  for (const p of players) {
-    if (markedMap.has(p.track_id)) continue; // los marcados se dibujan más abajo, más grandes
-    const cx = p.localCx * W, cy = p.localCy * H;
-    if (cx < -20 || cx > W + 20 || cy < -20 || cy > H + 20) continue; // fuera del recorte actual
-    ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 4;
-    ctx.beginPath(); ctx.arc(cx, cy, Math.max(5, W * 0.006), 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(255,255,255,0.55)';
-    ctx.fill();
-    ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 1; ctx.stroke();
-    ctx.restore();
+  // Punto discreto en CADA jugador detectado, esté marcado o no, para saber dónde
+  // dar clic. Va a los pies y es chico: en una toma de cancha completa el jugador
+  // mide muy poco y un punto grande al centro lo tapaba por completo (no se veía
+  // ni de qué equipo era). No se dibujan mientras se graba: el clip final solo
+  // debe llevar los círculos y la línea de los jugadores marcados.
+  if (mostrarPuntos) {
+    for (const p of players) {
+      if (markedMap.has(p.track_id)) continue; // los marcados se dibujan más abajo, más grandes
+      const cx = p.localCx * W, cy = (p.localCy + p.localH / 2) * H;
+      if (cx < -20 || cx > W + 20 || cy < -20 || cy > H + 20) continue; // fuera del recorte actual
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 3;
+      ctx.beginPath(); ctx.arc(cx, cy, Math.max(4, W * 0.0035), 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(0,0,0,0.7)'; ctx.lineWidth = 1.5; ctx.stroke();
+      ctx.restore();
+    }
   }
 
-  if (!markedPlayers.length) return;
-  const visible: Array<{ player: InterpolatedPlayer & { localCx: number; localCy: number }; marked: MarkedPlayer }> = [];
+  if (!marcas.length) return;
+  const visible: Array<{ player: JugadorEnCanvas; marked: MarcaActiva }> = [];
   for (const p of players) {
     const marked = markedMap.get(p.track_id);
     if (marked) visible.push({ player: p, marked });
   }
+  // La línea une a los jugadores de izquierda a derecha según se ven en pantalla,
+  // así nunca se cruza sobre sí misma sin importar en qué orden se marcaron.
+  visible.sort((x, y) => x.player.localCx - y.player.localCx);
+
+  // Todo se dibuja a los PIES del jugador (aro en el pasto) y el número arriba de
+  // la cabeza, para no tapar al jugador: en una toma de cancha completa mide muy poco.
+  const pies = (p: JugadorEnCanvas) => ({ x: p.localCx * W, y: (p.localCy + p.localH / 2) * H });
+
   if (visible.length > 1) {
     ctx.save();
-    ctx.strokeStyle = 'rgba(255,255,255,0.6)';
-    ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+    ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 4;
+    ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+    ctx.lineWidth = Math.max(2, W * 0.002); ctx.lineCap = 'round';
     for (let i = 0; i < visible.length - 1; i++) {
-      const a = visible[i].player, b = visible[i + 1].player;
-      ctx.beginPath(); ctx.moveTo(a.localCx * W, a.localCy * H); ctx.lineTo(b.localCx * W, b.localCy * H); ctx.stroke();
+      const a = pies(visible[i].player), b = pies(visible[i + 1].player);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
     }
-    ctx.setLineDash([]); ctx.restore();
+    ctx.restore();
   }
   for (const { player, marked } of visible) {
-    const cx = player.localCx * W, cy = player.localCy * H;
-    const r = Math.max(18, player.width * W * 0.7);
+    const { x: cx, y: cy } = pies(player);
+    const rx = Math.max(14, W * 0.011, player.localW * W * 0.9);
+    const ry = rx * 0.4;
+    const cabezaY = (player.localCy - player.localH / 2) * H;
     ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.7)'; ctx.shadowBlur = 8;
-    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.strokeStyle = marked.color; ctx.lineWidth = 3; ctx.stroke();
-    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.shadowColor = 'rgba(0,0,0,0.7)'; ctx.shadowBlur = 6;
+    ctx.beginPath(); ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
     ctx.fillStyle = marked.color + '33'; ctx.fill();
+    ctx.strokeStyle = marked.color; ctx.lineWidth = Math.max(3, W * 0.0025); ctx.stroke();
     ctx.shadowBlur = 0;
+    const fontPx = Math.max(13, W * 0.012);
+    ctx.font = `bold ${fontPx}px monospace`;
+    ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+    ctx.lineWidth = Math.max(3, fontPx * 0.22); ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.lineJoin = 'round';
+    ctx.strokeText(marked.label.slice(0, 3), cx, cabezaY - fontPx * 0.25);
     ctx.fillStyle = marked.color;
-    ctx.font = `bold ${Math.max(11, r * 0.55)}px monospace`;
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(marked.label.slice(0, 3), cx, cy);
+    ctx.fillText(marked.label.slice(0, 3), cx, cabezaY - fontPx * 0.25);
     ctx.restore();
   }
 }
@@ -779,6 +827,19 @@ const AnalisisTacticoPage: React.FC = () => {
   const [isTracking, setIsTracking] = useState(false);
   const [trackingJobId, setTrackingJobId] = useState<string | null>(null);
   const [trackingError, setTrackingError] = useState<string | null>(null);
+  // Jugada a analizar: inicio y fin (segundos del video cargado). El tracking se hace
+  // por jugada de máximo MAX_PLAY_SECONDS, no por video completo.
+  const [playStart, setPlayStart] = useState<number | null>(null);
+  const [playEnd, setPlayEnd] = useState<number | null>(null);
+  const [playMsg, setPlayMsg] = useState<string | null>(null);
+  // Jugadas de este video que ya se procesaron antes (para abrirlas sin volver a esperar).
+  const [processedPlays, setProcessedPlays] = useState<ProcessedPlay[]>([]);
+  // Tramo del video que cubre el tracking abierto en la vista de telestración.
+  const [trackRange, setTrackRange] = useState<{ start: number; end: number } | null>(null);
+  const trackRangeRef = useRef<{ start: number; end: number } | null>(null);
+  const aplicarRango = (r: { start: number; end: number } | null) => { trackRangeRef.current = r; setTrackRange(r); };
+  // Marca que se está corrigiendo (el siguiente clic en un jugador la reasigna).
+  const [reassignId, setReassignId] = useState<number | null>(null);
 
   // ── Vista Tracking ────────────────────────────────────────────────────────
   const trackingVideoRef = useRef<HTMLVideoElement>(null);
@@ -816,6 +877,9 @@ const AnalisisTacticoPage: React.FC = () => {
   const [savingTelestration, setSavingTelestration] = useState(false);
   const [telestrationDescription, setTelestrationDescription] = useState('');
   const recorderRef = useRef<{ stop: () => void } | null>(null);
+  // Copia en ref de isRecording: drawTrackingCanvas se llama a sí misma con
+  // requestAnimationFrame y no ve el estado actualizado (mismo motivo que trackZoomRef).
+  const isRecordingRef = useRef(false);
   const recordStartTimeRef = useRef(0);
 
   // ── Refs dibujo ───────────────────────────────────────────────────────────
@@ -966,6 +1030,16 @@ const AnalisisTacticoPage: React.FC = () => {
       });
   }, [view, selectedAnalysis]);
 
+  // ─── Jugadas ya procesadas del video elegido (solo en modo tracking) ─────
+  useEffect(() => {
+    if (modo !== 'tracking' || !selectedVideoId) { setProcessedPlays([]); return; }
+    let cancelado = false;
+    listProcessedPlays(selectedVideoId)
+      .then(plays => { if (!cancelado) setProcessedPlays(plays); })
+      .catch(() => { if (!cancelado) setProcessedPlays([]); });
+    return () => { cancelado = true; };
+  }, [modo, selectedVideoId]);
+
   // ─── Cargar frames al entrar a tracking ───────────────────────────────────
   useEffect(() => {
     if (view !== 'tracking' || !trackingJobId) return;
@@ -1004,21 +1078,42 @@ const AnalisisTacticoPage: React.FC = () => {
     }
     trackCropRef.current = { sx, sy, sWidth, sHeight };
 
-    if (canvas.width !== sWidth || canvas.height !== sHeight) {
-      canvas.width = sWidth;
-      canvas.height = sHeight;
+    // La jugada procesada es solo un tramo del video: al llegar al final se pausa
+    // (y se detiene la grabación, si la hay). La pausa vuelve a dibujar este cuadro.
+    const rango = trackRangeRef.current;
+    if (rango && !video.paused && video.currentTime >= rango.end) {
+      video.pause();
+      recorderRef.current?.stop();
+      return;
+    }
+
+    // Tamaño del canvas: el del recorte, con tope de ancho y en números pares enteros
+    // (antes se comparaba contra un ancho con decimales y el canvas se reiniciaba
+    // en cada cuadro cuando había zoom).
+    const outW = Math.max(2, Math.floor(Math.min(sWidth, MAX_TRACK_CANVAS_WIDTH) / 2) * 2);
+    const outH = Math.max(2, Math.floor((sHeight * (outW / sWidth)) / 2) * 2);
+    if (canvas.width !== outW || canvas.height !== outH) {
+      canvas.width = outW;
+      canvas.height = outH;
     }
     const W = canvas.width, H = canvas.height;
     ctx.clearRect(0, 0, W, H);
     ctx.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, W, H);
 
-    const interpolated = interpolatePlayers(trackingFramesRef.current, video.currentTime);
+    const t = video.currentTime;
+    const interpolated = interpolatePlayers(trackingFramesRef.current, t);
     setCurrentPlayers(interpolated);
-    setCurrentVideoTime(video.currentTime);
-    // Jugadores detectados → posición dentro del recorte actual (si no hay
-    // zoom, sx=sy=0 y vw/vh=W/H, así que esto da lo mismo que antes).
-    const enRecorte = interpolated.map(p => ({ ...p, localCx: (p.cx * vw - sx) / sWidth, localCy: (p.cy * vh - sy) / sHeight }));
-    drawTelestration(ctx, W, H, enRecorte, markedPlayersRef.current);
+    setCurrentVideoTime(t);
+    // Jugadores detectados → posición y tamaño dentro del recorte actual (si no hay
+    // zoom, sx=sy=0 y el recorte es el video completo).
+    const enRecorte: JugadorEnCanvas[] = interpolated.map(p => ({
+      ...p,
+      localCx: (p.cx * vw - sx) / sWidth, localCy: (p.cy * vh - sy) / sHeight,
+      localW: (p.width * vw) / sWidth, localH: (p.height * vh) / sHeight,
+    }));
+    // Cada marca sigue al track_id que le toca en ESTE segundo (ver MarkedPlayer.tramos).
+    const activos: MarcaActiva[] = markedPlayersRef.current.map(m => ({ track_id: trackActivo(m, t), color: m.color, label: m.label }));
+    drawTelestration(ctx, W, H, enRecorte, activos, !isRecordingRef.current);
     if (!video.paused && !video.ended) {
       animFrameRef.current = requestAnimationFrame(drawTrackingCanvas);
     }
@@ -1067,7 +1162,12 @@ const AnalisisTacticoPage: React.FC = () => {
     };
     const onSeeked = () => { drawTrackingCanvas(); };
     const onTimeUpdate = () => { setCurrentVideoTime(video.currentTime); };
-    const onLoadedData = () => { drawTrackingCanvas(); };
+    // El video cargado es el partido completo; la vista solo trabaja el tramo procesado.
+    const irAlInicioDeLaJugada = () => {
+      const r = trackRangeRef.current;
+      if (r && (video.currentTime < r.start - 0.05 || video.currentTime > r.end + 0.05)) video.currentTime = r.start;
+    };
+    const onLoadedData = () => { irAlInicioDeLaJugada(); drawTrackingCanvas(); };
 
     video.addEventListener('play', onPlay);
     video.addEventListener('pause', onPause);
@@ -1079,14 +1179,19 @@ const AnalisisTacticoPage: React.FC = () => {
 
     // Si el video ya está cargado al montarse, dibujar de inmediato
     if (video.readyState >= 2) {
+      irAlInicioDeLaJugada();
       drawTrackingCanvas();
     }
   }, [drawTrackingCanvas]);
 
+  // Con el video en pausa nada vuelve a dibujar el canvas por sí solo, así que hay
+  // que redibujar a mano cuando cambian las marcas o el zoom/arrastre. (Antes el
+  // zoom en pausa no se veía hasta reproducir o mover el video; y para marcar
+  // jugadores hay que estar en pausa.)
   useEffect(() => {
     const video = trackingVideoRef.current;
     if (video?.paused) drawTrackingCanvas();
-  }, [markedPlayers, drawTrackingCanvas]);
+  }, [markedPlayers, trackZoom, trackPanX, trackPanY, drawTrackingCanvas]);
 
   // ─── Clic en canvas tracking: marcar/desmarcar ───────────────────────────
   const handleTrackingCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -1099,7 +1204,7 @@ const AnalisisTacticoPage: React.FC = () => {
     const clickX = (e.clientX - rect.left) * scaleX;
     const clickY = (e.clientY - rect.top) * scaleY;
     const W = canvas.width, H = canvas.height;
-    const HIT_RADIUS = Math.max(30, W * 0.04);
+    const HIT_RADIUS = Math.max(24, W * 0.025);
     const vw = video.videoWidth || 1, vh = video.videoHeight || 1;
     const crop = trackCropRef.current;
     let closest: InterpolatedPlayer | null = null;
@@ -1114,12 +1219,50 @@ const AnalisisTacticoPage: React.FC = () => {
     }
     if (!closest) return;
     const trackId = closest.track_id;
+    const t = video.currentTime;
+
+    // Corrección: desde este momento, la marca que se está corrigiendo sigue al
+    // jugador en el que se dio clic (el círculo se había ido con otro o se perdió).
+    if (reassignId !== null) {
+      if (markedPlayers.some(m => m.id !== reassignId && trackActivo(m, t) === trackId)) return; // ese jugador ya lo sigue otra marca
+      setMarkedPlayers(prev => prev.map(m => m.id !== reassignId ? m : {
+        ...m,
+        tramos: [...m.tramos.filter(x => Math.abs(x.desde - t) > 0.05), { desde: t, track_id: trackId }].sort((x, y) => x.desde - y.desde),
+      }));
+      setReassignId(null);
+      return;
+    }
+
+    // Marcar / desmarcar
     setMarkedPlayers(prev => {
-      if (prev.find(m => m.track_id === trackId)) return prev.filter(m => m.track_id !== trackId);
-      const colorIndex = prev.length % TRACKING_COLORS.length;
-      return [...prev, { track_id: trackId, color: TRACKING_COLORS[colorIndex], label: String(prev.length + 1) }];
+      const existente = prev.find(m => trackActivo(m, t) === trackId);
+      if (existente) return prev.filter(m => m.id !== existente.id);
+      const usados = new Set(prev.map(m => Number(m.label)));
+      let n = 1; while (usados.has(n)) n++;
+      return [...prev, { id: Date.now() + Math.random(), color: TRACKING_COLORS[(n - 1) % TRACKING_COLORS.length], label: String(n), tramos: [{ desde: -Infinity, track_id: trackId }] }];
     });
-  }, [currentPlayers]);
+  }, [currentPlayers, markedPlayers, reassignId]);
+
+  // Controles de reproducción dentro del tramo de la jugada.
+  const trackTogglePlay = () => {
+    const v = trackingVideoRef.current; if (!v) return;
+    if (!v.paused) { v.pause(); return; }
+    const r = trackRangeRef.current;
+    if (r && v.currentTime >= r.end - 0.15) v.currentTime = r.start; // al final → vuelve a empezar
+    v.play();
+  };
+  const trackStep = (delta: number) => {
+    const v = trackingVideoRef.current; if (!v) return;
+    const r = trackRangeRef.current;
+    const min = r ? r.start : 0, max = r ? r.end : (v.duration || Infinity);
+    v.pause();
+    v.currentTime = Math.max(min, Math.min(max, v.currentTime + delta));
+  };
+  const trackGoToStart = () => {
+    const v = trackingVideoRef.current; if (!v) return;
+    v.pause();
+    v.currentTime = trackRangeRef.current ? trackRangeRef.current.start : 0;
+  };
 
   const trackZoomBy = (delta: number) => {
     setTrackZoom(z => {
@@ -1149,9 +1292,23 @@ const AnalisisTacticoPage: React.FC = () => {
     const canvas = trackingCanvasRef.current;
     const video = trackingVideoRef.current;
     if (!canvas || !video) return;
+    setReassignId(null);
+    // Si el video ya está al final de la jugada (o fuera de ella), se graba desde el inicio.
+    const rango = trackRangeRef.current;
+    if (rango && (video.currentTime >= rango.end - 0.15 || video.currentTime < rango.start)) {
+      video.pause();
+      await new Promise<void>(resolve => {
+        const done = () => { video.removeEventListener('seeked', done); resolve(); };
+        video.addEventListener('seeked', done);
+        video.currentTime = rango.start;
+      });
+    }
     setRecordedBlob(null); setIsRecording(true);
+    // Quitar los puntos de detección ANTES de empezar a grabar, para que no salgan en el clip.
+    isRecordingRef.current = true;
+    drawTrackingCanvas();
     recordStartTimeRef.current = video.currentTime;
-    const recorder = await recordCanvasClip(canvas, (blob) => { setRecordedBlob(blob); setIsRecording(false); });
+    const recorder = await recordCanvasClip(canvas, (blob) => { isRecordingRef.current = false; setRecordedBlob(blob); setIsRecording(false); drawTrackingCanvas(); });
     recorderRef.current = recorder;
     if (video.paused) video.play();
   };
@@ -1323,6 +1480,7 @@ const AnalisisTacticoPage: React.FC = () => {
     setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]);
     setPausas([]); setCaptionActual(''); setEndTimestamp(null);
     setTrackingJobId(null); setTrackingError(null);
+    setPlayStart(null); setPlayEnd(null); setPlayMsg(null); aplicarRango(null);
     resetZoomClip();
   };
 
@@ -1387,18 +1545,56 @@ const AnalisisTacticoPage: React.FC = () => {
 
   const quitarPausa = (id: string) => setPausas(prev => prev.filter(x => x.id !== id));
 
+  // Marcar inicio y fin de la jugada sobre el video cargado.
+  const markPlayStart = () => {
+    const v = videoRef.current; if (!v) return;
+    const t = v.currentTime;
+    setPlayStart(t); setPlayMsg(null);
+    // El fin anterior solo se conserva si sigue siendo válido con el nuevo inicio.
+    setPlayEnd(prev => (prev !== null && prev > t && prev - t <= MAX_PLAY_SECONDS ? prev : null));
+  };
+  const markPlayEnd = () => {
+    const v = videoRef.current; if (!v || playStart === null) return;
+    const t = v.currentTime;
+    if (t <= playStart) { setPlayMsg('El fin debe ser posterior al inicio de la jugada.'); return; }
+    if (t - playStart > MAX_PLAY_SECONDS) {
+      setPlayMsg(`Así la jugada duraría ${(t - playStart).toFixed(1)} segundos y el máximo es ${MAX_PLAY_SECONDS}. Marca el fin antes, o mueve el inicio más adelante.`);
+      return;
+    }
+    setPlayMsg(null); setPlayEnd(t);
+  };
+
+  // Abre una jugada que ya se había procesado antes, sin volver a mandarla a analizar.
+  const openProcessedPlay = (p: ProcessedPlay) => {
+    videoRef.current?.pause();
+    setTrackingError(null); setMarkedPlayers([]); setReassignId(null); setRecordedBlob(null);
+    setTrackingJobId(p.jobId);
+    aplicarRango({ start: p.startSecond, end: p.endSecond });
+    setView('tracking');
+  };
+
   const handleStartTracking = async () => {
     if (!videoFileRef.current || !selectedVideoId || !selectedMatchId || !profile?.team_id || !user?.id) return;
-    setIsTracking(true); setTrackingError(null); setTrackingJobId(null);
+    if (playStart === null || playEnd === null) { setPlayMsg('Marca el inicio y el fin de la jugada antes de procesar.'); return; }
+    const duracion = playEnd - playStart;
+    if (duracion < 1) { setPlayMsg('La jugada debe durar al menos 1 segundo.'); return; }
+    if (duracion > MAX_PLAY_SECONDS) { setPlayMsg(`La jugada no puede durar más de ${MAX_PLAY_SECONDS} segundos.`); return; }
+    const start = playStart, end = playEnd;
+    videoRef.current?.pause();
+    setIsTracking(true); setTrackingError(null); setTrackingJobId(null); setPlayMsg(null);
+    setTrackingPhase('Revisando el servicio de tracking...'); setTrackingPercent(0);
+    const onProgress = (phase: string, percent: number) => { setTrackingPhase(phase); setTrackingPercent(percent); };
     try {
-      const existingJobId = await findCompletedJob(selectedVideoId);
-      if (existingJobId) { setTrackingJobId(existingJobId); setTrackingPhase('¡Tracking ya disponible!'); setTrackingPercent(100); setIsTracking(false); setView('tracking'); return; }
-      const compressed = await compressVideo(videoFileRef.current, (phase, percent) => { setTrackingPhase(phase); setTrackingPercent(percent); });
+      await checkTrackingService();
+      const compressed = await compressVideo(videoFileRef.current, start, end, onProgress);
       setTrackingPhase('Preparando análisis...'); setTrackingPercent(0);
       const jobId = await createTrackingJob({ videoId: selectedVideoId, matchId: selectedMatchId, teamId: profile.team_id, createdBy: user.id });
-      setTrackingJobId(jobId);
-      await uploadToRailway({ videoBlob: compressed, jobId, videoId: selectedVideoId, matchId: selectedMatchId, teamId: profile.team_id, onProgress: (phase, percent) => { setTrackingPhase(phase); setTrackingPercent(percent); } });
-      await pollJobStatus(jobId, (phase, percent) => { setTrackingPhase(phase); setTrackingPercent(percent); });
+      await uploadToRailway({ videoBlob: compressed, jobId, videoId: selectedVideoId, matchId: selectedMatchId, teamId: profile.team_id, startSecond: start, onProgress });
+      await pollJobStatus(jobId, onProgress);
+      setTrackingJobId(jobId); setTrackingPercent(100);
+      aplicarRango({ start, end });
+      setProcessedPlays(prev => [...prev.filter(p => p.jobId !== jobId), { jobId, startSecond: start, endSecond: end }].sort((x, y) => x.startSecond - y.startSecond));
+      setMarkedPlayers([]); setReassignId(null); setRecordedBlob(null);
       setIsTracking(false); setView('tracking');
     } catch (err: any) { setTrackingError(err?.message || 'Error desconocido en Modo Tracking'); setIsTracking(false); }
   };
@@ -1528,12 +1724,13 @@ const AnalisisTacticoPage: React.FC = () => {
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-3 flex-wrap">
-          <button onClick={() => { setView('create'); setMarkedPlayers([]); setRecordedBlob(null); setIsRecording(false); setTrackZoom(1); setTrackPanX(0); setTrackPanY(0); if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current); }}
+          <button onClick={() => { trackingVideoRef.current?.pause(); recorderRef.current?.stop(); isRecordingRef.current = false; setView('create'); setMarkedPlayers([]); setReassignId(null); setRecordedBlob(null); setIsRecording(false); setTrackZoom(1); setTrackPanX(0); setTrackPanY(0); if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current); }}
             className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>Volver
           </button>
           <h2 className="text-lg font-bold text-white">Tracking y telestración</h2>
           <span className="text-xs bg-violet-900/40 text-violet-400 border border-violet-800 px-2 py-0.5 rounded">{selectedVideo?.video_file}</span>
+          {trackRange && <span className="text-xs bg-gray-800 text-gray-300 border border-gray-700 px-2 py-0.5 rounded font-mono">Jugada {formatTime(trackRange.start)} → {formatTime(trackRange.end)} · {(trackRange.end - trackRange.start).toFixed(1)} s</span>}
           {isRecording && <span className="flex items-center gap-1.5 text-xs bg-red-900/40 text-red-400 border border-red-700 px-2 py-0.5 rounded animate-pulse"><span className="w-2 h-2 bg-red-500 rounded-full inline-block" />Grabando</span>}
         </div>
 
@@ -1545,8 +1742,18 @@ const AnalisisTacticoPage: React.FC = () => {
           <>
             <div className="bg-gray-800/60 border border-gray-700 rounded-lg px-4 py-2 text-xs text-gray-400 flex items-center gap-2">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-violet-400 flex-shrink-0"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>
-              {isVideoPaused ? 'Video pausado — haz clic sobre un jugador para marcarlo o desmarcarlo' : 'Reproduciendo — pausa para marcar jugadores'}
+              {reassignId !== null ? (
+                <span className="flex items-center gap-3 flex-wrap text-amber-300">
+                  <span>Corrigiendo al jugador #{markedPlayers.find(m => m.id === reassignId)?.label}: da clic sobre el punto del jugador correcto. Desde este momento del video el círculo lo seguirá a él. Si no tiene punto, avanza 0.1 s e intenta de nuevo.</span>
+                  <button type="button" onClick={() => setReassignId(null)} className="underline text-gray-300 hover:text-white">Cancelar</button>
+                </span>
+              ) : isVideoPaused
+                ? 'Video pausado — da clic sobre el punto de un jugador para marcarlo o desmarcarlo. Marca a los jugadores al inicio de la jugada; si más adelante un círculo se va con otro jugador, pausa ahí y usa “Corregir”.'
+                : 'Reproduciendo — pausa para marcar o corregir jugadores'}
             </div>
+            {trackingFrames.length > 0 && currentPlayers.length === 0 && isVideoPaused && (
+              <div className="bg-amber-900/30 border border-amber-800 rounded-lg px-4 py-2 text-xs text-amber-300">En este cuadro no se detectó a ningún jugador. Avanza o retrocede un poco.</div>
+            )}
 
             {/* Canvas principal */}
             <div className="relative bg-black rounded-xl overflow-hidden border border-gray-700">
@@ -1564,10 +1771,12 @@ const AnalisisTacticoPage: React.FC = () => {
               {/* Controles superpuestos */}
               <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/70 to-transparent px-4 pt-6 pb-3 flex flex-col gap-2">
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <button onClick={() => { const v = trackingVideoRef.current; if (v) v.currentTime = Math.max(0, v.currentTime - 10); }}
-                    className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs font-mono">⏪ -10s</button>
-                  <button onClick={() => { const v = trackingVideoRef.current; if (v) v.currentTime += 10; }}
-                    className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs font-mono">+10s ⏩</button>
+                  <button onClick={trackGoToStart} title="Volver al inicio de la jugada"
+                    className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs font-mono">⏮ Inicio</button>
+                  <button onClick={() => trackStep(-1)} className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs font-mono">-1s</button>
+                  <button onClick={() => trackStep(-0.1)} className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs font-mono">-0.1s</button>
+                  <button onClick={() => trackStep(0.1)} className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs font-mono">+0.1s</button>
+                  <button onClick={() => trackStep(1)} className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs font-mono">+1s</button>
                   <select onChange={e => { const v = trackingVideoRef.current; if (v) v.playbackRate = parseFloat(e.target.value); }} defaultValue="1"
                     className="bg-white/15 hover:bg-white/25 rounded text-white text-xs px-1.5 py-1">
                     <option value="0.5">0.5x</option><option value="0.7">0.7x</option><option value="1">1x</option><option value="1.5">1.5x</option><option value="2">2x</option>
@@ -1579,13 +1788,17 @@ const AnalisisTacticoPage: React.FC = () => {
                   {trackZoom > 1 && <span className="text-white/50 text-[11px]">Arrastra para moverte</span>}
                 </div>
                 <div className="flex items-center gap-3">
-                <button onClick={() => { const v = trackingVideoRef.current; if (!v) return; v.paused ? v.play() : v.pause(); }}
+                <button onClick={trackTogglePlay}
                   className="w-8 h-8 flex items-center justify-center bg-white/20 hover:bg-white/30 rounded-full transition-colors">
                   {isVideoPaused
                     ? <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-white"><path d="M8 5v14l11-7z" /></svg>
                     : <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-white"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" /></svg>}
                 </button>
-                <span className="text-white text-xs font-mono">{formatTime(currentVideoTime)}</span>
+                <span className="text-white text-xs font-mono">
+                  {trackRange
+                    ? `${Math.max(0, Math.min(trackRange.end - trackRange.start, currentVideoTime - trackRange.start)).toFixed(1)} / ${(trackRange.end - trackRange.start).toFixed(1)} s`
+                    : formatTime(currentVideoTime)}
+                </span>
                 <div className="flex-1" />
                 {!isRecording ? (
                   <button onClick={handleStartRecording} disabled={!!recordedBlob}
@@ -1608,14 +1821,19 @@ const AnalisisTacticoPage: React.FC = () => {
                 <p className="text-xs text-gray-500 font-medium uppercase tracking-wider">Jugadores marcados</p>
                 <div className="flex flex-wrap gap-2">
                   {markedPlayers.map(m => (
-                    <div key={m.track_id} className="flex items-center gap-1.5 px-2 py-1 rounded-lg border text-xs" style={{ borderColor: m.color, color: m.color }}>
+                    <div key={m.id} className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border text-xs ${reassignId === m.id ? 'bg-amber-900/30' : ''}`} style={{ borderColor: m.color, color: m.color }}>
                       <span className="w-3 h-3 rounded-full border" style={{ backgroundColor: m.color + '44', borderColor: m.color }} />
-                      <span>#{m.label} — ID {m.track_id}</span>
-                      <button onClick={() => setMarkedPlayers(prev => prev.filter(p => p.track_id !== m.track_id))} className="ml-1 opacity-60 hover:opacity-100">✕</button>
+                      <span>Jugador #{m.label}</span>
+                      <button type="button" disabled={isRecording}
+                        onClick={() => { trackingVideoRef.current?.pause(); setReassignId(prev => (prev === m.id ? null : m.id)); }}
+                        title="Si el círculo se fue con otro jugador: pausa en ese momento, da clic aquí y luego sobre el jugador correcto"
+                        className="ml-1 px-1.5 py-0.5 rounded bg-white/10 hover:bg-white/20 disabled:opacity-40 text-gray-200">{reassignId === m.id ? 'Cancelar' : 'Corregir'}</button>
+                      <button type="button" disabled={isRecording} onClick={() => { setMarkedPlayers(prev => prev.filter(p => p.id !== m.id)); if (reassignId === m.id) setReassignId(null); }} className="ml-1 opacity-60 hover:opacity-100 disabled:opacity-30">✕</button>
                     </div>
                   ))}
-                  <button onClick={() => setMarkedPlayers([])} className="px-2 py-1 text-xs text-gray-500 hover:text-red-400 transition-colors">Limpiar todos</button>
+                  <button type="button" disabled={isRecording} onClick={() => { setMarkedPlayers([]); setReassignId(null); }} className="px-2 py-1 text-xs text-gray-500 hover:text-red-400 disabled:opacity-40 transition-colors">Limpiar todos</button>
                 </div>
+                <p className="text-[11px] text-gray-500">La línea une a los jugadores marcados de izquierda a derecha. Al grabar, los puntos de detección no salen en el clip.</p>
               </div>
             )}
 
@@ -1753,7 +1971,7 @@ const AnalisisTacticoPage: React.FC = () => {
           {modo && (
             <>
               <span className="text-xs text-cyan-300 bg-cyan-900/40 border border-cyan-800 px-2 py-0.5 rounded">{MODOS_ANALISIS.find(m => m.id === modo)?.nombre}</span>
-              <button type="button" onClick={() => { setModo(null); setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]); setPausas([]); setCaptionActual(''); setEndTimestamp(null); setError(null); resetZoomClip(); }}
+              <button type="button" onClick={() => { setModo(null); setFrameDataUrl(null); setFrameTimestamp(null); setAnnotations([]); setPausas([]); setCaptionActual(''); setEndTimestamp(null); setError(null); setPlayStart(null); setPlayEnd(null); setPlayMsg(null); resetZoomClip(); }}
                 className="text-xs text-gray-400 hover:text-cyan-400 underline">Cambiar tipo</button>
             </>
           )}
@@ -1837,7 +2055,7 @@ const AnalisisTacticoPage: React.FC = () => {
         {videoUrl && selectedVideo && (
           <div className="bg-gray-800 rounded-xl p-4 space-y-3">
             <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
-              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">4</span>{modo === 'tracking' ? 'Procesa el video para seguir a los jugadores' : modo === 'secuencia' ? 'Captura cada momento de la secuencia' : 'Captura el frame a analizar'}
+              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">4</span>{modo === 'tracking' ? 'Marca la jugada y procésala para seguir a los jugadores' : modo === 'secuencia' ? 'Captura cada momento de la secuencia' : 'Captura el frame a analizar'}
             </h3>
             {modo === 'secuencia' && (
               <p className="text-gray-400 text-xs">Avanza el video al primer momento, captura el frame, dibuja y escribe la explicación. Luego guarda la pausa y repite con el siguiente momento. Al final marca dónde termina el clip y guarda la secuencia.</p>
@@ -1930,6 +2148,51 @@ const AnalisisTacticoPage: React.FC = () => {
                 )}
               </div>
             )}
+            {modo === 'tracking' && (
+              <div className="bg-gray-700/50 rounded-lg px-3 py-3 space-y-2">
+                <p className="text-xs text-gray-400">Lleva el video al inicio de la jugada y da clic en <span className="text-gray-200">Marcar inicio</span>; avanza hasta donde termina y da clic en <span className="text-gray-200">Marcar fin</span>. Máximo {MAX_PLAY_SECONDS} segundos: solo se analiza ese tramo, a resolución completa.</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button onClick={markPlayStart} disabled={isTracking} type="button" className="flex items-center gap-2 px-3 py-1.5 bg-gray-600 hover:bg-gray-500 disabled:opacity-40 disabled:cursor-not-allowed text-gray-200 rounded-lg text-xs font-medium transition-colors">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M5 4v16M9 12h10M15 8l4 4-4 4" /></svg>
+                    Marcar inicio de la jugada
+                  </button>
+                  <button onClick={markPlayEnd} disabled={isTracking || playStart === null} type="button" className="flex items-center gap-2 px-3 py-1.5 bg-gray-600 hover:bg-gray-500 disabled:opacity-40 disabled:cursor-not-allowed text-gray-200 rounded-lg text-xs font-medium transition-colors">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M19 4v16M5 12h10M11 8l4 4-4 4" /></svg>
+                    Marcar fin de la jugada
+                  </button>
+                  {(playStart !== null || playEnd !== null) && !isTracking && (
+                    <button onClick={() => { setPlayStart(null); setPlayEnd(null); setPlayMsg(null); }} type="button" className="text-xs text-gray-400 hover:text-red-400 underline">Quitar marcas</button>
+                  )}
+                </div>
+                {playStart !== null && (
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+                    <span className="text-gray-400">Inicio: <span className="text-white font-medium">{formatTimeDec(playStart)}</span></span>
+                    {playEnd !== null ? (
+                      <>
+                        <span className="text-gray-400">Fin: <span className="text-white font-medium">{formatTimeDec(playEnd)}</span></span>
+                        <span className="text-green-400">Duración: <span className="font-medium">{(playEnd - playStart).toFixed(1)} s</span></span>
+                      </>
+                    ) : (
+                      <span className="text-gray-500">Falta marcar el fin</span>
+                    )}
+                  </div>
+                )}
+                {playMsg && <p className="text-xs text-amber-400">{playMsg}</p>}
+                {processedPlays.length > 0 && (
+                  <div className="pt-2 border-t border-gray-600/60 space-y-1.5">
+                    <p className="text-xs text-gray-400">Jugadas de este video que ya procesaste (se abren sin volver a esperar):</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {processedPlays.map(pl => (
+                        <button key={pl.jobId} type="button" disabled={isTracking} onClick={() => openProcessedPlay(pl)}
+                          className="px-2.5 py-1 bg-violet-900/40 hover:bg-violet-800/60 disabled:opacity-40 border border-violet-700 text-violet-200 rounded text-xs font-mono transition-colors">
+                          {formatTime(pl.startSecond)} → {formatTime(pl.endSecond)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             <div className="flex flex-wrap gap-2">
               {modo !== 'tracking' && (
               <button onClick={captureFrame} className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors">
@@ -1937,9 +2200,10 @@ const AnalisisTacticoPage: React.FC = () => {
               </button>
               )}
               {modo === 'tracking' && (
-              <button onClick={handleStartTracking} disabled={isTracking}
+              <button onClick={handleStartTracking} disabled={isTracking || playStart === null || playEnd === null}
+                title={playStart === null || playEnd === null ? 'Primero marca el inicio y el fin de la jugada' : undefined}
                 className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors">
-                {isTracking ? <><Spinner /><span>Procesando...</span></> : <><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /><path d="M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12" /></svg>Iniciar tracking</>}
+                {isTracking ? <><Spinner /><span>Procesando...</span></> : <><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /><path d="M4.93 4.93l2.12 2.12M16.95 16.95l2.12 2.12M4.93 19.07l2.12-2.12M16.95 7.05l2.12-2.12" /></svg>Procesar jugada</>}
               </button>
               )}
             </div>
