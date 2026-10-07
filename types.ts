@@ -287,7 +287,4 @@ export interface RivalAnalysisInsert {
   momentos?: RivalMomento[];
   notas?: RivalNotas;
   created_by?: string | null;
-
-
-
-
+}
