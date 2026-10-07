@@ -161,6 +161,47 @@ const VideoTaggerPage: React.FC = () => {
             .sort((a, b) => a.numero - b.numero);
     }, [players, selectedMatchId, matches]);
 
+    // Filtro de la lista "Jugadas Etiquetadas". Es solo de vista: no cambia `tags` ni lo que se guarda.
+    const [filtroAccion, setFiltroAccion] = useState<string>('');
+    const [filtroResultado, setFiltroResultado] = useState<'' | 'logrado' | 'fallado'>('');
+    const hayFiltro = filtroAccion !== '' || filtroResultado !== '';
+
+    // Al cambiar de partido se quita el filtro
+    useEffect(() => {
+        setFiltroAccion('');
+        setFiltroResultado('');
+    }, [selectedMatchId]);
+
+    const tagsVisibles = useMemo(
+        () => tags.filter(t => (!filtroAccion || t.accion === filtroAccion) && (!filtroResultado || t.resultado === filtroResultado)),
+        [tags, filtroAccion, filtroResultado]
+    );
+
+    // Conteos para el selector (respetan el resultado elegido) y para los botones (respetan la jugada elegida)
+    const opcionesFiltroAccion = useMemo(() => {
+        const conteo = new Map<string, number>();
+        let total = 0;
+        tags.forEach(t => {
+            if (filtroResultado && t.resultado !== filtroResultado) return;
+            total++;
+            conteo.set(t.accion, (conteo.get(t.accion) || 0) + 1);
+        });
+        if (filtroAccion && !conteo.has(filtroAccion)) conteo.set(filtroAccion, 0);
+        const acciones = Array.from(conteo.entries()).sort((a, b) => a[0].localeCompare(b[0], 'es'));
+        return { total, acciones };
+    }, [tags, filtroAccion, filtroResultado]);
+
+    const conteoFiltroResultado = useMemo(() => {
+        let logrado = 0;
+        let fallado = 0;
+        tags.forEach(t => {
+            if (filtroAccion && t.accion !== filtroAccion) return;
+            if (t.resultado === 'logrado') logrado++;
+            else if (t.resultado === 'fallado') fallado++;
+        });
+        return { logrado, fallado };
+    }, [tags, filtroAccion]);
+
     // Keyboard shortcuts mapping: key -> action from METRICS
     const KEYBOARD_SHORTCUTS: Record<string, string> = {
         '1': 'Pase corto defensivo logrado',
@@ -2097,14 +2138,67 @@ const VideoTaggerPage: React.FC = () => {
                     </button>
                     {/* LISTA DE JUGADAS debajo, scroll propio */}
                     <div className="h-[200px] overflow-y-auto mt-4 bg-gray-900 rounded p-2">
-                        <h3 className="text-lg font-semibold mb-2 text-white">Jugadas Etiquetadas</h3>
+                        {/* Encabezado fijo: título + filtro (solo cambia lo que se ve en la lista) */}
+                        <div className="sticky top-0 z-10 -mx-2 -mt-2 px-2 pt-2 pb-2 mb-1 bg-gray-900 flex flex-wrap items-center gap-2">
+                            <h3 className="text-lg font-semibold text-white mr-auto">Jugadas Etiquetadas</h3>
+                            {tags.length > 0 && (
+                                <>
+                                    <span className="text-xs text-gray-400">
+                                        {hayFiltro ? `${tagsVisibles.length} de ${tags.length}` : `${tags.length}`}
+                                    </span>
+                                    <select
+                                        value={filtroAccion}
+                                        onChange={e => { setFiltroAccion(e.target.value); e.currentTarget.blur(); }}
+                                        className="max-w-[240px] bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+                                        title="Ver solo un tipo de jugada"
+                                        aria-label="Filtrar por jugada"
+                                    >
+                                        <option value="">Todas las jugadas ({opcionesFiltroAccion.total})</option>
+                                        {opcionesFiltroAccion.acciones.map(([accion, n]) => (
+                                            <option key={accion} value={accion}>{accion} ({n})</option>
+                                        ))}
+                                    </select>
+                                    <button
+                                        type="button"
+                                        onClick={() => setFiltroResultado(filtroResultado === 'logrado' ? '' : 'logrado')}
+                                        className={`px-2 py-1 rounded border text-xs ${filtroResultado === 'logrado' ? 'bg-green-700 border-green-400 text-white' : 'bg-gray-700 border-gray-600 text-green-300 hover:bg-gray-600'}`}
+                                        title="Ver solo las logradas"
+                                        aria-pressed={filtroResultado === 'logrado'}
+                                    >
+                                        Logrado ({conteoFiltroResultado.logrado})
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setFiltroResultado(filtroResultado === 'fallado' ? '' : 'fallado')}
+                                        className={`px-2 py-1 rounded border text-xs ${filtroResultado === 'fallado' ? 'bg-red-700 border-red-400 text-white' : 'bg-gray-700 border-gray-600 text-red-300 hover:bg-gray-600'}`}
+                                        title="Ver solo las falladas"
+                                        aria-pressed={filtroResultado === 'fallado'}
+                                    >
+                                        Fallado ({conteoFiltroResultado.fallado})
+                                    </button>
+                                    {hayFiltro && (
+                                        <button
+                                            type="button"
+                                            onClick={() => { setFiltroAccion(''); setFiltroResultado(''); }}
+                                            className="px-2 py-1 rounded text-xs text-gray-300 underline hover:text-white"
+                                            title="Ver todas las jugadas"
+                                        >
+                                            Quitar filtro
+                                        </button>
+                                    )}
+                                </>
+                            )}
+                        </div>
                         {avisoVideo && (
                             <div className="mb-2 p-2 rounded bg-yellow-900/60 border border-yellow-600 text-xs text-yellow-200 flex justify-between gap-2">
                                 <span>{avisoVideo}</span>
                                 <button type="button" onClick={() => setAvisoVideo(null)} className="text-yellow-300 hover:text-white" aria-label="Cerrar aviso">✕</button>
                             </div>
                         )}
-                        {tags.length > 0 ? tags.map(tag => {
+                        {tags.length > 0 && tagsVisibles.length === 0 && (
+                            <p className="text-gray-400 text-center mt-4 text-sm">No hay jugadas con este filtro.</p>
+                        )}
+                        {tags.length > 0 ? tagsVisibles.map(tag => {
                             const isSuccess = tag.resultado === 'logrado';
                             const isFailure = tag.resultado === 'fallado';
                             const isSaved = !String(tag.id).startsWith('temp-');
