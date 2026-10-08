@@ -668,26 +668,21 @@ export async function generateMatchReportPptx(
     ? { ...estiloDeJuegoCalculado, carril: estiloOverride.carrilLabel, carrilSide: estiloOverride.carrilSide, bloque: estiloOverride.bloqueLabel, bloqueAltura: estiloOverride.bloqueAltura }
     : estiloDeJuegoCalculado;
 
-  // Análisis del Rival — reutiliza la tabla rival_analysis ya existente (no se
-  // crea nada nuevo aquí, solo se conecta con lo que ya cargó el analista en
-  // la pantalla "Análisis del Rival"). Si no hay ningún análisis para este
-  // rival, esta sección viene null y el slide se omite (no se inventa).
+  // Análisis del Rival — SECCIÓN 2 del reporte (el próximo rival). Se usa
+  // únicamente el análisis que el usuario eligió en la pantalla. Ya NO se
+  // busca uno por nombre como respaldo: el rival del partido que se reporta
+  // (ej. Pumas) casi nunca es el próximo rival (ej. Tigres), y ese respaldo
+  // metía un análisis que nadie había elegido aunque se escogiera "Ninguno".
+  // Sin id = "Ninguno": la sección 2 queda en una sola diapositiva con la nota.
   let rivalAnalysis: RivalAnalysis | null = null;
   if (rivalAnalysisId) {
-    // El usuario ya eligió cuál Análisis del Rival usar (puede haber varios del
-    // mismo equipo, de momentos distintos de la temporada) — se usa ese exacto,
-    // sin intentar adivinar por nombre.
     const { data: rivalData } = await supabase.from('rival_analysis').select('*').eq('id', rivalAnalysisId).single();
-    if (rivalData) rivalAnalysis = rivalData as RivalAnalysis;
-  } else {
-    // Nadie eligió uno explícito (uso anterior a este cambio, o el usuario no
-    // tenía ningún Análisis del Rival guardado todavía) — se intenta por
-    // nombre, como antes, solo como respaldo.
-    let query = supabase.from('rival_analysis').select('*').ilike('rival_name', match.rival.trim()).order('created_at', { ascending: false }).limit(1);
-    if (match.team_id) query = query.eq('team_id', match.team_id);
-    const { data: rivalData } = await query;
-    if (rivalData && rivalData.length > 0) rivalAnalysis = rivalData[0] as RivalAnalysis;
+    if (!rivalData) throw new Error('No se pudo cargar el Análisis del Rival elegido. Vuelve a elegirlo e intenta de nuevo.');
+    rivalAnalysis = rivalData as RivalAnalysis;
   }
+  // Nombre que llevan los títulos de la sección 2: el del análisis elegido,
+  // NO el del rival del partido jugado (match.rival).
+  const rivalNombre = (rivalAnalysis?.rival_name || '').trim() || 'el próximo rival';
 
   const teamLogoBase64 = await loadTeamLogoBase64(match.team_id);
 
@@ -1015,11 +1010,94 @@ export async function generateMatchReportPptx(
     footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
 
-  // Slide — Análisis del Rival (solo si existe un análisis cargado para este rival)
+  // Slide — Fortalezas y debilidades del equipo en este partido (cierre de la
+  // SECCIÓN 1). Antes eran 2 de los 4 cuadrantes del "DAFO — este partido";
+  // los otros 2 (Oportunidades/Amenazas) salían del Análisis del Rival y
+  // mezclaban el partido jugado con el próximo rival. Eso ahora vive solo en
+  // el "DAFO del rival" de la sección 2.
+  {
+    const slide = pres.addSlide();
+    slide.background = { color: COLOR.white };
+    sectionHeader(slide, 'Conclusión del partido', 'Fortalezas y debilidades en este partido');
+    const cols: Array<{ title: string; items: string[]; fill: string; color: string }> = [
+      { title: 'FORTALEZAS', items: analysis.fortalezasColectivas.map(stripMd).filter(Boolean).slice(0, 5), fill: COLOR.greenLight, color: COLOR.green },
+      { title: 'DEBILIDADES', items: analysis.areasDeMejoraColectivas.map(stripMd).filter(Boolean).slice(0, 5), fill: COLOR.orangeLight, color: COLOR.orange },
+    ];
+    cols.forEach((c) => { if (c.items.length === 0) c.items = ['Sin datos suficientes.']; });
+    const qw = 5.75, gapX = 0.3, startX = 0.6, startY = 1.55, maxH = 6.85 - startY;
+    // ~55 caracteres por línea en un cuadro de este ancho a 11.5 pt (misma
+    // medida que el DAFO del rival). Si no cabe, se baja la letra.
+    const estimar = (items: string[], chars: number, lineH: number) =>
+      0.56 + items.reduce((h, t) => h + Math.max(1, Math.ceil(t.length / chars)) * lineH + 0.1, 0) + 0.18;
+    let fontSize = 11.5;
+    let qh = Math.max(...cols.map((c) => estimar(c.items, 55, 0.23)));
+    if (qh > maxH) { fontSize = 10; qh = Math.max(...cols.map((c) => estimar(c.items, 64, 0.2))); }
+    qh = Math.min(maxH, Math.max(2.3, qh));
+    cols.forEach((c, i) => {
+      const x = startX + i * (qw + gapX);
+      slide.addShape(pres.ShapeType.roundRect, { x, y: startY, w: qw, h: qh, rectRadius: 0.08, fill: { color: c.fill }, line: { type: 'none' } });
+      slide.addText([
+        { text: c.title, options: { bold: true, color: c.color } },
+        { text: '   ' + match.nombre_equipo, options: { color: COLOR.gray, italic: true } },
+      ] as any, { x: x + 0.3, y: startY + 0.16, w: qw - 0.6, h: 0.32, fontFace: FONT_BODY, fontSize: 12, charSpacing: 0.5, isTextBox: true, margin: 0 });
+      slide.addText(
+        c.items.map((t, j) => ({ text: t, options: { bullet: { code: '2022' }, breakLine: j < c.items.length - 1, paraSpaceAfter: 7 } })) as any,
+        { x: x + 0.3, y: startY + 0.54, w: qw - 0.6, h: qh - 0.68, fontFace: FONT_BODY, fontSize, color: COLOR.ink, valign: 'top', isTextBox: true, margin: 0 }
+      );
+    });
+    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+  }
+
+  // Slide — Qué corregir de este partido (recomendaciones de entrenamiento).
+  // Sale de lo etiquetado en ESTE partido — por eso va en la sección 1. No
+  // confundir con "Qué preparar para enfrentar a …" de la sección 2, que sale
+  // del Análisis del Rival.
+  {
+    const slide = pres.addSlide();
+    slide.background = { color: COLOR.white };
+    sectionHeader(slide, 'Recomendaciones de entrenamiento', 'Qué corregir de este partido');
+    const startY = 1.5, rowH = 0.92, gap = 0.1;
+    analysis.recomendacionesEntrenamiento.forEach((text, i) => {
+      const y = startY + i * (rowH + gap);
+      slide.addShape(pres.ShapeType.roundRect, { x: 0.6, y, w: 11.8, h: rowH, rectRadius: 0.08, fill: { color: COLOR.indigoLight }, line: { type: 'none' } });
+      slide.addShape(pres.ShapeType.ellipse, { x: 0.85, y: y + (rowH - 0.5) / 2, w: 0.5, h: 0.5, fill: { color: COLOR.indigo }, line: { type: 'none' } });
+      slide.addText(String(i + 1), { x: 0.85, y: y + (rowH - 0.5) / 2, w: 0.5, h: 0.5, fontFace: FONT_HEAD, fontSize: 15, bold: true, color: COLOR.white, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
+      slide.addText(stripMd(text), { x: 1.55, y: y + 0.06, w: 10.65, h: rowH - 0.12, fontFace: FONT_BODY, fontSize: 10.5, color: COLOR.ink, valign: 'middle', isTextBox: true, margin: 0 });
+    });
+    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // SECCIÓN 2 — El próximo rival. Todo lo que sigue (hasta el cierre) habla
+  // del análisis elegido en la pantalla, no del partido que ya se jugó.
+  // ════════════════════════════════════════════════════════════════════════
+
+  // Slide — Portada de la sección 2. Con "Ninguno" es la única diapositiva de
+  // la sección y lleva la nota de que el reporte no incluye ese análisis.
+  {
+    const slide = pres.addSlide();
+    slide.background = { color: COLOR.navy };
+    slide.addImage({ data: LOGO_BASE64, x: 0.9, y: 0.5, w: 0.95, h: 1.1 });
+    slide.addText('PRÓXIMO RIVAL', { x: 0.9, y: 1.85, w: 9, h: 0.4, fontFace: FONT_BODY, fontSize: 14, bold: true, color: COLOR.gold, charSpacing: 3, isTextBox: true, margin: 0 });
+    if (rivalAnalysis) {
+      slide.addText(rivalNombre, { x: 0.9, y: 2.25, w: 11.5, h: 1.0, fontFace: FONT_HEAD, fontSize: 40, bold: true, color: COLOR.white, isTextBox: true, margin: 0 });
+      // Fecha del análisis elegido. No se pone jornada: el reporte no sabe
+      // cuál es el siguiente partido, solo qué análisis se eligió.
+      const fechaAnalisis = rivalAnalysis.created_at
+        ? new Date(rivalAnalysis.created_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' })
+        : '';
+      slide.addText(`Análisis del rival${fechaAnalisis ? `  ·  ${fechaAnalisis}` : ''}`, { x: 0.9, y: 3.2, w: 10, h: 0.4, fontFace: FONT_BODY, fontSize: 15, color: COLOR.lavender, isTextBox: true, margin: 0 });
+    } else {
+      slide.addText('Este reporte no incluye el análisis de rival del siguiente partido.', { x: 0.9, y: 2.35, w: 10.5, h: 1.5, fontFace: FONT_HEAD, fontSize: 28, bold: true, color: COLOR.white, valign: 'top', isTextBox: true, margin: 0 });
+    }
+    footer(pres, slide, match.nombre_equipo, true, nextNum(), teamLogoBase64);
+  }
+
+  // Slide — Análisis del Rival: fases (solo si se eligió un análisis)
   if (rivalAnalysis) {
     const slide = pres.addSlide();
     slide.background = { color: COLOR.white };
-    sectionHeader(slide, 'Próximo partido', `Análisis del rival — ${match.rival}`);
+    sectionHeader(slide, 'Próximo rival', `Análisis del rival — ${rivalNombre}`);
 
     const bottom1 = pitchBand3(pres, slide, 0.6, 1.6, 11.8, 'Fase ofensiva · ¿Cómo ataca el rival cuando tiene el balón?',
       ZONAS.map((z) => ({ label: ZONA_LABEL[z], text: summarizeZone(rivalAnalysis!, 'Ofensiva', z), nota: rivalAnalysis!.notas?.[`Ofensiva|${z}`] })));
@@ -1034,7 +1112,7 @@ export async function generateMatchReportPptx(
     if (bp.cobra.n > 0 || bp.defiende.n > 0) {
       let slide = pres.addSlide();
       slide.background = { color: COLOR.white };
-      sectionHeader(slide, 'Próximo partido', `Análisis del rival — Balón parado`);
+      sectionHeader(slide, 'Próximo rival', `Análisis del rival — Balón parado`);
       let y = 1.7;
 
       // Si un bloque ya no cabe en lo que queda del slide, cierra este
@@ -1045,7 +1123,7 @@ export async function generateMatchReportPptx(
         footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
         slide = pres.addSlide();
         slide.background = { color: COLOR.white };
-        sectionHeader(slide, 'Próximo partido', `Análisis del rival — Balón parado (continuación)`);
+        sectionHeader(slide, 'Próximo rival', `Análisis del rival — Balón parado (continuación)`);
         y = 1.7;
       };
 
@@ -1087,7 +1165,7 @@ export async function generateMatchReportPptx(
     if (jugadores.length > 0) {
       let slide = pres.addSlide();
       slide.background = { color: COLOR.white };
-      sectionHeader(slide, 'Próximo partido', 'Jugadores clave del rival');
+      sectionHeader(slide, 'Próximo rival', 'Jugadores clave del rival');
       let y = 1.7;
       const cols = 3, gutter = 0.3;
       const cardW = (11.8 - gutter * (cols - 1)) / cols;
@@ -1097,7 +1175,7 @@ export async function generateMatchReportPptx(
         footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
         slide = pres.addSlide();
         slide.background = { color: COLOR.white };
-        sectionHeader(slide, 'Próximo partido', 'Jugadores clave del rival (continuación)');
+        sectionHeader(slide, 'Próximo rival', 'Jugadores clave del rival (continuación)');
         y = 1.7;
       };
 
@@ -1119,15 +1197,15 @@ export async function generateMatchReportPptx(
   }
 
   // Slide — DAFO del rival (el que se genera con IA y se guarda en Análisis del Rival).
-  // Solo sale si ese rival tiene su DAFO guardado. Es distinto del DAFO de este partido.
+  // Solo sale si ese rival tiene su DAFO guardado.
   if (rivalAnalysis?.dafo) {
     const d = rivalAnalysis.dafo;
     const slide = pres.addSlide();
     slide.background = { color: COLOR.white };
-    sectionHeader(slide, 'Próximo partido', `DAFO del rival — ${match.rival}`);
+    sectionHeader(slide, 'Próximo rival', `DAFO del rival — ${rivalNombre}`);
     const quads: Array<{ title: string; sub: string; items: string[]; fill: string; color: string }> = [
-      { title: 'FORTALEZAS', sub: `de ${match.rival}`, items: d.fortalezas || [], fill: COLOR.greenLight, color: COLOR.green },
-      { title: 'DEBILIDADES', sub: `de ${match.rival}`, items: d.debilidades || [], fill: COLOR.orangeLight, color: COLOR.orange },
+      { title: 'FORTALEZAS', sub: `de ${rivalNombre}`, items: d.fortalezas || [], fill: COLOR.greenLight, color: COLOR.green },
+      { title: 'DEBILIDADES', sub: `de ${rivalNombre}`, items: d.debilidades || [], fill: COLOR.orangeLight, color: COLOR.orange },
       { title: 'OPORTUNIDADES', sub: 'para nosotros', items: d.oportunidades || [], fill: COLOR.blueLight, color: COLOR.blue },
       { title: 'AMENAZAS', sub: 'para nosotros', items: d.amenazas || [], fill: COLOR.redLight, color: COLOR.red },
     ];
@@ -1172,7 +1250,7 @@ export async function generateMatchReportPptx(
       footer(pres, slideActual, match.nombre_equipo, false, nextNum(), teamLogoBase64);
       slideActual = pres.addSlide();
       slideActual.background = { color: COLOR.white };
-      sectionHeader(slideActual, 'Próximo partido', `DAFO del rival — ${match.rival} (continuación)`);
+      sectionHeader(slideActual, 'Próximo rival', `DAFO del rival — ${rivalNombre} (continuación)`);
       y = 1.55;
     }
     y += dibujarFila(slideActual, y, quads[2], quads[3]) + gapY;
@@ -1190,7 +1268,7 @@ export async function generateMatchReportPptx(
     const plan = rivalAnalysis.plan_partido;
     let slide = pres.addSlide();
     slide.background = { color: COLOR.white };
-    sectionHeader(slide, 'Próximo partido', `Plan de partido para enfrentar a ${match.rival}`);
+    sectionHeader(slide, 'Próximo rival', `Plan de partido para enfrentar a ${rivalNombre}`);
     let y = 1.6;
 
     const nuevoSlideSiNoCabe = (alturaEstimadaIn: number) => {
@@ -1198,7 +1276,7 @@ export async function generateMatchReportPptx(
       footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
       slide = pres.addSlide();
       slide.background = { color: COLOR.white };
-      sectionHeader(slide, 'Próximo partido', `Plan de partido para enfrentar a ${match.rival} (continuación)`);
+      sectionHeader(slide, 'Próximo rival', `Plan de partido para enfrentar a ${rivalNombre} (continuación)`);
       y = 1.6;
     };
 
@@ -1245,75 +1323,13 @@ export async function generateMatchReportPptx(
     const temas = rivalAnalysis.temas_entrenamiento.filter(Boolean);
     const slide = pres.addSlide();
     slide.background = { color: COLOR.white };
-    sectionHeader(slide, 'Próximo partido', 'Recomendaciones de trabajo de la semana');
+    sectionHeader(slide, 'Próximo rival · trabajo de la semana', `Qué preparar para enfrentar a ${rivalNombre}`);
     slide.addText(
       temas.map((t, j) => ({ text: t, options: { bullet: { code: '2022' }, breakLine: j < temas.length - 1, paraSpaceAfter: 10 } })) as any,
-      { x: 0.6, y: 1.7, w: 11.8, h: 3, fontFace: FONT_BODY, fontSize: 13, color: COLOR.ink, isTextBox: true, margin: 0 }
+      { x: 0.6, y: 1.7, w: 11.8, h: 3, fontFace: FONT_BODY, fontSize: 13, color: COLOR.ink, valign: 'top', isTextBox: true, margin: 0 }
     );
     slide.addText('Esto no es un ejercicio armado — son objetivos derivados de los datos del rival; tú decides el ejercicio.', {
       x: 0.6, y: 1.7 + temas.length * 0.5 + 0.3, w: 11.8, h: 0.4, fontFace: FONT_BODY, fontSize: 10, italic: true, color: COLOR.gray, isTextBox: true, margin: 0,
-    });
-    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
-  }
-
-  // Slide — Recomendaciones de entrenamiento
-  {
-    const slide = pres.addSlide();
-    slide.background = { color: COLOR.white };
-    sectionHeader(slide, 'GolAnalytics', 'Recomendaciones de entrenamiento');
-    const startY = 1.5, rowH = 0.92, gap = 0.1;
-    analysis.recomendacionesEntrenamiento.forEach((text, i) => {
-      const y = startY + i * (rowH + gap);
-      slide.addShape(pres.ShapeType.roundRect, { x: 0.6, y, w: 11.8, h: rowH, rectRadius: 0.08, fill: { color: COLOR.indigoLight }, line: { type: 'none' } });
-      slide.addShape(pres.ShapeType.ellipse, { x: 0.85, y: y + (rowH - 0.5) / 2, w: 0.5, h: 0.5, fill: { color: COLOR.indigo }, line: { type: 'none' } });
-      slide.addText(String(i + 1), { x: 0.85, y: y + (rowH - 0.5) / 2, w: 0.5, h: 0.5, fontFace: FONT_HEAD, fontSize: 15, bold: true, color: COLOR.white, align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
-      slide.addText(stripMd(text), { x: 1.55, y: y + 0.06, w: 10.65, h: rowH - 0.12, fontFace: FONT_BODY, fontSize: 10.5, color: COLOR.ink, valign: 'middle', isTextBox: true, margin: 0 });
-    });
-    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
-  }
-
-  // Slide — DAFO, 4 cuadrantes.
-  // Fortalezas/Debilidades: del análisis IA de este partido (real).
-  // Oportunidades/Amenazas: del Análisis del Rival ya cargado — Oportunidades
-  // = su fase defensiva más floja (bloque bajo / pocos hombres); Amenazas =
-  // su fase ofensiva más peligrosa (mayor % de una zona). Si no hay Análisis
-  // del Rival cargado, esos 2 cuadrantes dicen explícitamente que faltan datos
-  // — no se inventan.
-  {
-    const slide = pres.addSlide();
-    slide.background = { color: COLOR.white };
-    sectionHeader(slide, 'Conclusión', 'Análisis DAFO — este partido');
-
-    let oportunidades = ['Sin Análisis del Rival cargado para este equipo — no se pudo calcular.'];
-    let amenazas = ['Sin Análisis del Rival cargado para este equipo — no se pudo calcular.'];
-    if (rivalAnalysis) {
-      oportunidades = ZONAS.map((z) => `Defensiva — ${ZONA_LABEL[z]}: ${summarizeZone(rivalAnalysis!, 'Defensiva', z)}`)
-        .filter((t) => !t.includes('Sin momentos'));
-      amenazas = ZONAS.map((z) => `Ofensiva — ${ZONA_LABEL[z]}: ${summarizeZone(rivalAnalysis!, 'Ofensiva', z)}`)
-        .filter((t) => !t.includes('Sin momentos'));
-      if (oportunidades.length === 0) oportunidades = ['El rival no tiene momentos defensivos etiquetados todavía.'];
-      if (amenazas.length === 0) amenazas = ['El rival no tiene momentos ofensivos etiquetados todavía.'];
-    }
-
-    const quads: Array<{ title: string; sub: string; items: string[]; fill: string; color: string }> = [
-      { title: 'FORTALEZAS', sub: match.nombre_equipo, items: analysis.fortalezasColectivas.map(stripMd), fill: COLOR.greenLight, color: COLOR.green },
-      { title: 'OPORTUNIDADES', sub: `por atacar en ${match.rival}`, items: oportunidades, fill: COLOR.blueLight, color: COLOR.blue },
-      { title: 'DEBILIDADES', sub: match.nombre_equipo, items: analysis.areasDeMejoraColectivas.map(stripMd), fill: COLOR.orangeLight, color: COLOR.orange },
-      { title: 'AMENAZAS', sub: `de ${match.rival}`, items: amenazas, fill: COLOR.redLight, color: COLOR.red },
-    ];
-    const qw = 5.75, qh = 2.3, gapX = 0.3, gapY = 0.2, startX = 0.6, startY = 1.55;
-    quads.forEach((q, i) => {
-      const col = i % 2, row = Math.floor(i / 2);
-      const x = startX + col * (qw + gapX), y = startY + row * (qh + gapY);
-      slide.addShape(pres.ShapeType.roundRect, { x, y, w: qw, h: qh, rectRadius: 0.08, fill: { color: q.fill }, line: { type: 'none' } });
-      slide.addText([
-        { text: q.title, options: { bold: true, color: q.color } },
-        { text: '   ' + q.sub, options: { color: COLOR.gray, italic: true } },
-      ] as any, { x: x + 0.3, y: y + 0.16, w: qw - 0.6, h: 0.32, fontFace: FONT_BODY, fontSize: 12, charSpacing: 0.5, isTextBox: true, margin: 0 });
-      slide.addText(
-        q.items.slice(0, 3).map((t, j) => ({ text: t, options: { bullet: { code: '2022' }, breakLine: j < Math.min(q.items.length, 3) - 1, paraSpaceAfter: 6 } })) as any,
-        { x: x + 0.3, y: y + 0.54, w: qw - 0.6, h: qh - 0.68, fontFace: FONT_BODY, fontSize: 9.5, color: COLOR.ink, isTextBox: true, margin: 0 }
-      );
     });
     footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
