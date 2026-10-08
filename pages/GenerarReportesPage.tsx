@@ -159,20 +159,24 @@ const GenerarReportesPage: React.FC = () => {
 
   const allSelected = !!(torneo && categoria && jornada && equipo);
 
-  // Análisis del Rival a usar para este reporte — antes se adivinaba
-  // comparando el nombre del rival del partido contra el "rival_name" que se
-  // haya escrito en Análisis del Rival, y si no coincidían letra por letra
-  // (ej. "Pumas Chalco" vs "Pumas Chalco 2012"), todo el bloque del rival se
-  // quedaba fuera del reporte sin avisar. Ahora se elige a mano — también
-  // resuelve el caso de tener varios análisis del mismo equipo en momentos
-  // distintos de la temporada.
+  // Análisis del Rival a incluir en la SECCIÓN 2 del reporte (el próximo
+  // rival). El partido que se reporta (ej. ML7 vs Pumas) casi nunca es contra
+  // el próximo rival (ej. Tigres), así que NO se preselecciona nada por
+  // nombre: el usuario elige a mano un análisis o "Ninguno", y sin esa
+  // elección no se puede generar. '' = todavía no elige; RIVAL_NINGUNO =
+  // eligió "Ninguno" (la sección 2 sale como una sola diapositiva con la nota).
+  const RIVAL_NINGUNO = '__ninguno__';
   const [rivalAnalysesDisponibles, setRivalAnalysesDisponibles] = useState<Array<{ id: string; rival_name: string; created_at: string }>>([]);
   const [selectedRivalAnalysisId, setSelectedRivalAnalysisId] = useState<string>('');
   const [cargandoRivalAnalyses, setCargandoRivalAnalyses] = useState(false);
   useEffect(() => {
     let cancelado = false;
     setSelectedRivalAnalysisId('');
-    if (!selectedMatch?.team_id) { setRivalAnalysesDisponibles([]); return; }
+    if (!selectedMatch?.team_id) {
+      setRivalAnalysesDisponibles([]);
+      if (selectedMatch) setSelectedRivalAnalysisId(RIVAL_NINGUNO);
+      return;
+    }
     setCargandoRivalAnalyses(true);
     (async () => {
       try {
@@ -185,20 +189,21 @@ const GenerarReportesPage: React.FC = () => {
         if (cancelado) return;
         const lista = data || [];
         setRivalAnalysesDisponibles(lista);
-        // Preselecciona el que coincida por nombre con el rival del partido,
-        // como punto de partida cómodo — pero el usuario puede cambiarlo.
-        const rivalPartido = (selectedMatch.rival || '').trim().toLowerCase();
-        const coincide = lista.find((r) => (r.rival_name || '').trim().toLowerCase() === rivalPartido);
-        setSelectedRivalAnalysisId(coincide?.id || '');
+        // Si el equipo no tiene ningún análisis guardado no hay nada que
+        // elegir: queda en "Ninguno". Si sí hay, se deja sin elegir a propósito.
+        setSelectedRivalAnalysisId(lista.length === 0 ? RIVAL_NINGUNO : '');
       } catch (err) {
         console.error('No se pudieron cargar los análisis del rival:', err);
-        if (!cancelado) setRivalAnalysesDisponibles([]);
+        if (!cancelado) { setRivalAnalysesDisponibles([]); setSelectedRivalAnalysisId(RIVAL_NINGUNO); }
       } finally {
         if (!cancelado) setCargandoRivalAnalyses(false);
       }
     })();
     return () => { cancelado = true; };
-  }, [selectedMatch?.team_id, selectedMatch?.rival]);
+  // Se reinicia al cambiar de partido (no solo de equipo), para que la
+  // elección de un reporte no se quede pegada en el siguiente.
+  }, [selectedMatch?.id, selectedMatch?.team_id]);
+  const faltaElegirRival = !!selectedMatch && !cargandoRivalAnalyses && selectedRivalAnalysisId === '';
 
   // Cómo jugamos (estilo de este partido) — el carril y el bloque de presión
   // se precargan con el mismo cálculo real que usa el PowerPoint; el usuario
@@ -376,6 +381,10 @@ const GenerarReportesPage: React.FC = () => {
 
   const handleGenerate = async () => {
     if (!selectedMatch) return;
+    if (selectedRivalAnalysisId === '') {
+      setGenError('Antes de generar, elige qué Análisis del Rival incluir en el reporte (o "Ninguno").');
+      return;
+    }
     setIsGenerating(true);
     setGenError(null);
     try {
@@ -397,7 +406,7 @@ const GenerarReportesPage: React.FC = () => {
         : undefined;
 
       const estiloOverride = { carrilSide, carrilLabel: carrilTexto.trim(), bloqueAltura, bloqueLabel: bloqueTexto.trim() };
-      await generateMatchReportPptx(selectedMatch, authorName.trim() || undefined, positionsMap || undefined, modeloDeJuego, estiloOverride, selectedRivalAnalysisId || null);
+      await generateMatchReportPptx(selectedMatch, authorName.trim() || undefined, positionsMap || undefined, modeloDeJuego, estiloOverride, selectedRivalAnalysisId === RIVAL_NINGUNO ? null : selectedRivalAnalysisId);
     } catch (err: any) {
       console.error('Error generating report:', err);
       setGenError(err?.message || 'Error al generar el reporte. Intenta de nuevo.');
@@ -512,16 +521,17 @@ const GenerarReportesPage: React.FC = () => {
 
         {allSelected && (
           <div className="mt-6 pt-6 border-t border-gray-700">
-            <label className="block text-sm font-medium mb-1 text-gray-300">Análisis del Rival a usar en este reporte</label>
-            <p className="text-xs text-gray-500 mb-2">Si tienes varios análisis guardados del mismo rival (de momentos distintos), elige cuál quieres que traiga el reporte — fases, balón parado, jugadores clave, DAFO del rival y plan de partido.</p>
+            <label className="block text-sm font-medium mb-1 text-gray-300">Próximo rival — Análisis del Rival a incluir en este reporte</label>
+            <p className="text-xs text-gray-500 mb-2">El reporte tiene dos secciones: primero el partido que ya se jugó y después el próximo rival. Elige aquí el análisis del equipo que sigue (fases, balón parado, jugadores clave, DAFO del rival y plan de partido), o "Ninguno" si este reporte no lo va a llevar.</p>
             {cargandoRivalAnalyses ? (
               <p className="text-xs text-gray-500">Cargando…</p>
             ) : rivalAnalysesDisponibles.length === 0 ? (
-              <p className="text-xs text-amber-400">No hay ningún Análisis del Rival guardado para este equipo todavía — el reporte se generará sin esa sección.</p>
+              <p className="text-xs text-amber-400">No hay ningún Análisis del Rival guardado para este equipo todavía — el reporte saldrá con la nota de que no incluye el análisis del próximo rival.</p>
             ) : (
               <select value={selectedRivalAnalysisId} onChange={(e) => setSelectedRivalAnalysisId(e.target.value)}
-                className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none">
-                <option value="">— Ninguno (el reporte no incluirá sección del rival) —</option>
+                className={`w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border focus:border-cyan-500 focus:outline-none ${faltaElegirRival ? 'border-amber-400' : 'border-gray-600'}`}>
+                <option value="" disabled>— Elige una opción —</option>
+                <option value={RIVAL_NINGUNO}>Ninguno (el reporte dirá que no incluye el análisis del próximo rival)</option>
                 {rivalAnalysesDisponibles.map((r) => (
                   <option key={r.id} value={r.id}>
                     {r.rival_name} — {new Date(r.created_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' })}
@@ -529,6 +539,7 @@ const GenerarReportesPage: React.FC = () => {
                 ))}
               </select>
             )}
+            {faltaElegirRival && <p className="text-xs text-amber-400 mt-2">Elige un análisis o "Ninguno" para poder generar el reporte.</p>}
           </div>
         )}
 
@@ -757,13 +768,14 @@ const GenerarReportesPage: React.FC = () => {
         <div className="mt-6 flex items-center gap-3">
           <button
             onClick={handleGenerate}
-            disabled={!selectedMatch || isGenerating}
+            disabled={!selectedMatch || isGenerating || cargandoRivalAnalyses || faltaElegirRival}
             className="bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold py-2.5 px-6 rounded-md transition-colors duration-200"
           >
             {isGenerating ? 'Generando…' : 'Generar Reporte'}
           </button>
           {!allSelected && <span className="text-sm text-gray-500">Selecciona los 4 filtros para continuar.</span>}
           {allSelected && !selectedMatch && <span className="text-sm text-amber-400">No se encontró un partido con esa combinación.</span>}
+          {faltaElegirRival && <span className="text-sm text-amber-400">Falta elegir el Análisis del Rival (arriba).</span>}
         </div>
 
         {genError && <div className="mt-4 p-4 rounded-md bg-red-900 text-red-200">{genError}</div>}
