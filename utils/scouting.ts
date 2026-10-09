@@ -192,3 +192,79 @@ export function reducirFoto(archivo: File, maxLado = 320, calidad = 0.82): Promi
     img.src = url;
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Números del jugador (pestaña "Números" de la ficha).
+//  · Jugador de mi equipo: un renglón por partido, calculado del etiquetado
+//    (minutos, titular/suplente, goles, asistencias). Las tarjetas se escriben a mano.
+//  · Jugador de otro equipo: los partidos se capturan a mano.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type Participacion = 'titular' | 'suplente' | 'no_jugo' | 'no_convocado' | 'lesionado' | 'falta';
+export const PARTICIPACION_LABEL: Record<Participacion, string> = {
+  titular: 'Titular', suplente: 'Entró de cambio', no_jugo: 'No jugó',
+  no_convocado: 'No convocado', lesionado: 'Lesionado', falta: 'Falta',
+};
+/** Lo que se puede elegir al capturar un partido a mano. */
+export const PARTICIPACIONES_MANUALES: Participacion[] = ['titular', 'suplente', 'no_jugo'];
+
+export interface PartidoJugador {
+  key: string;
+  origen: 'etiquetado' | 'manual';
+  /** id de su fila en `scouting_partidos` (partido manual, o la fila de tarjetas de un partido etiquetado). */
+  id?: string;
+  match_id?: string | null;
+  fecha: string | null;
+  torneo: string;
+  jornada: number | null;
+  rival: string;
+  /** null = jugó (tiene jugadas) pero no se capturó la alineación de ese partido. */
+  participacion: Participacion | null;
+  /** ¿Pisó la cancha? */
+  jugo: boolean;
+  minutos: number;
+  goles: number;
+  asistencias: number;
+  amarillas: number;
+  rojas: number;
+}
+
+export interface TotalesNumeros {
+  etiqueta: string;
+  pj: number; titular: number; suplente: number;
+  minutos: number; goles: number; asistencias: number; amarillas: number; rojas: number;
+}
+
+export function sumarNumeros(etiqueta: string, filas: PartidoJugador[]): TotalesNumeros {
+  const t: TotalesNumeros = { etiqueta, pj: 0, titular: 0, suplente: 0, minutos: 0, goles: 0, asistencias: 0, amarillas: 0, rojas: 0 };
+  filas.forEach((f) => {
+    if (f.jugo) t.pj++;
+    if (f.participacion === 'titular') t.titular++;
+    if (f.participacion === 'suplente') t.suplente++;
+    t.minutos += f.minutos; t.goles += f.goles; t.asistencias += f.asistencias; t.amarillas += f.amarillas; t.rojas += f.rojas;
+  });
+  return t;
+}
+
+const MESES = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+
+/** Agrupa los partidos por mes o por torneo, en orden cronológico. */
+export function agruparNumeros(filas: PartidoJugador[], modo: 'mes' | 'torneo'): TotalesNumeros[] {
+  const grupos = new Map<string, { etiqueta: string; orden: string; filas: PartidoJugador[] }>();
+  filas.forEach((f) => {
+    let clave: string, etiqueta: string;
+    if (modo === 'mes') {
+      clave = f.fecha ? f.fecha.slice(0, 7) : 'zzzz';
+      const [a, m] = clave.split('-');
+      etiqueta = f.fecha ? `${MESES[parseInt(m, 10) - 1] || m} ${a}` : 'Sin fecha';
+    } else {
+      etiqueta = (f.torneo || '').trim() || 'Sin torneo';
+      clave = etiqueta.toLowerCase();
+    }
+    const g = grupos.get(clave) || { etiqueta, orden: f.fecha || '9999', filas: [] };
+    if (f.fecha && f.fecha < g.orden) g.orden = f.fecha;
+    g.filas.push(f);
+    grupos.set(clave, g);
+  });
+  return Array.from(grupos.values()).sort((a, b) => a.orden.localeCompare(b.orden)).map((g) => sumarNumeros(g.etiqueta, g.filas));
+}

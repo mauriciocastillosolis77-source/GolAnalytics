@@ -17,6 +17,9 @@ export interface DetalleGol {
     area?: AreaGol;
     porteria?: string; // `${AlturaPorteria}-${LadoPorteria}`, ej. "bajo-izquierda"
     golpeo?: Golpeo;
+    // Solo "Goles a favor": id del jugador que dio la asistencia. Es opcional —
+    // muchos goles no la tienen (tiro libre, penal, error del rival). null = quitarla.
+    asistencia?: string | null;
 }
 
 export const ACCIONES_GOL = new Set<string>(['Goles a favor', 'Goles recibidos']);
@@ -57,6 +60,7 @@ export const detalleGolDe = (tag: { detalle?: Record<string, any> | null }): Det
     if (d.area === 'dentro' || d.area === 'fuera') out.area = d.area;
     if (etiquetaPorteria(d.porteria)) out.porteria = d.porteria;
     if (GOLPEOS.includes(d.golpeo)) out.golpeo = d.golpeo;
+    if (typeof d.asistencia === 'string' && d.asistencia) out.asistencia = d.asistencia;
     return out;
 };
 
