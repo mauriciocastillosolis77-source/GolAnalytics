@@ -883,3 +883,143 @@ export async function exportRivalAnalysisToPDF(
   const fileName = `GolAnalytics_Rival_${rivalSlug}_${new Date().toISOString().split('T')[0]}.pdf`;
   doc.save(fileName);
 }
+
+// ─── Minutos jugados por jugador (para el DT) ────────────────────────────────
+// Misma información que la tabla "Minutos y ausencias — todo el equipo" de
+// Rendimiento, con el mismo filtro que tenga puesto el usuario en ese momento.
+export interface MinutosEquipoRow {
+  jugador: string;
+  numero?: number | null;
+  pj: number;
+  titular: number;
+  suplente: number;
+  minutos: number;
+  /** 0–100, o null si no hay minutos posibles en el periodo. */
+  pctMinutos: number | null;
+  lesion: number;
+  noConvocado: number;
+  falta: number;
+}
+
+export interface MinutosEquipoMeta {
+  /** Texto del periodo, ej. "Torneo de Verano · Jornadas 1 a 4". */
+  periodo: string;
+  partidosConsiderados: number;
+  partidosSinDatos: number;
+  minutosPosibles: number;
+}
+
+export async function exportMinutosEquipoToPDF(rows: MinutosEquipoRow[], meta: MinutosEquipoMeta, options: ExportOptions): Promise<void> {
+  const doc = new jsPDF();
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const logoBase64 = loadLogo();
+
+  // Columnas: x de inicio, ancho, título y alineación. Suman 180 mm (15 → 195).
+  const cols: Array<{ t: string; w: number; align: 'left' | 'center' }> = [
+    { t: '#', w: 9, align: 'center' },
+    { t: 'Jugador', w: 47, align: 'left' },
+    { t: 'PJ', w: 12, align: 'center' },
+    { t: 'Titular', w: 15, align: 'center' },
+    { t: 'Suplente', w: 17, align: 'center' },
+    { t: 'Minutos', w: 17, align: 'center' },
+    { t: '% de minutos', w: 30, align: 'left' },
+    { t: 'Lesión', w: 11, align: 'center' },
+    { t: 'No conv.', w: 12, align: 'center' },
+    { t: 'Falta', w: 10, align: 'center' },
+  ];
+  const x0 = 15;
+  const xs: number[] = [];
+  cols.reduce((x, c) => { xs.push(x); return x + c.w; }, x0);
+  const anchoTabla = cols.reduce((s, c) => s + c.w, 0);
+  const rowH = 7;
+
+  const encabezadoTabla = (y: number): number => {
+    doc.setFillColor(...COLORS.primary);
+    doc.rect(x0, y, anchoTabla, rowH + 1, 'F');
+    doc.setFontSize(8);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(255, 255, 255);
+    cols.forEach((c, i) => {
+      if (c.align === 'center') doc.text(c.t, xs[i] + c.w / 2, y + 5.2, { align: 'center' });
+      else doc.text(c.t, xs[i] + 2, y + 5.2);
+    });
+    return y + rowH + 1;
+  };
+
+  let y = addHeader(doc, options, 'MINUTOS JUGADOS POR JUGADOR', logoBase64);
+
+  doc.setFontSize(9);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(...COLORS.text);
+  doc.text(`Periodo: ${meta.periodo}`, x0, y);
+  y += 5;
+  doc.text(`Partidos considerados: ${meta.partidosConsiderados}  ·  Minutos posibles: ${meta.minutosPosibles}`, x0, y);
+  y += 5;
+  if (meta.partidosSinDatos > 0) {
+    doc.setTextColor(...COLORS.danger);
+    doc.text(`${meta.partidosSinDatos} partido${meta.partidosSinDatos === 1 ? '' : 's'} del periodo no entra${meta.partidosSinDatos === 1 ? '' : 'n'} al cálculo (sin alineación o sin duración de video).`, x0, y);
+    doc.setTextColor(...COLORS.text);
+    y += 5;
+  }
+  y += 2;
+  y = encabezadoTabla(y);
+
+  rows.forEach((r, idx) => {
+    if (y + rowH > 262) {
+      doc.addPage();
+      y = encabezadoTabla(20);
+    }
+    if (idx % 2 === 1) {
+      doc.setFillColor(...COLORS.lightGray);
+      doc.rect(x0, y, anchoTabla, rowH, 'F');
+    }
+    doc.setFontSize(9);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(...COLORS.dark);
+    const celdas: string[] = [
+      r.numero != null ? String(r.numero) : '',
+      r.jugador.length > 26 ? r.jugador.slice(0, 24) + '...' : r.jugador,
+      String(r.pj), String(r.titular), String(r.suplente), String(r.minutos), '',
+      r.lesion ? String(r.lesion) : '-', r.noConvocado ? String(r.noConvocado) : '-', r.falta ? String(r.falta) : '-',
+    ];
+    cols.forEach((c, i) => {
+      if (i === 6) return;
+      if (i === 5) doc.setFont('helvetica', 'bold'); else doc.setFont('helvetica', 'normal');
+      if (c.align === 'center') doc.text(celdas[i], xs[i] + c.w / 2, y + 4.8, { align: 'center' });
+      else doc.text(celdas[i], xs[i] + 2, y + 4.8);
+    });
+    // % de minutos: barra + número
+    const bx = xs[6] + 2, bw = 15, by = y + 2.4, bh = 2.6;
+    doc.setFillColor(226, 232, 240);
+    doc.rect(bx, by, bw, bh, 'F');
+    if (r.pctMinutos !== null && r.pctMinutos > 0) {
+      doc.setFillColor(...COLORS.secondary);
+      doc.rect(bx, by, Math.max(0.4, bw * Math.min(100, r.pctMinutos) / 100), bh, 'F');
+    }
+    doc.setFont('helvetica', 'normal');
+    doc.text(r.pctMinutos === null ? '-' : `${r.pctMinutos}%`, bx + bw + 2, y + 4.8);
+    y += rowH;
+  });
+
+  doc.setDrawColor(...COLORS.primary);
+  doc.setLineWidth(0.3);
+  doc.line(x0, y, x0 + anchoTabla, y);
+  y += 6;
+  if (y > 250) { doc.addPage(); y = 22; }
+  doc.setFontSize(8);
+  doc.setFont('helvetica', 'italic');
+  doc.setTextColor(...COLORS.text);
+  [
+    'PJ: partidos en los que jugó, de inicio o entrando de cambio.  Titular: partidos que inició.  Suplente: partidos en los que entró de cambio.',
+    '% de minutos: minutos jugados entre los minutos posibles del periodo (la suma de la duración de los partidos considerados).',
+    'Lesión / No conv. / Falta: número de partidos en los que no estuvo disponible por esa razón.',
+  ].forEach((linea) => {
+    const partes = doc.splitTextToSize(linea, anchoTabla) as string[];
+    doc.text(partes, x0, y);
+    y += partes.length * 3.8 + 0.8;
+  });
+
+  addFooter(doc);
+  const slug = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  doc.save(`GolAnalytics_Minutos_${slug(options.teamName)}_${new Date().toISOString().split('T')[0]}.pdf`);
+}
