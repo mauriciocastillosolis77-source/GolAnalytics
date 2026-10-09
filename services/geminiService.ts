@@ -1,7 +1,8 @@
 import type { AISuggestion, Tag } from '../types';
 import { METRICS } from '../constants';
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+// El modelo de Gemini se define en un solo lugar: services/geminiConfig.ts
+import { geminiApiUrl } from './geminiConfig';
 
 function getApiKey(): string {
     if (typeof window === 'undefined') {
@@ -71,7 +72,7 @@ export const analyzeVideoFrames = async (
         }
     };
 
-    const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+    const response = await fetch(`${geminiApiUrl()}?key=${apiKey}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(requestBody)

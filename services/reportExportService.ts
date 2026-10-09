@@ -4,7 +4,7 @@ import { analyzeTeamPerformance } from './geminiTeamAnalysisService';
 import { LOGO_BASE64 } from '../constants/logoBase64';
 import { PITCH_BASE64 } from '../constants/pitchBase64';
 import { PORTERIA_ESTADIO_BASE64 } from '../constants/porteriaEstadioBase64';
-import type { Match, Tag, Player, RivalAnalysis, RivalTipo, RivalZona } from '../types';
+import type { Match, Tag, Player, RivalAnalysis, RivalTipo, RivalZona, TeamAnalysis } from '../types';
 import { TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona, etiquetaZona } from '../utils/zonas';
 import { esJugadorFicticio, cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios } from '../utils/efectividad';
 import { ALTURAS, LADOS, codigoPorteria, detalleGolDe, resumenGol, etiquetaPorteria } from '../utils/goles';
@@ -61,7 +61,9 @@ const FONT_BODY = 'Calibri';
 
 // Mismo patrón que los demás services/gemini*Service.ts del repo (cada uno
 // redefine su propia constante/función, no se comparten).
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+// El modelo de Gemini se define en un solo lugar: services/geminiConfig.ts
+import { geminiApiUrl, modeloGeminiActual } from './geminiConfig';
+import { leerTextoIAReporte, guardarTextoIAReporte } from './reporteIAGuardadoService';
 function getGeminiApiKey(): string {
   const env = (import.meta as any).env;
   const apiKey = env.VITE_API_KEY || env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY || '';
@@ -102,7 +104,7 @@ ${p.estadisticasCompletas || '(sin desglose adicional disponible)'}
 Escribe 4 a 6 oraciones en español, tono formativo y constructivo (equipo juvenil en desarrollo, evita palabras como "pobre" o "deficiente"), en un solo párrafo, sin Markdown ni asteriscos. Menciona al menos un patrón concreto del desglose (ej. una categoría con efectividad notablemente alta o baja), no solo las 4 cifras generales. Responde ÚNICAMENTE con el texto del párrafo, nada más.`;
 
   const apiKey = getGeminiApiKey();
-  const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+  const response = await fetch(`${geminiApiUrl()}?key=${apiKey}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
@@ -527,7 +529,7 @@ Nota original (escrita por el entrenador, en borrador): "${textoOriginal}"
 Reescribe esta nota en 1 a 2 oraciones, en español, con vocabulario de fútbol cotidiano y profesional — ni muy informal ni rebuscado, como hablaría un director técnico explicándole esto a otro entrenador. Mantén el contenido y el sentido exactos de la nota original, no inventes datos que no estén ahí. Responde ÚNICAMENTE con la nota reescrita, sin comillas ni texto adicional.`;
 
   const apiKey = getGeminiApiKey();
-  const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
+  const response = await fetch(`${geminiApiUrl()}?key=${apiKey}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] }),
@@ -590,15 +592,24 @@ export async function previewEstiloDeJuego(match: Match, positionsMap?: Map<stri
  * `estiloOverride`: opcional — carril/bloque tal como los dejó el usuario en
  * la página (pudo corregir lo que calculó el sistema con lo que vio en vivo).
  * Si no se manda, se recalcula igual que antes.
+ * `opciones.regenerarTextoIA`: true = ignora el texto de IA guardado de este
+ * partido y lo vuelve a pedir a Gemini (2 consultas).
+ * Regresa de dónde salió el texto de IA, para que la pantalla lo avise.
  */
+export interface ResultadoReporte {
+  textoIA: 'guardado' | 'nuevo';
+  /** Solo aplica cuando textoIA = 'nuevo': si quedó guardado en Supabase. */
+  textoIAGuardadoOk: boolean;
+}
 export async function generateMatchReportPptx(
   match: Match,
   authorName?: string,
   positionsMap?: Map<string, string>,
   modeloDeJuego?: ModeloDeJuego,
   estiloOverride?: EstiloDeJuegoOverride,
-  rivalAnalysisId?: string | null
-): Promise<void> {
+  rivalAnalysisId?: string | null,
+  opciones?: { regenerarTextoIA?: boolean }
+): Promise<ResultadoReporte> {
   const { data: tagsData, error: tagsError } = await supabase.from('tags').select('*').eq('match_id', match.id);
   if (tagsError) throw tagsError;
   // Balón parado y penales solo se cuentan en su diapositiva: no entran en efectividad,
@@ -623,7 +634,18 @@ export async function generateMatchReportPptx(
     }
   }
 
-  const analysis = await analyzeTeamPerformance(match.nombre_equipo, [match], tags, players);
+  // Texto de la IA (highlights, fortalezas, destacados, recomendaciones y la
+  // lectura del partido). Se guarda por partido: si ya existe y el partido
+  // tiene las mismas jugadas que cuando se escribió, se reutiliza y NO se
+  // consulta a Gemini. Si el etiquetado cambió, o el usuario pidió volver a
+  // escribirlo, se piden de nuevo las 2 consultas y se guarda el resultado.
+  const totalJugadas = tagsTodos.length;
+  const textoGuardado = opciones?.regenerarTextoIA ? null : await leerTextoIAReporte(match.id);
+  const usarTextoGuardado = !!textoGuardado && textoGuardado.tags_count === totalJugadas;
+
+  const analysis: TeamAnalysis = usarTextoGuardado
+    ? textoGuardado!.analysis
+    : await analyzeTeamPerformance(match.nombre_equipo, [match], tags, players);
 
   const efectividadGeneral = calcularEfectividad(tags, players);
   const goalsFor = tags.filter((t) => t.accion === 'Goles a favor').length;
@@ -686,11 +708,18 @@ export async function generateMatchReportPptx(
 
   const teamLogoBase64 = await loadTeamLogoBase64(match.team_id);
 
-  const lecturaDelPartido = await generarLecturaDePartido({
+  const lecturaDelPartido = usarTextoGuardado ? textoGuardado!.lectura : await generarLecturaDePartido({
     equipo: match.nombre_equipo, rival: match.rival, jornada: match.jornada, torneo: match.torneo,
     efectividadGeneral, promedioTorneo, goalsFor, goalsAgainst, recuperaciones, tirosAPorteria, conversion, transicionesLogradas,
     estadisticasCompletas: buildEstadisticasCompletas(tags),
   });
+
+  let textoIAGuardadoOk = false;
+  if (!usarTextoGuardado) {
+    textoIAGuardadoOk = await guardarTextoIAReporte({
+      match_id: match.id, analysis, lectura: lecturaDelPartido, tags_count: totalJugadas, modelo: modeloGeminiActual(),
+    });
+  }
 
   // ── Construcción del .pptx ────────────────────────────────────────────
   const pres = new pptxgen();
@@ -1356,4 +1385,5 @@ export async function generateMatchReportPptx(
 
   const fileName = `Reporte_${match.nombre_equipo}_J${match.jornada}`.replace(/\s+/g, '_');
   await pres.writeFile({ fileName: `${fileName}.pptx` });
+  return { textoIA: usarTextoGuardado ? 'guardado' : 'nuevo', textoIAGuardadoOk };
 }
