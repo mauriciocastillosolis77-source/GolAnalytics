@@ -3,6 +3,8 @@ import { supabase } from '../services/supabaseClient';
 import type { Match } from '../types';
 import { Spinner } from '../components/ui/Spinner';
 import { generateMatchReportPptx, mejorarRedaccionChecklist, previewEstiloDeJuego } from '../services/reportExportService';
+import { conModeloDeRespaldo, esErrorDeGemini, mensajeErrorGemini } from '../services/geminiConfig';
+import { leerTextoIAReporte, contarJugadasPartido } from '../services/reporteIAGuardadoService';
 import { Link } from 'react-router-dom';
 import { fetchPilares, fetchCalificacionesPartido, guardarCalificaciones } from '../services/modeloJuegoService';
 import { agruparPorFase, type ModeloPilar, type Semaforo as SemaforoModelo } from '../utils/modeloJuego';
@@ -21,6 +23,10 @@ const GenerarReportesPage: React.FC = () => {
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
+  // Cuando el reporte falla por Gemini se ofrece el modelo de respaldo — a
+  // mano, con un botón. Nunca se reintenta solo.
+  const [genErrorEsGemini, setGenErrorEsGemini] = useState(false);
+  const [genInfo, setGenInfo] = useState<string | null>(null);
 
   // Nombre/puesto para el crédito de la portada — fijo por default (siempre el
   // mismo), pero editable por si algún día cambia.
@@ -205,6 +211,28 @@ const GenerarReportesPage: React.FC = () => {
   }, [selectedMatch?.id, selectedMatch?.team_id]);
   const faltaElegirRival = !!selectedMatch && !cargandoRivalAnalyses && selectedRivalAnalysisId === '';
 
+  // Texto de IA guardado de este partido (tabla match_report_ai). Si existe y
+  // el partido tiene las mismas jugadas que cuando se escribió, generar el
+  // reporte no consulta a Gemini.
+  const [textoIAGuardado, setTextoIAGuardado] = useState<{ updated_at: string; tags_count: number } | null>(null);
+  const [jugadasActuales, setJugadasActuales] = useState<number | null>(null);
+  const [regenerarTextoIA, setRegenerarTextoIA] = useState(false);
+  const [recargaTextoIA, setRecargaTextoIA] = useState(0);
+  useEffect(() => {
+    let cancelado = false;
+    setTextoIAGuardado(null); setJugadasActuales(null);
+    if (!selectedMatch?.id) return;
+    (async () => {
+      const [guardado, jugadas] = await Promise.all([leerTextoIAReporte(selectedMatch.id), contarJugadasPartido(selectedMatch.id)]);
+      if (cancelado) return;
+      setTextoIAGuardado(guardado ? { updated_at: guardado.updated_at, tags_count: guardado.tags_count } : null);
+      setJugadasActuales(jugadas);
+    })();
+    return () => { cancelado = true; };
+  }, [selectedMatch?.id, recargaTextoIA]);
+  useEffect(() => { setRegenerarTextoIA(false); setGenInfo(null); setGenError(null); setGenErrorEsGemini(false); }, [selectedMatch?.id]);
+  const textoIAVigente = !!textoIAGuardado && jugadasActuales !== null && textoIAGuardado.tags_count === jugadasActuales;
+
   // Cómo jugamos (estilo de este partido) — el carril y el bloque de presión
   // se precargan con el mismo cálculo real que usa el PowerPoint; el usuario
   // los puede corregir (selector) y reescribir el texto (con lo que vio en
@@ -379,7 +407,7 @@ const GenerarReportesPage: React.FC = () => {
     reader.readAsArrayBuffer(file);
   };
 
-  const handleGenerate = async () => {
+  const handleGenerate = async (usarRespaldo = false) => {
     if (!selectedMatch) return;
     if (selectedRivalAnalysisId === '') {
       setGenError('Antes de generar, elige qué Análisis del Rival incluir en el reporte (o "Ninguno").');
@@ -387,6 +415,8 @@ const GenerarReportesPage: React.FC = () => {
     }
     setIsGenerating(true);
     setGenError(null);
+    setGenErrorEsGemini(false);
+    setGenInfo(null);
     try {
       let pilares = pilaresTexto.split('\n').map((s) => s.trim()).filter(Boolean);
       let checklistLimpio = checklist
@@ -406,10 +436,21 @@ const GenerarReportesPage: React.FC = () => {
         : undefined;
 
       const estiloOverride = { carrilSide, carrilLabel: carrilTexto.trim(), bloqueAltura, bloqueLabel: bloqueTexto.trim() };
-      await generateMatchReportPptx(selectedMatch, authorName.trim() || undefined, positionsMap || undefined, modeloDeJuego, estiloOverride, selectedRivalAnalysisId === RIVAL_NINGUNO ? null : selectedRivalAnalysisId);
+      const generar = () => generateMatchReportPptx(selectedMatch, authorName.trim() || undefined, positionsMap || undefined, modeloDeJuego, estiloOverride, selectedRivalAnalysisId === RIVAL_NINGUNO ? null : selectedRivalAnalysisId, { regenerarTextoIA });
+      const r = usarRespaldo ? await conModeloDeRespaldo(generar) : await generar();
+      if (r.textoIA === 'guardado') {
+        setGenInfo('Reporte generado con el texto de IA que ya estaba guardado — no se consultó a Gemini.');
+      } else if (r.textoIAGuardadoOk) {
+        setGenInfo(`Reporte generado${usarRespaldo ? ' con el modelo de respaldo' : ''}. El texto de IA quedó guardado: la próxima vez que generes este partido no se consultará a Gemini.`);
+      } else {
+        setGenInfo(`Reporte generado${usarRespaldo ? ' con el modelo de respaldo' : ''}. El texto de IA no se pudo guardar (falta crear la tabla match_report_ai en Supabase), así que la próxima vez se volverá a consultar a Gemini.`);
+      }
+      setRegenerarTextoIA(false);
+      setRecargaTextoIA((n) => n + 1);
     } catch (err: any) {
       console.error('Error generating report:', err);
-      setGenError(err?.message || 'Error al generar el reporte. Intenta de nuevo.');
+      setGenErrorEsGemini(esErrorDeGemini(err));
+      setGenError(mensajeErrorGemini(err) || 'Error al generar el reporte. Intenta de nuevo.');
     } finally {
       setIsGenerating(false);
     }
@@ -767,7 +808,7 @@ const GenerarReportesPage: React.FC = () => {
 
         <div className="mt-6 flex items-center gap-3">
           <button
-            onClick={handleGenerate}
+            onClick={() => handleGenerate()}
             disabled={!selectedMatch || isGenerating || cargandoRivalAnalyses || faltaElegirRival}
             className="bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold py-2.5 px-6 rounded-md transition-colors duration-200"
           >
@@ -778,7 +819,39 @@ const GenerarReportesPage: React.FC = () => {
           {faltaElegirRival && <span className="text-sm text-amber-400">Falta elegir el Análisis del Rival (arriba).</span>}
         </div>
 
-        {genError && <div className="mt-4 p-4 rounded-md bg-red-900 text-red-200">{genError}</div>}
+        {selectedMatch && (
+          <div className="mt-3 text-xs">
+            {textoIAVigente ? (
+              <>
+                <p className="text-green-400">Texto de IA guardado el {new Date(textoIAGuardado!.updated_at).toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' })} ({textoIAGuardado!.tags_count} jugadas). Se reutiliza: generar este reporte no consulta a Gemini.</p>
+                <label className="mt-1 inline-flex items-center gap-2 text-gray-400 cursor-pointer">
+                  <input type="checkbox" checked={regenerarTextoIA} onChange={(e) => setRegenerarTextoIA(e.target.checked)} disabled={isGenerating} />
+                  Volver a escribir el texto con IA (2 consultas a Gemini)
+                </label>
+              </>
+            ) : textoIAGuardado && jugadasActuales !== null ? (
+              <p className="text-amber-400">El etiquetado cambió desde que se guardó el texto de IA ({textoIAGuardado.tags_count} → {jugadasActuales} jugadas). Al generar se volverá a escribir con IA (2 consultas a Gemini).</p>
+            ) : (
+              <p className="text-gray-500">Este partido todavía no tiene texto de IA guardado. Al generar se harán 2 consultas a Gemini y el texto quedará guardado para las siguientes veces.</p>
+            )}
+          </div>
+        )}
+
+        {genInfo && !genError && <div className="mt-4 p-3 rounded-md bg-green-900/40 text-green-200 text-sm">{genInfo}</div>}
+        {genError && (
+          <div className="mt-4 p-4 rounded-md bg-red-900 text-red-200">
+            <p>{genError}</p>
+            {genErrorEsGemini && (
+              <div className="mt-3">
+                <button type="button" onClick={() => handleGenerate(true)} disabled={isGenerating}
+                  className="bg-amber-500 hover:bg-amber-600 disabled:bg-gray-600 disabled:cursor-not-allowed text-gray-900 font-semibold py-2 px-4 rounded-md text-sm">
+                  {isGenerating ? 'Generando…' : 'Intentar con el modelo de respaldo'}
+                </button>
+                <p className="text-xs text-red-300 mt-2">Usa otro modelo gratuito de Gemini solo para este intento. No se reintenta solo.</p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {selectedMatch && (
