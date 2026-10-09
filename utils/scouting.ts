@@ -268,3 +268,40 @@ export function agruparNumeros(filas: PartidoJugador[], modo: 'mes' | 'torneo'):
   });
   return Array.from(grupos.values()).sort((a, b) => a.orden.localeCompare(b.orden)).map((g) => sumarNumeros(g.etiqueta, g.filas));
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reporte ejecutivo de scouting: la cancha 4-4-2 con los 3 mejores de cada
+// puesto exacto, y la comparación de un jugador contra otro de su puesto.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Nombre que firma el reporte: "Scout: … | GolAnalytics". */
+export const SCOUT_NOMBRE = 'Mauricio Castillo';
+
+/** Dónde va cada caja en la cancha (el equipo ataca hacia arriba). x = centro de la caja, y = borde superior, en % de la cancha. */
+export const CAJAS_442: Array<{ puesto: string; x: number; y: number }> = [
+  { puesto: 'DI', x: 33, y: 7 }, { puesto: 'DD', x: 67, y: 7 },
+  { puesto: 'MI', x: 13, y: 33 }, { puesto: 'MCI', x: 38, y: 35 }, { puesto: 'MCD', x: 62, y: 35 }, { puesto: 'MD', x: 87, y: 33 },
+  { puesto: 'LI', x: 13, y: 59 }, { puesto: 'DCI', x: 38, y: 62 }, { puesto: 'DCD', x: 62, y: 62 }, { puesto: 'LD', x: 87, y: 59 },
+  { puesto: 'POR', x: 50, y: 83 },
+];
+
+type ConCualidades = { nombre: string; puesto: string | null; cualidades: Cualidades };
+
+/**
+ * Ordena de mejor a peor por promedio general. Los que no tienen ninguna
+ * calificación quedan fuera (no hay número con qué ordenarlos). En empate va
+ * primero el que tiene más secciones calificadas; después, por nombre.
+ */
+export function ordenarPorPromedio<T extends ConCualidades>(jugadores: T[]): Array<T & { promedio: number; secciones: number }> {
+  return jugadores
+    .map((j) => { const g = mediaGeneral(j.cualidades); return { ...j, promedio: g.media as number, secciones: g.secciones }; })
+    .filter((j) => j.promedio !== null && j.secciones > 0)
+    .sort((a, b) => b.promedio - a.promedio || b.secciones - a.secciones || a.nombre.localeCompare(b.nombre));
+}
+
+/** Los `n` mejores de cada puesto EXACTO. Un jugador nunca aparece en la caja de otro puesto. */
+export function mejoresPorPuesto<T extends ConCualidades>(jugadores: T[], n = 3): Record<string, Array<T & { promedio: number; secciones: number }>> {
+  const out: Record<string, Array<T & { promedio: number; secciones: number }>> = {};
+  PUESTOS.forEach((p) => { out[p.clave] = ordenarPorPromedio(jugadores.filter((j) => j.puesto === p.clave)).slice(0, n); });
+  return out;
+}

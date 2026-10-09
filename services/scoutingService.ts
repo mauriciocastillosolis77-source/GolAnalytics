@@ -17,8 +17,8 @@ function traducirError(error: any, accion: string): Error {
 }
 
 // Para la lista no se trae la foto: así carga rápido aunque haya muchas fichas.
-const COLUMNAS_LISTA = 'id, player_id, nombre, equipo, competicion, puesto, dorsal, tipo_jugador, valoracion, cualidades, updated_at';
-export type ScoutingPlayerLista = Pick<ScoutingPlayer, 'id' | 'player_id' | 'nombre' | 'equipo' | 'competicion' | 'puesto' | 'dorsal' | 'tipo_jugador' | 'valoracion' | 'cualidades' | 'updated_at'>;
+const COLUMNAS_LISTA = 'id, player_id, nombre, equipo, competicion, puesto, dorsal, nacionalidad, tipo_jugador, valoracion, cualidades, updated_at';
+export type ScoutingPlayerLista = Pick<ScoutingPlayer, 'id' | 'player_id' | 'nombre' | 'equipo' | 'competicion' | 'puesto' | 'dorsal' | 'nacionalidad' | 'tipo_jugador' | 'valoracion' | 'cualidades' | 'updated_at'>;
 
 export async function fetchScoutingPlayers(): Promise<ScoutingPlayerLista[]> {
   const { data, error } = await supabase.from('scouting_players').select(COLUMNAS_LISTA).order('nombre', { ascending: true });

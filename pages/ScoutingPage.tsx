@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Spinner } from '../components/ui/Spinner';
+import { LOGO_BASE64 } from '../constants/logoBase64';
 import { esJugadorFicticio } from '../utils/efectividad';
 import {
     SECCIONES, PUESTOS, TIPOS_JUGADOR, PIERNAS, VALORACIONES, FICHA_VACIA,
     puestoLabel, valoracionDe, mediaSeccion, mediaGeneral, lineasCalificadas, edadDe, reducirFoto,
     PARTICIPACION_LABEL, PARTICIPACIONES_MANUALES, sumarNumeros, agruparNumeros,
+    CAJAS_442, SCOUT_NOMBRE, mejoresPorPuesto, ordenarPorPromedio,
     type ScoutingPlayer, type SeccionClave, type ValoracionFinal, type PartidoJugador, type Participacion,
 } from '../utils/scouting';
 import { fetchNumerosJugador, guardarPartidoManual, eliminarPartidoManual, guardarTarjetas, type PartidoManual } from '../services/scoutingStatsService';
@@ -24,16 +26,19 @@ import {
 // registra aquí NUNCA aparece en el Etiquetador (vive en otra tabla).
 // Entrega 2: pestaña "Números" (por jornada, mes o torneo). Los jugadores de mi
 // equipo la llenan con el etiquetado; los de otros equipos se capturan a mano.
-// Pendiente para siguientes entregas: comparación, cancha ejecutiva y exportaciones.
+// Entrega 3: vista "Reporte ejecutivo de scouting" (cancha 4-4-2 con los 3
+// mejores de cada puesto) y pestaña "Comparación" en la ficha.
+// Pendiente: exportaciones a PDF y PowerPoint.
 // ─────────────────────────────────────────────────────────────────────────────
 
 type Borrador = Omit<ScoutingPlayer, 'id'> & { id?: string };
-type Pestana = 'datos' | 'numeros' | SeccionClave | 'valoracion';
+type Pestana = 'datos' | 'numeros' | SeccionClave | 'comparacion' | 'valoracion';
 
 const PESTANAS: Array<{ clave: Pestana; label: string }> = [
     { clave: 'datos', label: 'Datos' },
     { clave: 'numeros', label: 'Números' },
     ...SECCIONES.map((s) => ({ clave: s.clave as Pestana, label: s.corto })),
+    { clave: 'comparacion', label: 'Comparación' },
     { clave: 'valoracion', label: 'Valoración final' },
 ];
 
@@ -282,6 +287,214 @@ const NumerosJugador: React.FC<{ fichaId?: string; playerId: string | null; comp
     );
 };
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Vista "Reporte ejecutivo de scouting": la cancha 4-4-2 con los 3 mejores de
+// cada puesto exacto. El panel izquierdo (tipo de competición, tipo de jugador
+// y equipo) filtra quiénes entran a la cancha. Se dibuja sobre hoja blanca,
+// como la plantilla, porque es lo que después se va a exportar.
+// ─────────────────────────────────────────────────────────────────────────────
+const BotonFiltro: React.FC<{ activo: boolean; onClick: () => void; children: React.ReactNode }> = ({ activo, onClick, children }) => (
+    <button onClick={onClick} aria-pressed={activo}
+        className={`w-full px-2 py-1.5 text-xs font-semibold border-2 border-black text-center truncate ${activo ? 'bg-red-600 text-white' : 'bg-white text-black hover:bg-gray-100'}`}>
+        {children}
+    </button>
+);
+const TituloPanel: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+    <div className="bg-gray-300 border-y-2 border-black px-2 py-1 text-xs font-black italic uppercase text-black text-center -skew-x-12"><span className="inline-block skew-x-12">{children}</span></div>
+);
+
+const ReporteEjecutivo: React.FC<{ lista: ScoutingPlayerLista[]; onAbrir: (id: string) => void }> = ({ lista, onAbrir }) => {
+    const [competicion, setCompeticion] = useState('');
+    const [tipo, setTipo] = useState('');
+    const [equipo, setEquipo] = useState<'' | 'mio' | 'otros'>('');
+
+    // Las competiciones salen de lo que se haya escrito en las fichas (sin repetir por mayúsculas o espacios).
+    const competiciones = useMemo(() => {
+        // Si la misma competición se escribió de varias formas, se muestra la forma más usada.
+        const formas = new Map<string, Map<string, number>>();
+        lista.forEach((f) => {
+            const c = (f.competicion || '').trim();
+            if (!c) return;
+            const m = formas.get(c.toLowerCase()) || new Map<string, number>();
+            m.set(c, (m.get(c) || 0) + 1);
+            formas.set(c.toLowerCase(), m);
+        });
+        return Array.from(formas.values())
+            .map((m) => Array.from(m.entries()).sort((x, y) => y[1] - x[1])[0][0])
+            .sort((x, y) => x.localeCompare(y));
+    }, [lista]);
+
+    const filtrados = useMemo(() => lista.filter((f) => {
+        if (competicion && (f.competicion || '').trim().toLowerCase() !== competicion.toLowerCase()) return false;
+        if (tipo && f.tipo_jugador !== tipo) return false;
+        if (equipo === 'mio' && !f.player_id) return false;
+        if (equipo === 'otros' && f.player_id) return false;
+        return true;
+    }), [lista, competicion, tipo, equipo]);
+
+    const mejores = useMemo(() => mejoresPorPuesto(filtrados, 3), [filtrados]);
+    const sinCalificar = filtrados.filter((f) => mediaGeneral(f.cualidades).media === null).length;
+    const sinPuesto = filtrados.filter((f) => !f.puesto).length;
+
+    return (
+        <div className="space-y-2">
+            <div className="bg-white text-black rounded-lg overflow-hidden" data-reporte-ejecutivo>
+                <div className="px-4 pt-3">
+                    <div className="bg-gray-300 border-y-4 border-black py-2 text-center -skew-x-12">
+                        <h2 className="inline-block skew-x-12 text-xl md:text-2xl font-black italic uppercase tracking-wide">Scouting de jugadores</h2>
+                    </div>
+                </div>
+                <div className="p-4 flex flex-col lg:flex-row gap-4">
+                    {/* Panel izquierdo: logo y filtros */}
+                    <div className="lg:w-48 shrink-0 space-y-3">
+                        <img src={LOGO_BASE64} alt="GolAnalytics" className="w-28 h-28 object-contain mx-auto" />
+                        <TituloPanel>Tipo competición</TituloPanel>
+                        <div className="space-y-1 max-h-44 overflow-y-auto">
+                            <BotonFiltro activo={competicion === ''} onClick={() => setCompeticion('')}>Todas</BotonFiltro>
+                            {competiciones.map((c) => <BotonFiltro key={c} activo={competicion.toLowerCase() === c.toLowerCase()} onClick={() => setCompeticion(c)}>{c}</BotonFiltro>)}
+                        </div>
+                        <TituloPanel>Tipo jugador</TituloPanel>
+                        <div className="space-y-1">
+                            <BotonFiltro activo={tipo === ''} onClick={() => setTipo('')}>Todos</BotonFiltro>
+                            {TIPOS_JUGADOR.map((t) => <BotonFiltro key={t} activo={tipo === t} onClick={() => setTipo(t)}>{t}</BotonFiltro>)}
+                        </div>
+                        <TituloPanel>Equipo</TituloPanel>
+                        <div className="space-y-1">
+                            <BotonFiltro activo={equipo === ''} onClick={() => setEquipo('')}>Todos</BotonFiltro>
+                            <BotonFiltro activo={equipo === 'mio'} onClick={() => setEquipo('mio')}>Mi equipo</BotonFiltro>
+                            <BotonFiltro activo={equipo === 'otros'} onClick={() => setEquipo('otros')}>Otros equipos</BotonFiltro>
+                        </div>
+                    </div>
+
+                    {/* Cancha 4-4-2 (el equipo ataca hacia arriba) */}
+                    <div className="flex-1 min-w-0 overflow-x-auto">
+                        <div className="relative mx-auto" style={{ minWidth: 640, maxWidth: 900, aspectRatio: '10 / 9', background: 'repeating-linear-gradient(180deg, #3f8f3f 0 11.11%, #378537 11.11% 22.22%)' }}>
+                            <svg viewBox="0 0 100 90" preserveAspectRatio="none" className="absolute inset-0 w-full h-full" aria-hidden="true">
+                                <g fill="none" stroke="rgba(255,255,255,0.75)" strokeWidth="0.35">
+                                    <rect x="3" y="3" width="94" height="84" />
+                                    <line x1="3" y1="45" x2="97" y2="45" />
+                                    <ellipse cx="50" cy="45" rx="9" ry="8.1" />
+                                    <rect x="27" y="3" width="46" height="14" /><rect x="39" y="3" width="22" height="5.5" />
+                                    <rect x="27" y="73" width="46" height="14" /><rect x="39" y="81.5" width="22" height="5.5" />
+                                </g>
+                            </svg>
+                            {CAJAS_442.map((caja) => {
+                                const jugadores = mejores[caja.puesto] || [];
+                                return (
+                                    <div key={caja.puesto} data-puesto={caja.puesto} className="absolute" style={{ left: `${caja.x}%`, top: `${caja.y}%`, width: '22%', transform: 'translateX(-50%)' }}>
+                                        <p className="text-[9px] md:text-[10px] font-bold uppercase text-white text-center mb-0.5" style={{ textShadow: '0 1px 2px rgba(0,0,0,0.8)' }}>{puestoLabel(caja.puesto)}</p>
+                                        <div className="space-y-0.5">
+                                            {[0, 1, 2].map((i) => {
+                                                const j = jugadores[i];
+                                                if (!j) return <div key={i} className="h-6 border-2 border-black bg-white/60" />;
+                                                return (
+                                                    <button key={j.id} onClick={() => onAbrir(j.id)} title={`${j.nombre} · promedio ${j.promedio.toFixed(1)}${j.secciones < SECCIONES.length ? ` (${j.secciones} de ${SECCIONES.length} secciones)` : ''} · clic para abrir su ficha`}
+                                                        className="w-full h-6 border-2 border-black bg-white hover:bg-yellow-100 flex items-center justify-between gap-1 px-1 text-left">
+                                                        <span className="text-[9px] md:text-[10px] font-bold uppercase truncate">{j.nombre}{j.nacionalidad ? ` (${j.nacionalidad})` : ''}</span>
+                                                        <span className="text-[9px] md:text-[10px] font-black shrink-0">{j.promedio.toFixed(1)}</span>
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+                </div>
+                <div className="border-t-2 border-black px-4 py-2 text-center text-xs font-semibold">Scout: {SCOUT_NOMBRE} | GolAnalytics</div>
+            </div>
+            <p className="text-xs text-gray-500">
+                En cada caja van los 3 mejor calificados de ese puesto exacto, por promedio general. Da clic en un nombre para abrir su ficha.
+                {sinCalificar > 0 && ` ${sinCalificar} jugador${sinCalificar === 1 ? '' : 'es'} sin calificar no aparece${sinCalificar === 1 ? '' : 'n'}.`}
+                {sinPuesto > 0 && ` ${sinPuesto} sin puesto asignado tampoco.`}
+            </p>
+        </div>
+    );
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pestaña "Comparación": las cinco medias del jugador contra las de otro de su
+// mismo puesto. Por defecto, contra el mejor jugador de mi equipo en ese puesto
+// ("nuestro mejor jugador en su puesto", como la plantilla).
+// ─────────────────────────────────────────────────────────────────────────────
+const ComparacionJugador: React.FC<{ ficha: Borrador; lista: ScoutingPlayerLista[] }> = ({ ficha, lista }) => {
+    const candidatos = useMemo(() => ordenarPorPromedio(lista.filter((f) => f.id !== ficha.id && !!ficha.puesto && f.puesto === ficha.puesto)), [lista, ficha.id, ficha.puesto]);
+    const mejorDeMiEquipo = candidatos.find((c) => !!c.player_id);
+    const [elegidoId, setElegidoId] = useState<string>('');
+    useEffect(() => { setElegidoId(''); }, [ficha.id, ficha.puesto]);
+    const otro = candidatos.find((c) => c.id === elegidoId) || mejorDeMiEquipo;
+
+    if (!ficha.puesto) {
+        return <div className="bg-gray-800 rounded-lg p-6 text-sm text-gray-400">Elige primero el puesto del jugador en la pestaña Datos: la comparación es contra otro jugador de su mismo puesto.</div>;
+    }
+
+    const general = mediaGeneral(ficha.cualidades);
+    const filas: Array<{ label: string; a: number | null; b: number | null; fuerte?: boolean }> = [
+        ...SECCIONES.map((s) => ({ label: s.titulo, a: mediaSeccion(ficha.cualidades, s.clave), b: otro ? mediaSeccion(otro.cualidades, s.clave) : null })),
+        { label: 'Promedio general', a: general.media, b: otro ? otro.promedio : null, fuerte: true },
+    ];
+    const barra = (v: number | null, color: string) => (
+        <div className="flex items-center gap-2">
+            <div className="flex-1 h-3 bg-gray-700 rounded-sm overflow-hidden"><div className="h-full rounded-sm" style={{ width: `${v === null ? 0 : Math.min(100, v * 10)}%`, backgroundColor: color }} /></div>
+            <span className="w-8 text-right text-sm font-semibold text-white">{v === null ? '–' : v.toFixed(1)}</span>
+        </div>
+    );
+    const COLOR_A = '#22d3ee', COLOR_B = '#f59e0b';
+
+    return (
+        <div className="bg-gray-800 rounded-lg p-4 space-y-4">
+            <div className="flex items-start justify-between flex-wrap gap-3">
+                <div>
+                    <h2 className="text-lg font-semibold text-white">Comparación</h2>
+                    <p className="text-xs text-gray-400">Contra otro jugador de su mismo puesto: {puestoLabel(ficha.puesto)}.</p>
+                </div>
+                <div className="w-full sm:w-80">
+                    <label className="block text-xs font-medium text-gray-400 mb-1">Comparar contra</label>
+                    <select value={otro?.id || ''} onChange={(e) => setElegidoId(e.target.value)} disabled={candidatos.length === 0} className={`${inputCls} disabled:opacity-50`}>
+                        {candidatos.length === 0 && <option value="">No hay otro jugador calificado en este puesto</option>}
+                        {candidatos.length > 0 && !otro && <option value="">— Elige un jugador —</option>}
+                        {candidatos.map((c) => <option key={c.id} value={c.id}>{c.nombre} · {c.promedio.toFixed(1)}{c.player_id ? ' · mi equipo' : c.equipo ? ` · ${c.equipo}` : ''}</option>)}
+                    </select>
+                </div>
+            </div>
+
+            {!mejorDeMiEquipo && (
+                <p className="text-xs text-amber-400">
+                    {candidatos.length === 0
+                        ? 'Todavía no hay otro jugador calificado en este puesto para comparar.'
+                        : 'En tu equipo no hay ningún jugador con ficha calificada en este puesto. Puedes elegir a otro jugador de la lista.'}
+                </p>
+            )}
+            {otro && mejorDeMiEquipo && otro.id === mejorDeMiEquipo.id && <p className="text-xs text-gray-400">{otro.nombre} es el mejor calificado de tu equipo en este puesto.</p>}
+
+            {otro && (
+                <>
+                    <div className="flex flex-wrap gap-x-6 gap-y-1 text-sm">
+                        <span className="flex items-center gap-2 text-white"><span className="inline-block w-3 h-3 rounded-sm" style={{ backgroundColor: COLOR_A }} />{ficha.nombre.trim() || 'Este jugador'}</span>
+                        <span className="flex items-center gap-2 text-white"><span className="inline-block w-3 h-3 rounded-sm" style={{ backgroundColor: COLOR_B }} />{otro.nombre}</span>
+                    </div>
+                    <div className="divide-y divide-gray-700">
+                        {filas.map((f) => {
+                            const dif = f.a !== null && f.b !== null ? Math.round((f.a - f.b) * 10) / 10 : null;
+                            return (
+                                <div key={f.label} className="py-3 grid grid-cols-1 md:grid-cols-[14rem_1fr_5rem] gap-x-4 gap-y-1 items-center">
+                                    <span className={`text-sm ${f.fuerte ? 'text-white font-semibold' : 'text-gray-200'}`}>{f.label}</span>
+                                    <div className="space-y-1">{barra(f.a, COLOR_A)}{barra(f.b, COLOR_B)}</div>
+                                    <span className={`text-sm font-semibold md:text-right ${dif === null ? 'text-gray-500' : dif > 0 ? 'text-green-400' : dif < 0 ? 'text-red-400' : 'text-gray-300'}`} title="Diferencia de este jugador contra el comparado">
+                                        {dif === null ? 'sin dato' : `${dif > 0 ? '+' : ''}${dif.toFixed(1)}`}
+                                    </span>
+                                </div>
+                            );
+                        })}
+                    </div>
+                    <p className="text-[11px] text-gray-500">La columna de la derecha es la diferencia de este jugador contra el comparado: en verde va arriba, en rojo va abajo.</p>
+                </>
+            )}
+        </div>
+    );
+};
+
 const ScoutingPage: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -289,6 +502,8 @@ const ScoutingPage: React.FC = () => {
     const [jugadoresEquipo, setJugadoresEquipo] = useState<JugadorEquipo[]>([]);
 
     const [vista, setVista] = useState<'lista' | 'ficha'>('lista');
+    // Dentro de la lista: las fichas, o el reporte ejecutivo (la cancha con los 3 mejores por puesto).
+    const [vistaLista, setVistaLista] = useState<'fichas' | 'reporte'>('fichas');
     const [busqueda, setBusqueda] = useState('');
     const [filtroPuesto, setFiltroPuesto] = useState('');
 
@@ -458,6 +673,14 @@ const ScoutingPage: React.FC = () => {
 
                 {error && <div className="bg-red-900/40 border border-red-800 text-red-300 rounded-lg p-3 text-sm">{error}</div>}
 
+                <div className="flex flex-wrap gap-2">
+                    <button onClick={() => setVistaLista('fichas')} className={`px-3 py-2 rounded-lg text-sm transition-colors ${vistaLista === 'fichas' ? 'bg-white text-gray-900 font-semibold' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>Fichas</button>
+                    <button onClick={() => setVistaLista('reporte')} className={`px-3 py-2 rounded-lg text-sm transition-colors ${vistaLista === 'reporte' ? 'bg-white text-gray-900 font-semibold' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>Reporte ejecutivo de scouting</button>
+                </div>
+
+                {vistaLista === 'reporte' ? (
+                    <ReporteEjecutivo lista={lista} onAbrir={abrirFicha} />
+                ) : (<>
                 <div className="flex flex-wrap gap-3">
                     <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar por nombre, equipo o competición" className={`${inputCls} max-w-sm`} />
                     <select value={filtroPuesto} onChange={(e) => setFiltroPuesto(e.target.value)} className={`${inputCls} max-w-[200px]`}>
@@ -505,6 +728,7 @@ const ScoutingPage: React.FC = () => {
                         })}
                     </div>
                 )}
+                </>)}
             </div>
         );
     }
@@ -733,6 +957,9 @@ const ScoutingPage: React.FC = () => {
                     </div>
                 </div>
             )}
+
+            {/* ─────────── Pestaña: Comparación ─────────── */}
+            {pestana === 'comparacion' && <ComparacionJugador ficha={ficha} lista={lista} />}
 
             {/* ─────────── Pestaña: Valoración final ─────────── */}
             {pestana === 'valoracion' && (
