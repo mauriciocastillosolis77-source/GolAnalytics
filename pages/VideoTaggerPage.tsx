@@ -152,14 +152,20 @@ const VideoTaggerPage: React.FC = () => {
     const isAnyAnalysisRunning = isGeminiAnalyzing || isCustomAnalyzing || isBatchAnalyzing || isSegmentAnalyzing;
 
     // Filtrar jugadores por equipo del partido seleccionado
+    // Los jugadores marcados como inactivos (desde su ficha en Scouting) ya no
+    // se muestran — salvo en un partido donde sí tienen jugadas o alineación,
+    // para poder seguir corrigiendo partidos viejos en los que jugaron.
     const filteredPlayers = useMemo(() => {
-        if (!selectedMatchId) return [...players].sort((a, b) => a.numero - b.numero);
+        const conJugadas = new Set(tags.map(t => t.player_id));
+        const visible = (p: Player) => p.activo !== false || conJugadas.has(p.id) || !!estatusPorJugador[p.id]?.estatus;
+        const lista = players.filter(visible);
+        if (!selectedMatchId) return lista.sort((a, b) => a.numero - b.numero);
         const selectedMatch = matches.find(m => m.id === selectedMatchId);
-        if (!selectedMatch?.team_id) return [...players].sort((a, b) => a.numero - b.numero);
-        return players
+        if (!selectedMatch?.team_id) return lista.sort((a, b) => a.numero - b.numero);
+        return lista
             .filter(p => p.team_id === selectedMatch.team_id)
             .sort((a, b) => a.numero - b.numero);
-    }, [players, selectedMatchId, matches]);
+    }, [players, selectedMatchId, matches, tags, estatusPorJugador]);
 
     // Filtro de la lista "Jugadas Etiquetadas". Es solo de vista: no cambia `tags` ni lo que se guarda.
     const [filtroAccion, setFiltroAccion] = useState<string>('');
