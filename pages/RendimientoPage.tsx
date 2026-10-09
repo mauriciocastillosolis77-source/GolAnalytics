@@ -7,7 +7,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { ACTION_GROUPS } from '../constants/actionGroups';
 import { analyzePlayerPerformance, type PerformanceAnalysis } from '../services/geminiPerformanceService';
 import { getCachedAnalysis, saveAnalysis, getPlayerAnalysisHistory, formatHistoryDate } from '../services/analysisHistoryService';
-import { exportPlayerAnalysisToPDF } from '../services/pdfExportService';
+import { exportPlayerAnalysisToPDF, exportMinutosEquipoToPDF } from '../services/pdfExportService';
 import { cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios, esJugadorFicticio, calcularPorcentajeAtajadas, ACCIONES_FUERA_DE_EFECTIVIDAD } from '../utils/efectividad';
 import MapaZonas from '../components/charts/MapaZonas';
 import GolesPorTipo from '../components/charts/GolesPorTipo';
@@ -15,7 +15,7 @@ import MapaPorteria from '../components/charts/MapaPorteria';
 import { esAccionBalonParado, contarPenales, PENAL_FAVOR, PENAL_CONTRA } from '../utils/balonParado';
 import type { PlayerMatchStatus } from '../types';
 import { fetchEstatusPorPartidos } from '../services/asistenciaService';
-import { calcularMinutosPorPartidos } from '../services/minutosService';
+import { calcularResumenMinutos, type ResumenMinutos } from '../services/minutosService';
 
 const RendimientoPage: React.FC = () => {
     const { profile } = useAuth();
@@ -162,20 +162,29 @@ const RendimientoPage: React.FC = () => {
     // Minutos jugados calculados (no capturados) — uno por jugador, sumado
     // sobre todos los partidos dentro del filtro actual.
     const [minutosMap, setMinutosMap] = useState<Record<string, number>>({});
+    // Mismo cálculo, con más detalle: partidos jugados, de titular, de suplente
+    // y los minutos posibles del periodo (para el % de minutos y el PDF del DT).
+    const RESUMEN_VACIO: ResumenMinutos = { porJugador: {}, minutosPosibles: 0, partidosConsiderados: 0, partidosSinDatos: 0 };
+    const [resumenMinutos, setResumenMinutos] = useState<ResumenMinutos>(RESUMEN_VACIO);
+    const [exportandoMinutos, setExportandoMinutos] = useState(false);
     const [mostrarTablaEquipo, setMostrarTablaEquipo] = useState(false);
     useEffect(() => {
         let cancelado = false;
         (async () => {
             try {
                 const ids = Array.from(filteredMatchIds);
-                const [rows, minutos] = await Promise.all([
+                const [rows, resumen] = await Promise.all([
                     fetchEstatusPorPartidos(ids),
-                    calcularMinutosPorPartidos(ids),
+                    calcularResumenMinutos(ids),
                 ]);
-                if (!cancelado) { setEstatusRows(rows); setMinutosMap(minutos); }
+                if (!cancelado) {
+                    const minutos: Record<string, number> = {};
+                    Object.entries(resumen.porJugador).forEach(([id, j]) => { minutos[id] = j.minutos; });
+                    setEstatusRows(rows); setMinutosMap(minutos); setResumenMinutos(resumen);
+                }
             } catch (err) {
                 console.error('No se pudo cargar alineación/minutos:', err);
-                if (!cancelado) { setEstatusRows([]); setMinutosMap({}); }
+                if (!cancelado) { setEstatusRows([]); setMinutosMap({}); setResumenMinutos(RESUMEN_VACIO); }
             }
         })();
         return () => { cancelado = true; };
@@ -558,9 +567,42 @@ const RendimientoPage: React.FC = () => {
             const lesion = filas.filter(r => r.estatus === 'lesionado').length;
             const noConvocado = filas.filter(r => r.estatus === 'no_convocado').length;
             const falta = filas.filter(r => r.estatus === 'falta').length;
-            return { jugador: p.nombre, minutos, lesion, noConvocado, falta };
-        }).sort((a, b) => b.minutos - a.minutos);
-    }, [filteredPlayers, estatusRows, minutosMap]);
+            const r = resumenMinutos.porJugador[p.id];
+            const pctMinutos = resumenMinutos.minutosPosibles > 0 ? Math.round((minutos / resumenMinutos.minutosPosibles) * 100) : null;
+            return { id: p.id, jugador: p.nombre, numero: p.numero, minutos, pj: r?.pj || 0, titular: r?.titular || 0, suplente: r?.suplente || 0, pctMinutos, lesion, noConvocado, falta };
+        }).sort((a, b) => b.minutos - a.minutos || b.pj - a.pj || a.jugador.localeCompare(b.jugador));
+    }, [filteredPlayers, estatusRows, minutosMap, resumenMinutos]);
+
+    // PDF para el DT: la misma tabla, con el filtro que esté puesto en este momento.
+    const handleExportMinutosPdf = async () => {
+        setExportandoMinutos(true);
+        try {
+            const equipos = Array.from(new Set(filteredMatches.map(m => m.nombre_equipo))).filter(Boolean);
+            const torneos = Array.from(new Set(filteredMatches.map(m => m.torneo))).filter(Boolean);
+            const jornadas = filteredMatches.map(m => m.jornada).filter(j => typeof j === 'number');
+            const jMin = jornadas.length ? Math.min(...jornadas) : null;
+            const jMax = jornadas.length ? Math.max(...jornadas) : null;
+            const periodo = [
+                torneos.length === 1 ? torneos[0] : torneos.length > 1 ? `${torneos.length} torneos (${torneos.join(', ')})` : 'Sin partidos',
+                filters.categoria ? `Categoría ${filters.categoria}` : '',
+                jMin === null ? '' : jMin === jMax ? `Jornada ${jMin}` : `Jornadas ${jMin} a ${jMax}`,
+            ].filter(Boolean).join('  ·  ');
+            await exportMinutosEquipoToPDF(tablaEquipoMinutos, {
+                periodo,
+                partidosConsiderados: resumenMinutos.partidosConsiderados,
+                partidosSinDatos: resumenMinutos.partidosSinDatos,
+                minutosPosibles: resumenMinutos.minutosPosibles,
+            }, {
+                userName: profile?.username || 'Mauricio Castillo — Analista Táctico y de Rendimiento',
+                teamName: equipos.length === 1 ? equipos[0] : (filters.equipo || 'Equipo'),
+            });
+        } catch (err) {
+            console.error('No se pudo generar el PDF de minutos:', err);
+            alert('No se pudo generar el PDF de minutos. Intenta de nuevo.');
+        } finally {
+            setExportandoMinutos(false);
+        }
+    };
 
     const selectedPlayer = players.find(p => p.id === selectedPlayerId);
 
@@ -1594,11 +1636,30 @@ const RendimientoPage: React.FC = () => {
                 </button>
                 {mostrarTablaEquipo && (
                     <div className="mt-3 overflow-x-auto">
+                        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+                            <div className="text-xs text-gray-400">
+                                <p>Acumulado de los partidos del filtro actual: {resumenMinutos.partidosConsiderados} partido{resumenMinutos.partidosConsiderados === 1 ? '' : 's'} · {resumenMinutos.minutosPosibles} minutos posibles.</p>
+                                {resumenMinutos.partidosSinDatos > 0 && (
+                                    <p className="text-amber-400">{resumenMinutos.partidosSinDatos} partido{resumenMinutos.partidosSinDatos === 1 ? '' : 's'} del filtro no entra{resumenMinutos.partidosSinDatos === 1 ? '' : 'n'} al cálculo (sin alineación o sin duración de video).</p>
+                                )}
+                            </div>
+                            <button
+                                onClick={handleExportMinutosPdf}
+                                disabled={exportandoMinutos || tablaEquipoMinutos.length === 0}
+                                className="bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white text-sm font-semibold py-2 px-4 rounded-md"
+                            >
+                                {exportandoMinutos ? 'Generando…' : 'Descargar PDF para el DT'}
+                            </button>
+                        </div>
                         <table className="w-full text-sm">
                             <thead>
                                 <tr className="text-left text-gray-400 border-b border-gray-700">
                                     <th className="py-2 pr-4">Jugador</th>
+                                    <th className="py-2 pr-4" title="Partidos en los que jugó, de inicio o de cambio">PJ</th>
+                                    <th className="py-2 pr-4" title="Partidos que inició">Titular</th>
+                                    <th className="py-2 pr-4" title="Partidos en los que entró de cambio">Suplente</th>
                                     <th className="py-2 pr-4">Minutos</th>
+                                    <th className="py-2 pr-4" title="Minutos jugados entre los minutos posibles del periodo">% de minutos</th>
                                     <th className="py-2 pr-4">Lesión</th>
                                     <th className="py-2 pr-4">No convocado</th>
                                     <th className="py-2 pr-4">Falta</th>
@@ -1606,9 +1667,13 @@ const RendimientoPage: React.FC = () => {
                             </thead>
                             <tbody>
                                 {tablaEquipoMinutos.map(row => (
-                                    <tr key={row.jugador} className="border-b border-gray-700/50">
+                                    <tr key={row.id} className="border-b border-gray-700/50">
                                         <td className="py-2 pr-4 text-white">{row.jugador}</td>
-                                        <td className="py-2 pr-4 text-gray-200">{row.minutos}</td>
+                                        <td className="py-2 pr-4 text-gray-200">{row.pj}</td>
+                                        <td className="py-2 pr-4 text-gray-200">{row.titular}</td>
+                                        <td className="py-2 pr-4 text-gray-200">{row.suplente}</td>
+                                        <td className="py-2 pr-4 text-gray-200 font-semibold">{row.minutos}</td>
+                                        <td className="py-2 pr-4 text-gray-200">{row.pctMinutos === null ? '–' : `${row.pctMinutos}%`}</td>
                                         <td className="py-2 pr-4 text-gray-200">{row.lesion}</td>
                                         <td className="py-2 pr-4 text-gray-200">{row.noConvocado}</td>
                                         <td className="py-2 pr-4 text-gray-200">{row.falta}</td>
