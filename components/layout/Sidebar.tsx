@@ -4,6 +4,13 @@ import { useAuth } from '../../contexts/AuthContext';
 import { ROLES } from '../../constants';
 import { DashboardIcon, Logo, TaggerIcon, UsersIcon, RendimientoIcon, TacticalIcon, ScoutIcon, ReportIcon, ModeloIcon } from '../ui/Icons';
 
+// Ícono de "Scouting" (persona con lupa). Va aquí y no en Icons.tsx para no tocar ese archivo.
+const ScoutingIcon: React.FC = () => (
+  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 11a4 4 0 100-8 4 4 0 000 8zM3 21v-1a6 6 0 016-6h1.5M17.5 19a2.5 2.5 0 100-5 2.5 2.5 0 000 5zM21 21l-1.7-1.7"></path>
+  </svg>
+);
+
 const _forceTailwindClasses = ["translate-x-0", "-translate-x-64"];
 
 const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) => void }> = ({ sidebarOpen, setSidebarOpen }) => {
@@ -147,6 +154,16 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
               >
                 <ReportIcon />
                 <span className="ml-3">Análisis Ejecutivo Post Partido</span>
+              </NavLink>
+              <NavLink
+                to="/scouting"
+                className={({ isActive }) =>
+                  `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
+                }
+                onClick={() => setSidebarOpen(false)}
+              >
+                <ScoutingIcon />
+                <span className="ml-3">Scouting</span>
               </NavLink>
             </>
           )}
