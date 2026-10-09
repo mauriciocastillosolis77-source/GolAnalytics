@@ -4,8 +4,10 @@ import { esJugadorFicticio } from '../utils/efectividad';
 import {
     SECCIONES, PUESTOS, TIPOS_JUGADOR, PIERNAS, VALORACIONES, FICHA_VACIA,
     puestoLabel, valoracionDe, mediaSeccion, mediaGeneral, lineasCalificadas, edadDe, reducirFoto,
-    type ScoutingPlayer, type SeccionClave, type ValoracionFinal,
+    PARTICIPACION_LABEL, PARTICIPACIONES_MANUALES, sumarNumeros, agruparNumeros,
+    type ScoutingPlayer, type SeccionClave, type ValoracionFinal, type PartidoJugador, type Participacion,
 } from '../utils/scouting';
+import { fetchNumerosJugador, guardarPartidoManual, eliminarPartidoManual, guardarTarjetas, type PartidoManual } from '../services/scoutingStatsService';
 import {
     fetchScoutingPlayers, fetchScoutingPlayer, guardarScoutingPlayer, eliminarScoutingPlayer,
     fetchJugadoresEquipo, setJugadorActivo,
@@ -20,15 +22,17 @@ import {
 //    el interruptor Activo/Inactivo.
 // Scouting y etiquetado son cosas distintas: un jugador de otro equipo que se
 // registra aquí NUNCA aparece en el Etiquetador (vive en otra tabla).
-// Pendiente para siguientes entregas: números por jornada/mes/torneo,
-// comparación, cancha ejecutiva y exportaciones.
+// Entrega 2: pestaña "Números" (por jornada, mes o torneo). Los jugadores de mi
+// equipo la llenan con el etiquetado; los de otros equipos se capturan a mano.
+// Pendiente para siguientes entregas: comparación, cancha ejecutiva y exportaciones.
 // ─────────────────────────────────────────────────────────────────────────────
 
 type Borrador = Omit<ScoutingPlayer, 'id'> & { id?: string };
-type Pestana = 'datos' | SeccionClave | 'valoracion';
+type Pestana = 'datos' | 'numeros' | SeccionClave | 'valoracion';
 
 const PESTANAS: Array<{ clave: Pestana; label: string }> = [
     { clave: 'datos', label: 'Datos' },
+    { clave: 'numeros', label: 'Números' },
     ...SECCIONES.map((s) => ({ clave: s.clave as Pestana, label: s.corto })),
     { clave: 'valoracion', label: 'Valoración final' },
 ];
@@ -53,6 +57,230 @@ const ChipMedia: React.FC<{ valor: number | null; grande?: boolean }> = ({ valor
         {valor === null ? '–' : valor.toFixed(1)}
     </span>
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pestaña "Números": minutos, partidos, goles, asistencias y tarjetas del
+// jugador, vistos por jornada, por mes o por torneo.
+// ─────────────────────────────────────────────────────────────────────────────
+const PARTIDO_VACIO: PartidoManual = { fecha: null, torneo: null, jornada: null, rival: null, estatus: 'titular', minutos: 0, goles: 0, asistencias: 0, amarillas: 0, rojas: 0 };
+const fechaCorta = (f: string | null) => (f ? new Date(f + 'T00:00:00').toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
+const COLS_TOTALES: Array<{ k: 'pj' | 'titular' | 'suplente' | 'minutos' | 'goles' | 'asistencias' | 'amarillas' | 'rojas'; t: string; titulo: string }> = [
+    { k: 'pj', t: 'PJ', titulo: 'Partidos jugados' }, { k: 'titular', t: 'TIT', titulo: 'De titular' }, { k: 'suplente', t: 'SUP', titulo: 'Entrando de cambio' },
+    { k: 'minutos', t: 'MIN', titulo: 'Minutos' }, { k: 'goles', t: 'GOL', titulo: 'Goles' }, { k: 'asistencias', t: 'ASIS', titulo: 'Asistencias' },
+    { k: 'amarillas', t: 'TA', titulo: 'Tarjetas amarillas' }, { k: 'rojas', t: 'TR', titulo: 'Tarjetas rojas' },
+];
+
+const NumerosJugador: React.FC<{ fichaId?: string; playerId: string | null; competicion: string | null }> = ({ fichaId, playerId, competicion }) => {
+    const [filas, setFilas] = useState<PartidoJugador[]>([]);
+    const [cargando, setCargando] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [modo, setModo] = useState<'jornada' | 'mes' | 'torneo'>('jornada');
+    const [form, setForm] = useState<PartidoManual | null>(null);
+    const [guardando, setGuardando] = useState(false);
+    const [tarjetaOk, setTarjetaOk] = useState<string | null>(null);
+    const esEquipo = !!playerId;
+
+    const cargar = async () => {
+        if (!fichaId) return;
+        setCargando(true); setError(null);
+        try {
+            setFilas(await fetchNumerosJugador(fichaId, playerId));
+        } catch (err: any) {
+            setError(err?.message || 'No se pudieron cargar los números.');
+        } finally {
+            setCargando(false);
+        }
+    };
+    useEffect(() => { setForm(null); if (fichaId) cargar(); else setFilas([]); }, [fichaId, playerId]);
+
+    if (!fichaId) {
+        return <div className="bg-gray-800 rounded-lg p-6 text-sm text-gray-400">Guarda la ficha primero; después aquí aparecen o se capturan los números del jugador.</div>;
+    }
+
+    const total = sumarNumeros('Total', filas);
+    const grupos = modo === 'jornada' ? [] : agruparNumeros(filas, modo);
+    const num = (v: string) => { const x = parseInt(v, 10); return isNaN(x) || x < 0 ? 0 : x; };
+
+    const guardarPartido = async () => {
+        if (!form) return;
+        setGuardando(true); setError(null);
+        try {
+            await guardarPartidoManual(fichaId, form);
+            setForm(null);
+            await cargar();
+        } catch (err: any) {
+            setError(err?.message || 'No se pudo guardar el partido.');
+        } finally {
+            setGuardando(false);
+        }
+    };
+
+    const borrarPartido = async (f: PartidoJugador) => {
+        if (!f.id || !window.confirm(`¿Eliminar el partido${f.rival ? ` contra ${f.rival}` : ''} de los números de este jugador?`)) return;
+        try { await eliminarPartidoManual(f.id); await cargar(); }
+        catch (err: any) { setError(err?.message || 'No se pudo eliminar el partido.'); }
+    };
+
+    const cambiarTarjeta = async (f: PartidoJugador, campo: 'amarillas' | 'rojas', valor: number) => {
+        if (!f.match_id || f[campo] === valor) return;
+        const nuevo = { ...f, [campo]: valor };
+        try {
+            await guardarTarjetas(fichaId, f.match_id, nuevo.amarillas, nuevo.rojas);
+            setFilas((fs) => fs.map((x) => (x.key === f.key ? nuevo : x)));
+            setTarjetaOk(f.key); setTimeout(() => setTarjetaOk((k) => (k === f.key ? null : k)), 2000);
+        } catch (err: any) {
+            setError(err?.message || 'No se pudieron guardar las tarjetas.');
+        }
+    };
+
+    const th = 'py-2 px-2 text-center font-medium';
+    const td = 'py-2 px-2 text-center text-gray-200';
+
+    return (
+        <div className="bg-gray-800 rounded-lg p-4 space-y-4">
+            <div className="flex items-start justify-between flex-wrap gap-3">
+                <div>
+                    <h2 className="text-lg font-semibold text-white">Números del jugador</h2>
+                    <p className="text-xs text-gray-400 max-w-2xl">
+                        {esEquipo
+                            ? 'Se calculan solos con lo que etiquetas: minutos, titular o suplente, goles y asistencias. Las tarjetas las escribes tú en cada partido.'
+                            : 'Como es de otro equipo, sus partidos se capturan a mano.'}
+                    </p>
+                </div>
+                <div className="flex items-center gap-2">
+                    {(['jornada', 'mes', 'torneo'] as const).map((m) => (
+                        <button key={m} onClick={() => setModo(m)} className={`px-3 py-1.5 rounded-lg text-sm ${modo === m ? 'bg-cyan-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>
+                            {m === 'jornada' ? 'Por jornada' : m === 'mes' ? 'Por mes' : 'Por torneo'}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            {error && <div className="bg-red-900/40 border border-red-800 text-red-300 rounded-lg p-3 text-sm">{error}</div>}
+
+            <div className="flex flex-wrap gap-2">
+                {COLS_TOTALES.map((c) => (
+                    <div key={c.k} title={c.titulo} className="bg-gray-900/60 rounded-md px-3 py-1.5 text-center min-w-[58px]">
+                        <p className="text-white font-bold text-base leading-tight">{total[c.k]}</p>
+                        <p className="text-[10px] text-gray-400">{c.t}</p>
+                    </div>
+                ))}
+            </div>
+
+            {!esEquipo && !form && (
+                <button onClick={() => setForm({ ...PARTIDO_VACIO, torneo: competicion })} className="bg-cyan-600 hover:bg-cyan-700 text-white font-semibold py-2 px-4 rounded-md text-sm">+ Agregar partido</button>
+            )}
+
+            {form && (
+                <div className="border border-cyan-700 rounded-lg p-3 space-y-3">
+                    <p className="text-sm font-semibold text-white">{form.id ? 'Editar partido' : 'Partido nuevo'}</p>
+                    <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                        <Campo label="Fecha"><input type="date" value={form.fecha || ''} onChange={(e) => setForm({ ...form, fecha: e.target.value || null })} className={inputCls} /></Campo>
+                        <Campo label="Torneo o liga"><input value={form.torneo || ''} onChange={(e) => setForm({ ...form, torneo: e.target.value || null })} className={inputCls} /></Campo>
+                        <Campo label="Jornada"><input type="number" min={0} value={form.jornada ?? ''} onChange={(e) => setForm({ ...form, jornada: e.target.value === '' ? null : num(e.target.value) })} className={inputCls} /></Campo>
+                        <Campo label="Rival" className="col-span-2 md:col-span-1 lg:col-span-2"><input value={form.rival || ''} onChange={(e) => setForm({ ...form, rival: e.target.value || null })} className={inputCls} /></Campo>
+                        <Campo label="Participación">
+                            <select value={form.estatus} onChange={(e) => setForm({ ...form, estatus: e.target.value as Participacion, ...(e.target.value === 'no_jugo' ? { minutos: 0 } : {}) })} className={inputCls}>
+                                {PARTICIPACIONES_MANUALES.map((x) => <option key={x} value={x}>{PARTICIPACION_LABEL[x]}</option>)}
+                            </select>
+                        </Campo>
+                        <Campo label="Minutos"><input type="number" min={0} value={form.minutos} disabled={form.estatus === 'no_jugo'} onChange={(e) => setForm({ ...form, minutos: num(e.target.value) })} className={`${inputCls} disabled:opacity-50`} /></Campo>
+                        <Campo label="Goles"><input type="number" min={0} value={form.goles} onChange={(e) => setForm({ ...form, goles: num(e.target.value) })} className={inputCls} /></Campo>
+                        <Campo label="Asistencias"><input type="number" min={0} value={form.asistencias} onChange={(e) => setForm({ ...form, asistencias: num(e.target.value) })} className={inputCls} /></Campo>
+                        <Campo label="Amarillas"><input type="number" min={0} value={form.amarillas} onChange={(e) => setForm({ ...form, amarillas: num(e.target.value) })} className={inputCls} /></Campo>
+                        <Campo label="Rojas"><input type="number" min={0} value={form.rojas} onChange={(e) => setForm({ ...form, rojas: num(e.target.value) })} className={inputCls} /></Campo>
+                    </div>
+                    <div className="flex gap-2">
+                        <button onClick={guardarPartido} disabled={guardando} className="bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600 text-white font-semibold py-2 px-4 rounded-md text-sm">{guardando ? 'Guardando…' : 'Guardar partido'}</button>
+                        <button onClick={() => setForm(null)} disabled={guardando} className="bg-gray-700 hover:bg-gray-600 text-gray-200 py-2 px-4 rounded-md text-sm">Cancelar</button>
+                    </div>
+                </div>
+            )}
+
+            {cargando ? (
+                <div className="flex justify-center py-6"><Spinner /></div>
+            ) : filas.length === 0 ? (
+                <p className="text-sm text-gray-500">
+                    {esEquipo ? 'Todavía no hay partidos con alineación, goles o asistencias de este jugador.' : 'Todavía no hay partidos capturados.'}
+                </p>
+            ) : modo === 'jornada' ? (
+                <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                        <thead>
+                            <tr className="text-xs text-gray-400 border-b border-gray-700">
+                                <th className="py-2 px-2 text-left font-medium">Fecha</th>
+                                <th className="py-2 px-2 text-left font-medium">Torneo</th>
+                                <th className={th}>J</th>
+                                <th className="py-2 px-2 text-left font-medium">Rival</th>
+                                <th className="py-2 px-2 text-left font-medium">Participación</th>
+                                <th className={th}>MIN</th><th className={th}>GOL</th><th className={th}>ASIS</th><th className={th}>TA</th><th className={th}>TR</th>
+                                {!esEquipo && <th className={th}></th>}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {filas.map((f) => (
+                                <tr key={f.key} className="border-b border-gray-700/50">
+                                    <td className="py-2 px-2 text-gray-300 whitespace-nowrap">{fechaCorta(f.fecha)}</td>
+                                    <td className="py-2 px-2 text-gray-300">{f.torneo || '—'}</td>
+                                    <td className={td}>{f.jornada ?? '—'}</td>
+                                    <td className="py-2 px-2 text-white">{f.rival || '—'}</td>
+                                    <td className="py-2 px-2 text-gray-300">{f.participacion ? PARTICIPACION_LABEL[f.participacion] : 'Sin alineación capturada'}</td>
+                                    <td className={`${td} font-semibold`}>{f.minutos}</td>
+                                    <td className={td}>{f.goles}</td>
+                                    <td className={td}>{f.asistencias}</td>
+                                    {esEquipo ? (
+                                        <>
+                                            <td className={td}><input type="number" min={0} aria-label={`Amarillas vs ${f.rival}`} key={`${f.key}-a-${f.amarillas}`} defaultValue={f.amarillas} onBlur={(e) => cambiarTarjeta(f, 'amarillas', num(e.target.value))} className="w-14 bg-gray-700 text-white text-center rounded px-1 py-1 border border-gray-600 focus:border-cyan-500 focus:outline-none" /></td>
+                                            <td className={td}>
+                                                <span className="inline-flex items-center gap-1">
+                                                    <input type="number" min={0} aria-label={`Rojas vs ${f.rival}`} key={`${f.key}-r-${f.rojas}`} defaultValue={f.rojas} onBlur={(e) => cambiarTarjeta(f, 'rojas', num(e.target.value))} className="w-14 bg-gray-700 text-white text-center rounded px-1 py-1 border border-gray-600 focus:border-cyan-500 focus:outline-none" />
+                                                    <span className={`text-green-400 text-xs w-3 ${tarjetaOk === f.key ? '' : 'invisible'}`}>✓</span>
+                                                </span>
+                                            </td>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <td className={td}>{f.amarillas}</td>
+                                            <td className={td}>{f.rojas}</td>
+                                            <td className="py-2 px-2 text-right whitespace-nowrap">
+                                                <button onClick={() => setForm({ id: f.id, fecha: f.fecha, torneo: f.torneo || null, jornada: f.jornada, rival: f.rival || null, estatus: (f.participacion as Participacion) || 'titular', minutos: f.minutos, goles: f.goles, asistencias: f.asistencias, amarillas: f.amarillas, rojas: f.rojas })} className="text-xs text-cyan-300 hover:underline mr-3">Editar</button>
+                                                <button onClick={() => borrarPartido(f)} className="text-xs text-red-300 hover:underline">Eliminar</button>
+                                            </td>
+                                        </>
+                                    )}
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                    {esEquipo && <p className="text-[11px] text-gray-500 mt-2">Las tarjetas se guardan solas al salir de la casilla.</p>}
+                </div>
+            ) : (
+                <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                        <thead>
+                            <tr className="text-xs text-gray-400 border-b border-gray-700">
+                                <th className="py-2 px-2 text-left font-medium">{modo === 'mes' ? 'Mes' : 'Torneo'}</th>
+                                {COLS_TOTALES.map((c) => <th key={c.k} className={th} title={c.titulo}>{c.t}</th>)}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {grupos.map((g) => (
+                                <tr key={g.etiqueta} className="border-b border-gray-700/50">
+                                    <td className={`py-2 px-2 text-white ${modo === 'mes' ? 'capitalize' : ''}`}>{g.etiqueta}</td>
+                                    {COLS_TOTALES.map((c) => <td key={c.k} className={td}>{g[c.k]}</td>)}
+                                </tr>
+                            ))}
+                            <tr className="font-semibold">
+                                <td className="py-2 px-2 text-white">Total</td>
+                                {COLS_TOTALES.map((c) => <td key={c.k} className="py-2 px-2 text-center text-white">{total[c.k]}</td>)}
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            )}
+        </div>
+    );
+};
 
 const ScoutingPage: React.FC = () => {
     const [loading, setLoading] = useState(true);
@@ -464,6 +692,9 @@ const ScoutingPage: React.FC = () => {
                     )}
                 </div>
             )}
+
+            {/* ─────────── Pestaña: Números ─────────── */}
+            {pestana === 'numeros' && <NumerosJugador fichaId={ficha.id} playerId={ficha.player_id} competicion={ficha.competicion} />}
 
             {/* ─────────── Pestañas de cualidades (1 a 10) ─────────── */}
             {seccionActiva && (
