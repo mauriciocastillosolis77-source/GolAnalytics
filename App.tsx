@@ -11,6 +11,7 @@ import RendimientoPage from './pages/RendimientoPage';
 import AnalisisTacticoPage from './pages/AnalisisTacticoPage';
 import AnalisisRivalPage from './pages/AnalisisRivalPage';
 import ModeloJuegoPage from './pages/ModeloJuegoPage';
+import ScoutingPage from './pages/ScoutingPage';
 import NotFoundPage from './pages/NotFoundPage';
 import Layout from './components/layout/Layout';
 import { Spinner } from './components/ui/Spinner';
@@ -62,6 +63,14 @@ const App: React.FC = () => {
               element={
                 <ProtectedRoute allowedRoles={[ROLES.ADMIN]}>
                   <Layout><AdminUsersPage /></Layout>
+                </ProtectedRoute>
+              } 
+            />
+            <Route 
+              path="/scouting" 
+              element={
+                <ProtectedRoute allowedRoles={[ROLES.ADMIN]}>
+                  <Layout><ScoutingPage /></Layout>
                 </ProtectedRoute>
               } 
             />
