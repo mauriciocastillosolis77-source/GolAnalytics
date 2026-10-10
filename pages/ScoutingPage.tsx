@@ -10,6 +10,8 @@ import {
     type ScoutingPlayer, type SeccionClave, type ValoracionFinal, type PartidoJugador, type Participacion,
 } from '../utils/scouting';
 import { fetchNumerosJugador, guardarPartidoManual, eliminarPartidoManual, guardarTarjetas, type PartidoManual } from '../services/scoutingStatsService';
+import { exportarScouting, medirFoto, type FiltrosReporte, type DatosJugadorExport } from '../services/scoutingExportService';
+import type { Idioma } from '../utils/scoutingI18n';
 import {
     fetchScoutingPlayers, fetchScoutingPlayer, guardarScoutingPlayer, eliminarScoutingPlayer,
     fetchJugadoresEquipo, setJugadorActivo,
@@ -28,7 +30,8 @@ import {
 // equipo la llenan con el etiquetado; los de otros equipos se capturan a mano.
 // Entrega 3: vista "Reporte ejecutivo de scouting" (cancha 4-4-2 con los 3
 // mejores de cada puesto) y pestaña "Comparación" en la ficha.
-// Pendiente: exportaciones a PDF y PowerPoint.
+// Entrega 4: exportaciones a PDF o PowerPoint, en español o inglés (informe
+// individual, varios jugadores, reporte ejecutivo, o reporte + jugadores).
 // ─────────────────────────────────────────────────────────────────────────────
 
 type Borrador = Omit<ScoutingPlayer, 'id'> & { id?: string };
@@ -303,10 +306,12 @@ const TituloPanel: React.FC<{ children: React.ReactNode }> = ({ children }) => (
     <div className="bg-gray-300 border-y-2 border-black px-2 py-1 text-xs font-black italic uppercase text-black text-center -skew-x-12"><span className="inline-block skew-x-12">{children}</span></div>
 );
 
-const ReporteEjecutivo: React.FC<{ lista: ScoutingPlayerLista[]; onAbrir: (id: string) => void }> = ({ lista, onAbrir }) => {
-    const [competicion, setCompeticion] = useState('');
-    const [tipo, setTipo] = useState('');
-    const [equipo, setEquipo] = useState<'' | 'mio' | 'otros'>('');
+const ReporteEjecutivo: React.FC<{ lista: ScoutingPlayerLista[]; onAbrir: (id: string) => void; filtros: FiltrosReporte; onFiltros: (f: FiltrosReporte) => void }> = ({ lista, onAbrir, filtros, onFiltros }) => {
+    // Los filtros viven en la página: son los mismos con los que se exporta el reporte.
+    const { competicion, tipo, equipo } = filtros;
+    const setCompeticion = (v: string) => onFiltros({ ...filtros, competicion: v });
+    const setTipo = (v: string) => onFiltros({ ...filtros, tipo: v });
+    const setEquipo = (v: '' | 'mio' | 'otros') => onFiltros({ ...filtros, equipo: v });
 
     // Las competiciones salen de lo que se haya escrito en las fichas (sin repetir por mayúsculas o espacios).
     const competiciones = useMemo(() => {
@@ -418,11 +423,10 @@ const ReporteEjecutivo: React.FC<{ lista: ScoutingPlayerLista[]; onAbrir: (id: s
 // mismo puesto. Por defecto, contra el mejor jugador de mi equipo en ese puesto
 // ("nuestro mejor jugador en su puesto", como la plantilla).
 // ─────────────────────────────────────────────────────────────────────────────
-const ComparacionJugador: React.FC<{ ficha: Borrador; lista: ScoutingPlayerLista[] }> = ({ ficha, lista }) => {
+const ComparacionJugador: React.FC<{ ficha: Borrador; lista: ScoutingPlayerLista[]; elegidoId: string; onElegir: (id: string) => void }> = ({ ficha, lista, elegidoId, onElegir }) => {
     const candidatos = useMemo(() => ordenarPorPromedio(lista.filter((f) => f.id !== ficha.id && !!ficha.puesto && f.puesto === ficha.puesto)), [lista, ficha.id, ficha.puesto]);
     const mejorDeMiEquipo = candidatos.find((c) => !!c.player_id);
-    const [elegidoId, setElegidoId] = useState<string>('');
-    useEffect(() => { setElegidoId(''); }, [ficha.id, ficha.puesto]);
+    const setElegidoId = onElegir;
     const otro = candidatos.find((c) => c.id === elegidoId) || mejorDeMiEquipo;
 
     if (!ficha.puesto) {
@@ -495,6 +499,18 @@ const ComparacionJugador: React.FC<{ ficha: Borrador; lista: ScoutingPlayerLista
     );
 };
 
+const Segmento: React.FC<{ titulo: string; valor: string; opciones: Array<[string, string]>; onCambio: (v: string) => void }> = ({ titulo, valor, opciones, onCambio }) => (
+    <div>
+        <p className="text-xs font-medium text-gray-400 mb-1">{titulo}</p>
+        <div className="flex gap-1">
+            {opciones.map(([v, label]) => (
+                <button key={v} onClick={() => onCambio(v)} aria-pressed={valor === v}
+                    className={`px-3 py-1.5 rounded-md text-sm ${valor === v ? 'bg-cyan-600 text-white font-semibold' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>{label}</button>
+            ))}
+        </div>
+    </div>
+);
+
 const ScoutingPage: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -504,6 +520,18 @@ const ScoutingPage: React.FC = () => {
     const [vista, setVista] = useState<'lista' | 'ficha'>('lista');
     // Dentro de la lista: las fichas, o el reporte ejecutivo (la cancha con los 3 mejores por puesto).
     const [vistaLista, setVistaLista] = useState<'fichas' | 'reporte'>('fichas');
+    // Filtros del reporte ejecutivo (los usa la pantalla y la exportación).
+    const [filtrosReporte, setFiltrosReporte] = useState<FiltrosReporte>({ competicion: '', tipo: '', equipo: '' });
+    // Contra quién se compara el jugador abierto ('' = el mejor de mi equipo en su puesto).
+    const [comparadoId, setComparadoId] = useState('');
+    // Exportación
+    const [panelExport, setPanelExport] = useState<null | 'lista' | 'ficha'>(null);
+    const [expFormato, setExpFormato] = useState<'pdf' | 'pptx'>('pdf');
+    const [expIdioma, setExpIdioma] = useState<Idioma>('es');
+    const [expQue, setExpQue] = useState<'reporte' | 'reporte_jugadores' | 'jugadores'>('reporte');
+    const [expIds, setExpIds] = useState<string[]>([]);
+    const [exportando, setExportando] = useState(false);
+    const [avisoLista, setAvisoLista] = useState<{ tipo: 'ok' | 'error'; texto: string } | null>(null);
     const [busqueda, setBusqueda] = useState('');
     const [filtroPuesto, setFiltroPuesto] = useState('');
 
@@ -530,6 +558,9 @@ const ScoutingPage: React.FC = () => {
         }
     };
     useEffect(() => { cargar(); }, []);
+
+    // Si cambia el puesto, la comparación vuelve a su valor por defecto (el elegido era de otro puesto).
+    useEffect(() => { setComparadoId(''); }, [ficha.puesto]);
 
     const hayCambios = JSON.stringify(ficha) !== original;
     const jugadorLigado = ficha.player_id ? jugadoresEquipo.find((p) => p.id === ficha.player_id) : undefined;
@@ -558,7 +589,7 @@ const ScoutingPage: React.FC = () => {
 
     const abrirNueva = () => {
         setFicha(FICHA_VACIA); setOriginal(JSON.stringify(FICHA_VACIA));
-        setOrigenNuevo(''); setPestana('datos'); setAviso(null); setVista('ficha');
+        setOrigenNuevo(''); setPestana('datos'); setAviso(null); setComparadoId(''); setPanelExport(null); setVista('ficha');
     };
 
     const abrirFicha = async (id: string) => {
@@ -566,7 +597,7 @@ const ScoutingPage: React.FC = () => {
         try {
             const f = await fetchScoutingPlayer(id);
             setFicha(f); setOriginal(JSON.stringify(f));
-            setOrigenNuevo(f.player_id ? 'equipo' : 'otro'); setPestana('datos'); setVista('ficha');
+            setOrigenNuevo(f.player_id ? 'equipo' : 'otro'); setPestana('datos'); setComparadoId(''); setPanelExport(null); setVista('ficha');
         } catch (err: any) {
             setError(err?.message || 'No se pudo abrir la ficha.');
         } finally {
@@ -576,7 +607,7 @@ const ScoutingPage: React.FC = () => {
 
     const volver = () => {
         if (hayCambios && !window.confirm('Tienes cambios sin guardar en esta ficha. ¿Salir sin guardar?')) return;
-        setVista('lista'); setAviso(null);
+        setVista('lista'); setAviso(null); setPanelExport(null);
     };
 
     const elegirJugadorEquipo = (playerId: string) => {
@@ -646,6 +677,57 @@ const ScoutingPage: React.FC = () => {
         }
     };
 
+    // Contra quién se compara un jugador al exportar: el elegido en su pestaña
+    // Comparación o, si no se eligió, el mejor de mi equipo en su mismo puesto.
+    const comparadoPara = (f: { id?: string; puesto: string | null }, elegido?: string) => {
+        if (!f.puesto) return null;
+        const candidatos = ordenarPorPromedio(lista.filter((x) => x.id !== f.id && x.puesto === f.puesto));
+        const c = candidatos.find((x) => x.id === elegido) || candidatos.find((x) => !!x.player_id);
+        return c ? { nombre: c.nombre, cualidades: c.cualidades } : null;
+    };
+    const datosParaExportar = async (f: ScoutingPlayer, elegido?: string): Promise<DatosJugadorExport> => {
+        const [numeros, fotoDim] = await Promise.all([fetchNumerosJugador(f.id, f.player_id).catch(() => []), medirFoto(f.foto)]);
+        return { ficha: f, numeros, comparado: comparadoPara(f, elegido), fotoDim };
+    };
+    const resumenExport = (archivos: number, avisos: string[]) =>
+        [`Se ${archivos === 1 ? 'descargó 1 archivo' : `descargaron ${archivos} archivos`}.`, ...avisos].join(' ');
+
+    const exportarFicha = async () => {
+        if (!ficha.id) return;
+        setExportando(true); setAviso(null);
+        try {
+            const r = await exportarScouting({ formato: expFormato, idioma: expIdioma, jugadores: [await datosParaExportar(ficha as ScoutingPlayer, comparadoId)], archivoPorJugador: true });
+            setAviso({ tipo: r.avisos.length ? 'error' : 'ok', texto: resumenExport(r.archivos, r.avisos) });
+        } catch (err: any) {
+            setAviso({ tipo: 'error', texto: `No se pudo exportar. ${err?.message || ''}` });
+        } finally {
+            setExportando(false);
+        }
+    };
+
+    const exportarLista = async () => {
+        const llevaJugadores = expQue !== 'reporte';
+        if (llevaJugadores && expIds.length === 0) { setAvisoLista({ tipo: 'error', texto: 'Elige al menos un jugador para exportar.' }); return; }
+        setExportando(true); setAvisoLista(null);
+        try {
+            const jugadores: DatosJugadorExport[] = [];
+            if (llevaJugadores) {
+                // En el mismo orden en que se ven en la lista.
+                for (const id of lista.filter((x) => expIds.includes(x.id)).map((x) => x.id)) jugadores.push(await datosParaExportar(await fetchScoutingPlayer(id)));
+            }
+            const r = await exportarScouting({
+                formato: expFormato, idioma: expIdioma, jugadores,
+                reporte: expQue === 'jugadores' ? undefined : { jugadores: lista, filtros: filtrosReporte },
+                archivoPorJugador: expQue === 'jugadores',
+            });
+            setAvisoLista({ tipo: r.avisos.length ? 'error' : 'ok', texto: resumenExport(r.archivos, r.avisos) });
+        } catch (err: any) {
+            setAvisoLista({ tipo: 'error', texto: `No se pudo exportar. ${err?.message || ''}` });
+        } finally {
+            setExportando(false);
+        }
+    };
+
     const calificar = (seccion: SeccionClave, lineaClave: string, valor: number) => {
         setFicha((f) => {
             const sec = { ...(f.cualidades?.[seccion] || {}) };
@@ -668,10 +750,63 @@ const ScoutingPage: React.FC = () => {
                         <h1 className="text-2xl font-bold text-white">Scouting</h1>
                         <p className="text-gray-400 text-sm mt-1">Fichas de jugadores en seguimiento, de tu equipo o de cualquier otro. Es independiente del etiquetado.</p>
                     </div>
-                    <button onClick={abrirNueva} className="bg-cyan-600 hover:bg-cyan-700 text-white font-semibold py-2 px-4 rounded-md text-sm">+ Nuevo jugador</button>
+                    <div className="flex gap-2">
+                        <button onClick={() => { setPanelExport(panelExport === 'lista' ? null : 'lista'); setAvisoLista(null); }} disabled={lista.length === 0}
+                            className="bg-gray-700 hover:bg-gray-600 disabled:opacity-50 text-white font-semibold py-2 px-4 rounded-md text-sm">Exportar</button>
+                        <button onClick={abrirNueva} className="bg-cyan-600 hover:bg-cyan-700 text-white font-semibold py-2 px-4 rounded-md text-sm">+ Nuevo jugador</button>
+                    </div>
                 </div>
 
                 {error && <div className="bg-red-900/40 border border-red-800 text-red-300 rounded-lg p-3 text-sm">{error}</div>}
+
+                {panelExport === 'lista' && (
+                    <div className="bg-gray-800 border border-cyan-700 rounded-lg p-4 space-y-4" data-panel-exportar>
+                        <div className="flex items-center justify-between">
+                            <h2 className="text-lg font-semibold text-white">Exportar</h2>
+                            <button onClick={() => setPanelExport(null)} className="text-sm text-gray-400 hover:text-white">Cerrar</button>
+                        </div>
+                        <Segmento titulo="Qué exportar" valor={expQue} onCambio={(v) => setExpQue(v as typeof expQue)}
+                            opciones={[['reporte', 'Reporte ejecutivo'], ['reporte_jugadores', 'Reporte ejecutivo + jugadores'], ['jugadores', 'Solo jugadores']]} />
+                        <p className="text-xs text-gray-400 -mt-2">
+                            {expQue === 'reporte' && 'Una sola página con la cancha y los 3 mejores de cada puesto.'}
+                            {expQue === 'reporte_jugadores' && 'Un solo archivo: primero el reporte ejecutivo y después el informe de cada jugador elegido.'}
+                            {expQue === 'jugadores' && 'Un archivo por cada jugador elegido. Si son varios, el navegador puede pedirte permiso para descargar varios archivos.'}
+                        </p>
+                        {expQue !== 'jugadores' && (
+                            <p className="text-xs text-gray-400">
+                                Filtros del reporte: competición <span className="text-white">{filtrosReporte.competicion || 'Todas'}</span> · tipo de jugador <span className="text-white">{filtrosReporte.tipo || 'Todos'}</span> · equipo <span className="text-white">{filtrosReporte.equipo === 'mio' ? 'Mi equipo' : filtrosReporte.equipo === 'otros' ? 'Otros equipos' : 'Todos'}</span>. Se cambian en la vista "Reporte ejecutivo de scouting".
+                            </p>
+                        )}
+                        {expQue !== 'reporte' && (
+                            <div>
+                                <div className="flex items-center gap-3 mb-1">
+                                    <p className="text-xs font-medium text-gray-400">Jugadores ({expIds.length} de {lista.length})</p>
+                                    <button onClick={() => setExpIds(lista.map((x) => x.id))} className="text-xs text-cyan-300 hover:underline">Marcar todos</button>
+                                    <button onClick={() => setExpIds([])} className="text-xs text-cyan-300 hover:underline">Quitar todos</button>
+                                </div>
+                                <div className="max-h-52 overflow-y-auto grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-x-4 gap-y-1 bg-gray-900/40 rounded-md p-2">
+                                    {lista.map((x) => {
+                                        const g = mediaGeneral(x.cualidades);
+                                        return (
+                                            <label key={x.id} className="flex items-center gap-2 text-sm text-gray-200 cursor-pointer">
+                                                <input type="checkbox" checked={expIds.includes(x.id)} onChange={(e) => setExpIds(e.target.checked ? [...expIds, x.id] : expIds.filter((i) => i !== x.id))} />
+                                                <span className="truncate">{x.nombre}</span>
+                                                <span className="text-xs text-gray-500 shrink-0">{puestoLabel(x.puesto) || 'sin puesto'}{g.media !== null ? ` · ${g.media.toFixed(1)}` : ''}</span>
+                                            </label>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+                        )}
+                        <div className="flex flex-wrap items-end gap-5">
+                            <Segmento titulo="Formato" valor={expFormato} onCambio={(v) => setExpFormato(v as 'pdf' | 'pptx')} opciones={[['pdf', 'PDF'], ['pptx', 'PowerPoint']]} />
+                            <Segmento titulo="Idioma" valor={expIdioma} onCambio={(v) => setExpIdioma(v as Idioma)} opciones={[['es', 'Español'], ['en', 'English']]} />
+                            <button onClick={exportarLista} disabled={exportando} className="bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600 text-white font-semibold py-2 px-5 rounded-md text-sm">{exportando ? 'Generando…' : 'Descargar'}</button>
+                        </div>
+                        {expIdioma === 'en' && expQue !== 'reporte' && <p className="text-xs text-gray-500">En inglés, los textos que escribiste a mano (descripción, puntos fuertes…) se traducen con la IA: una consulta a Gemini por jugador la primera vez.</p>}
+                        {avisoLista && <div className={`rounded-lg p-3 text-sm border ${avisoLista.tipo === 'ok' ? 'bg-green-900/40 border-green-800 text-green-200' : 'bg-amber-900/40 border-amber-700 text-amber-200'}`}>{avisoLista.texto}</div>}
+                    </div>
+                )}
 
                 <div className="flex flex-wrap gap-2">
                     <button onClick={() => setVistaLista('fichas')} className={`px-3 py-2 rounded-lg text-sm transition-colors ${vistaLista === 'fichas' ? 'bg-white text-gray-900 font-semibold' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>Fichas</button>
@@ -679,7 +814,7 @@ const ScoutingPage: React.FC = () => {
                 </div>
 
                 {vistaLista === 'reporte' ? (
-                    <ReporteEjecutivo lista={lista} onAbrir={abrirFicha} />
+                    <ReporteEjecutivo lista={lista} onAbrir={abrirFicha} filtros={filtrosReporte} onFiltros={setFiltrosReporte} />
                 ) : (<>
                 <div className="flex flex-wrap gap-3">
                     <input value={busqueda} onChange={(e) => setBusqueda(e.target.value)} placeholder="Buscar por nombre, equipo o competición" className={`${inputCls} max-w-sm`} />
@@ -760,6 +895,7 @@ const ScoutingPage: React.FC = () => {
                 <div className="flex items-center gap-2">
                     {hayCambios && <span className="text-xs text-amber-400">Cambios sin guardar</span>}
                     {!esNueva && <button onClick={eliminar} disabled={guardando} className="px-3 py-2 rounded-md text-sm bg-gray-700 text-red-300 hover:bg-red-900/50 disabled:opacity-50">Eliminar</button>}
+                    {!esNueva && <button onClick={() => setPanelExport(panelExport === 'ficha' ? null : 'ficha')} className="px-3 py-2 rounded-md text-sm bg-gray-700 text-white hover:bg-gray-600">Exportar</button>}
                     <button onClick={guardar} disabled={guardando || faltaOrigen || (!hayCambios && !esNueva)}
                         className="bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold py-2 px-5 rounded-md text-sm">
                         {guardando ? 'Guardando…' : 'Guardar ficha'}
@@ -769,6 +905,24 @@ const ScoutingPage: React.FC = () => {
 
             {aviso && (
                 <div className={`rounded-lg p-3 text-sm border ${aviso.tipo === 'ok' ? 'bg-green-900/40 border-green-800 text-green-200' : 'bg-red-900/40 border-red-800 text-red-300'}`}>{aviso.texto}</div>
+            )}
+
+            {panelExport === 'ficha' && (
+                <div className="bg-gray-800 border border-cyan-700 rounded-lg p-4 space-y-3" data-panel-exportar>
+                    <div className="flex items-center justify-between">
+                        <h2 className="text-base font-semibold text-white">Exportar el informe de este jugador</h2>
+                        <button onClick={() => setPanelExport(null)} className="text-sm text-gray-400 hover:text-white">Cerrar</button>
+                    </div>
+                    <div className="flex flex-wrap items-end gap-5">
+                        <Segmento titulo="Formato" valor={expFormato} onCambio={(v) => setExpFormato(v as 'pdf' | 'pptx')} opciones={[['pdf', 'PDF'], ['pptx', 'PowerPoint']]} />
+                        <Segmento titulo="Idioma" valor={expIdioma} onCambio={(v) => setExpIdioma(v as Idioma)} opciones={[['es', 'Español'], ['en', 'English']]} />
+                        <button onClick={exportarFicha} disabled={exportando} className="bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600 text-white font-semibold py-2 px-5 rounded-md text-sm">{exportando ? 'Generando…' : 'Descargar'}</button>
+                    </div>
+                    <p className="text-xs text-gray-500">
+                        Sale lo que ves en pantalla{hayCambios ? ', incluidos los cambios que todavía no guardas' : ''}. La comparación es contra el jugador elegido en la pestaña Comparación.
+                        {expIdioma === 'en' && ' En inglés, los textos que escribiste a mano se traducen con la IA (una consulta a Gemini la primera vez).'}
+                    </p>
+                </div>
             )}
 
             {/* Resumen de medias: siempre visible, para ver el efecto de cada calificación */}
@@ -959,7 +1113,7 @@ const ScoutingPage: React.FC = () => {
             )}
 
             {/* ─────────── Pestaña: Comparación ─────────── */}
-            {pestana === 'comparacion' && <ComparacionJugador ficha={ficha} lista={lista} />}
+            {pestana === 'comparacion' && <ComparacionJugador ficha={ficha} lista={lista} elegidoId={comparadoId} onElegir={setComparadoId} />}
 
             {/* ─────────── Pestaña: Valoración final ─────────── */}
             {pestana === 'valoracion' && (
