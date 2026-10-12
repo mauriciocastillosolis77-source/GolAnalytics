@@ -4,6 +4,8 @@ import type { Match } from '../types';
 import { Spinner } from '../components/ui/Spinner';
 import { generateMatchReportPptx, mejorarRedaccionChecklist, previewEstiloDeJuego } from '../services/reportExportService';
 import { conModeloDeRespaldo, esErrorDeGemini, mensajeErrorGemini } from '../services/geminiConfig';
+import { SelectorIdioma } from '../components/ui/IdiomaExport';
+import { textosReportes, type Idioma } from '../utils/reportesI18n';
 import { leerTextoIAReporte, contarJugadasPartido } from '../services/reporteIAGuardadoService';
 import { Link } from 'react-router-dom';
 import { fetchPilares, fetchCalificacionesPartido, guardarCalificaciones } from '../services/modeloJuegoService';
@@ -27,6 +29,8 @@ const GenerarReportesPage: React.FC = () => {
   // mano, con un botón. Nunca se reintenta solo.
   const [genErrorEsGemini, setGenErrorEsGemini] = useState(false);
   const [genInfo, setGenInfo] = useState<string | null>(null);
+  // Idioma del PowerPoint (la pantalla siempre está en español; solo cambia el archivo).
+  const [idiomaReporte, setIdiomaReporte] = useState<Idioma>('es');
 
   // Nombre/puesto para el crédito de la portada — fijo por default (siempre el
   // mismo), pero editable por si algún día cambia.
@@ -436,21 +440,37 @@ const GenerarReportesPage: React.FC = () => {
         : undefined;
 
       const estiloOverride = { carrilSide, carrilLabel: carrilTexto.trim(), bloqueAltura, bloqueLabel: bloqueTexto.trim() };
-      const generar = () => generateMatchReportPptx(selectedMatch, authorName.trim() || undefined, positionsMap || undefined, modeloDeJuego, estiloOverride, selectedRivalAnalysisId === RIVAL_NINGUNO ? null : selectedRivalAnalysisId, { regenerarTextoIA });
+      // En inglés, la firma por defecto también va en inglés; un nombre escrito a mano se deja igual.
+      const autor = idiomaReporte === 'en' && authorName.trim() === textosReportes('es').firmaPorDefecto ? textosReportes('en').firmaPorDefecto : authorName.trim();
+      const generar = () => generateMatchReportPptx(selectedMatch, autor || undefined, positionsMap || undefined, modeloDeJuego, estiloOverride, selectedRivalAnalysisId === RIVAL_NINGUNO ? null : selectedRivalAnalysisId, { regenerarTextoIA, idioma: idiomaReporte });
       const r = usarRespaldo ? await conModeloDeRespaldo(generar) : await generar();
+      let info: string;
       if (r.textoIA === 'guardado') {
-        setGenInfo('Reporte generado con el texto de IA que ya estaba guardado — no se consultó a Gemini.');
+        info = 'Reporte generado con el texto de IA que ya estaba guardado — no se consultó a Gemini.';
       } else if (r.textoIAGuardadoOk) {
-        setGenInfo(`Reporte generado${usarRespaldo ? ' con el modelo de respaldo' : ''}. El texto de IA quedó guardado: la próxima vez que generes este partido no se consultará a Gemini.`);
+        info = `Reporte generado${usarRespaldo ? ' con el modelo de respaldo' : ''}. El texto de IA quedó guardado: la próxima vez que generes este partido no se consultará a Gemini.`;
       } else {
-        setGenInfo(`Reporte generado${usarRespaldo ? ' con el modelo de respaldo' : ''}. El texto de IA no se pudo guardar (falta crear la tabla match_report_ai en Supabase), así que la próxima vez se volverá a consultar a Gemini.`);
+        info = `Reporte generado${usarRespaldo ? ' con el modelo de respaldo' : ''}. El texto de IA no se pudo guardar (falta crear la tabla match_report_ai en Supabase), así que la próxima vez se volverá a consultar a Gemini.`;
       }
+      if (idiomaReporte === 'en') {
+        if (r.textoIA === 'guardado') info = 'Reporte en inglés generado con el texto de IA que ya estaba guardado.';
+        else info = info.replace('Reporte generado', 'Reporte en inglés generado');
+        info += r.traduccion === 'guardada'
+          ? ' La traducción al inglés ya estaba guardada: no se consultó a Gemini para traducir.'
+          : r.traduccionGuardada === false
+            ? ' La traducción al inglés no se pudo guardar (¿ya corriste el SQL de la entrega 5A?); la próxima vez se volverá a traducir.'
+            : ' La traducción al inglés quedó guardada para las siguientes veces.';
+      }
+      setGenInfo(info);
       setRegenerarTextoIA(false);
       setRecargaTextoIA((n) => n + 1);
     } catch (err: any) {
       console.error('Error generating report:', err);
       setGenErrorEsGemini(esErrorDeGemini(err));
-      setGenError(mensajeErrorGemini(err) || 'Error al generar el reporte. Intenta de nuevo.');
+      const mensaje = mensajeErrorGemini(err) || 'Error al generar el reporte. Intenta de nuevo.';
+      setGenError(idiomaReporte === 'en' && esErrorDeGemini(err)
+        ? `No se pudo generar el reporte en inglés. ${mensaje} No se descargó ningún archivo; el reporte en español sí está disponible.`
+        : mensaje);
     } finally {
       setIsGenerating(false);
     }
@@ -806,13 +826,14 @@ const GenerarReportesPage: React.FC = () => {
           )}
         </div>
 
-        <div className="mt-6 flex items-center gap-3">
+        <div className="mt-6 flex items-center gap-3 flex-wrap">
+          <SelectorIdioma value={idiomaReporte} onChange={(i) => { setIdiomaReporte(i); setGenError(null); setGenInfo(null); }} disabled={isGenerating} />
           <button
             onClick={() => handleGenerate()}
             disabled={!selectedMatch || isGenerating || cargandoRivalAnalyses || faltaElegirRival}
             className="bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white font-semibold py-2.5 px-6 rounded-md transition-colors duration-200"
           >
-            {isGenerating ? 'Generando…' : 'Generar Reporte'}
+            {isGenerating ? (idiomaReporte === 'en' ? 'Generando y traduciendo…' : 'Generando…') : 'Generar Reporte'}
           </button>
           {!allSelected && <span className="text-sm text-gray-500">Selecciona los 4 filtros para continuar.</span>}
           {allSelected && !selectedMatch && <span className="text-sm text-amber-400">No se encontró un partido con esa combinación.</span>}

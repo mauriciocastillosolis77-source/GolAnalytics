@@ -12,6 +12,9 @@ import { geminiApiUrl, modeloGeminiActual } from './geminiConfig';
 //    cualquier computadora.
 //  · Sin reintento automático. Si Gemini no responde, se lanza el error y NO se
 //    genera el archivo: un reporte mitad inglés y mitad español no sirve.
+//  · Tiempo máximo de espera: 3 minutos (TIEMPO_MAXIMO_MS). Si Gemini no contesta
+//    en ese tiempo, se corta la consulta y se avisa (para no quedarse en
+//    "Traduciendo…" para siempre).
 //  · Si la tabla todavía no existe (no se corrió el SQL), la traducción funciona
 //    igual, solo que no queda guardada (`guardada: false`).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -77,6 +80,9 @@ async function guardar(clave: string, firma: string, contenido: Record<string, s
   }
 }
 
+/** Lo más que se espera a Gemini por una traducción (la red o los servidores pueden ir lentos). */
+export const TIEMPO_MAXIMO_MS = 180_000;
+
 async function pedirAGemini(textos: Record<string, string>, contexto: string): Promise<Record<string, string>> {
   const apiKey = apiKeyGemini();
   const prompt = `You are a football analyst writing for an international audience.
@@ -88,13 +94,26 @@ Return ONLY a JSON object with exactly the same keys as the input, each holding 
 
 ${JSON.stringify(textos)}`;
 
-  const res = await fetch(`${geminiApiUrl()}?key=${apiKey}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json' } }),
-  });
-  if (!res.ok) throw new Error(`Gemini API error: ${res.status}`);
-  const data = await res.json();
+  const control = new AbortController();
+  const reloj = setTimeout(() => control.abort(), TIEMPO_MAXIMO_MS);
+  let data: any;
+  try {
+    const res = await fetch(`${geminiApiUrl()}?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json' } }),
+      signal: control.signal,
+    });
+    if (!res.ok) throw new Error(`Gemini API error: ${res.status}`);
+    data = await res.json();
+  } catch (err: any) {
+    if (control.signal.aborted) {
+      throw new Error(`Gemini no respondió en ${Math.round(TIEMPO_MAXIMO_MS / 60000)} minutos: la red o los servidores de Google están lentos en este momento.`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(reloj);
+  }
   let json: any = null;
   try {
     json = JSON.parse(String(data.candidates?.[0]?.content?.parts?.[0]?.text || '').trim());
