@@ -81,7 +81,6 @@ const ZONA_COLOR_RGB: Record<string, [number, number, number]> = {
   Creacion: [239, 159, 39],
   Finalizacion: [55, 138, 221],
 };
-const ZONA_LABEL_PDF: Record<string, string> = { Inicio: 'Inicio', Creacion: 'Creación', Finalizacion: 'Finalización' };
 
 interface ExportOptions {
   userName: string;
@@ -328,7 +327,7 @@ function addTendenciaBox(doc: jsPDF, tendencia: string, descripcion: string, sta
 // Cancha real (la misma imagen que usa el PowerPoint) con las 3 zonas
 // etiquetadas encima — para que el reporte impreso se vea igual que el
 // PowerPoint y la app, no una cancha esquemática aparte.
-function drawMiniPitch(doc: jsPDF, x: number, y: number, width: number, height: number) {
+function drawMiniPitch(doc: jsPDF, x: number, y: number, width: number, height: number, tx: TextosReportes) {
   const zonas: Array<'Inicio' | 'Creacion' | 'Finalizacion'> = ['Inicio', 'Creacion', 'Finalizacion'];
   try {
     doc.addImage(PITCH_BASE64, 'PNG', x, y, width, height);
@@ -344,13 +343,13 @@ function drawMiniPitch(doc: jsPDF, x: number, y: number, width: number, height: 
     doc.setFontSize(6);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(255, 255, 255);
-    doc.text(ZONA_LABEL_PDF[z], cx, y + 1.5 + pillH / 2 + 1, { align: 'center' });
+    doc.text(tx.zona[z], cx, y + 1.5 + pillH / 2 + 1, { align: 'center' });
   });
 }
 
 // Dibuja una fase completa (Ofensiva o Defensiva): barra de título + pregunta guía,
 // la mini-cancha a la izquierda, y el resumen de cada zona a la derecha.
-function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: number, pageWidth: number): number {
+function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: number, pageWidth: number, tx: TextosReportes): number {
   const pageHeight = doc.internal.pageSize.getHeight();
   let y = startY;
   if (y > pageHeight - 90) { doc.addPage(); y = 20; }
@@ -365,7 +364,7 @@ function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: 
 
   const pitchWidth = 48;
   const pitchHeight = 28;
-  drawMiniPitch(doc, 15, y, pitchWidth, pitchHeight);
+  drawMiniPitch(doc, 15, y, pitchWidth, pitchHeight, tx);
 
   const textX = 15 + pitchWidth + 8;
   const textWidth = pageWidth - textX - 15;
@@ -380,8 +379,8 @@ function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: 
   const zonas: Array<'Inicio' | 'Creacion' | 'Finalizacion'> = ['Inicio', 'Creacion', 'Finalizacion'];
   zonas.forEach(z => {
     const zonaData = fase.zonas.find(f => f.zona === z);
-    const lines = doc.splitTextToSize(zonaData?.resumen || 'Sin momentos registrados todavía.', textWidth);
-    const notaLines = zonaData?.nota && zonaData.nota.trim() ? doc.splitTextToSize(`Nota del analista: ${zonaData.nota.trim()}`, textWidth) : [];
+    const lines = doc.splitTextToSize(zonaData?.resumen || tx.sinMomentos, textWidth);
+    const notaLines = zonaData?.nota && zonaData.nota.trim() ? doc.splitTextToSize(tx.notaAnalista(zonaData.nota.trim()), textWidth) : [];
     const alturaBloque = 4.2 + lines.length * 4.2 + (notaLines.length ? notaLines.length * 4.2 + 1 : 0) + 4;
     // Si este bloque (título + resumen + nota) no cabe completo, se salta de
     // página ANTES de empezar a dibujarlo — así nunca lo corta a la mitad.
@@ -392,7 +391,7 @@ function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: 
     doc.setFontSize(9);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(...COLORS.dark);
-    doc.text(ZONA_LABEL_PDF[z], textX + 6, textY);
+    doc.text(tx.zona[z], textX + 6, textY);
     textY += 4.2;
     doc.setFontSize(8.5);
     doc.setFont('helvetica', 'normal');
@@ -401,7 +400,7 @@ function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: 
     textY += lines.length * 4.2 + 0.5;
     if (zonaData?.nota && zonaData.nota.trim()) {
       doc.setFont('helvetica', 'italic');
-      const notaLines = doc.splitTextToSize(`Nota del analista: ${zonaData.nota.trim()}`, textWidth);
+      const notaLines = doc.splitTextToSize(tx.notaAnalista(zonaData.nota.trim()), textWidth);
       doc.text(notaLines, textX + 6, textY);
       textY += notaLines.length * 4.2 + 0.5;
     }
@@ -412,11 +411,11 @@ function addFaseSection(doc: jsPDF, title: string, fase: RivalFaseData, startY: 
 }
 
 // Balón parado del rival (tipo 4): dos bloques de texto, cuando cobra y cuando defiende.
-function addBalonParadoSection(doc: jsPDF, bp: RivalBalonParadoData, startY: number, pageWidth: number): number {
+function addBalonParadoSection(doc: jsPDF, bp: RivalBalonParadoData, startY: number, pageWidth: number, tx: TextosReportes): number {
   const pageHeight = doc.internal.pageSize.getHeight();
   let y = startY;
   if (y > pageHeight - 80) { doc.addPage(); y = 20; }
-  y = addSection(doc, 'BALÓN PARADO', y, pageWidth);
+  y = addSection(doc, tx.balonParado, y, pageWidth);
 
   doc.setFontSize(8.5);
   doc.setTextColor(...COLORS.secondary);
@@ -427,7 +426,7 @@ function addBalonParadoSection(doc: jsPDF, bp: RivalBalonParadoData, startY: num
 
   const bloque = (titulo: string, texto: string, nota?: string) => {
     const lines = doc.splitTextToSize(texto, pageWidth - 36);
-    const notaLines = nota && nota.trim() ? doc.splitTextToSize(`Nota del analista: ${nota.trim()}`, pageWidth - 36) : [];
+    const notaLines = nota && nota.trim() ? doc.splitTextToSize(tx.notaAnalista(nota.trim()), pageWidth - 36) : [];
     const altura = 4.2 + lines.length * 4.2 + (notaLines.length ? notaLines.length * 4.2 + 1 : 0) + 3;
     if (y + altura > pageHeight - 30) { doc.addPage(); y = 20; }
 
@@ -450,14 +449,14 @@ function addBalonParadoSection(doc: jsPDF, bp: RivalBalonParadoData, startY: num
     }
     y += 2.5;
   };
-  if (bp.corner) bloque('Córners — cuando cobra', bp.corner);
-  if (bp.tiroLibre) bloque('Tiros libres — cuando cobra', bp.tiroLibre);
-  if (bp.penal) bloque('Penales — cuando cobra', bp.penal);
+  if (bp.corner) bloque(tx.bpCorners, bp.corner);
+  if (bp.tiroLibre) bloque(tx.bpTirosLibres, bp.tiroLibre);
+  if (bp.penal) bloque(tx.bpPenales, bp.penal);
   if ((bp.corner || bp.tiroLibre || bp.penal) && bp.notaCobra && bp.notaCobra.trim()) {
-    bloque('Nota del analista — cuando cobra', bp.notaCobra, undefined);
+    bloque(tx.bpNotaCobra, bp.notaCobra, undefined);
   }
-  if (!bp.corner && !bp.tiroLibre && !bp.penal) bloque('Cuando cobra', 'Sin cobros registrados todavía.');
-  bloque('Cuando defiende', bp.defiende, bp.notaDefiende);
+  if (!bp.corner && !bp.tiroLibre && !bp.penal) bloque(tx.bpCuandoCobra, tx.bpSinCobros);
+  bloque(tx.bpCuandoDefiende, bp.defiende, bp.notaDefiende);
   return y + 2;
 }
 
@@ -465,12 +464,12 @@ function addBalonParadoSection(doc: jsPDF, bp: RivalBalonParadoData, startY: num
 // motivo) — compacto a propósito para que quepa junto a lo demás en vez de
 // forzar una página aparte. Si no caben todas en la fila/página actual,
 // se reparte en más filas o salta de página, nunca corta una tarjeta a la mitad.
-function addJugadoresClaveSection(doc: jsPDF, jugadores: RivalJugadorClave[], startY: number, pageWidth: number): number {
+function addJugadoresClaveSection(doc: jsPDF, jugadores: RivalJugadorClave[], startY: number, pageWidth: number, tx: TextosReportes): number {
   if (!jugadores || jugadores.length === 0) return startY;
   const pageHeight = doc.internal.pageSize.getHeight();
   let y = startY;
   if (y > pageHeight - 50) { doc.addPage(); y = 20; }
-  y = addSection(doc, 'JUGADORES CLAVE DEL RIVAL', y, pageWidth);
+  y = addSection(doc, tx.jugadoresClaveRival, y, pageWidth);
 
   const cols = 3, gutter = 4;
   const cardW = (pageWidth - 30 - gutter * (cols - 1)) / cols;
@@ -478,7 +477,7 @@ function addJugadoresClaveSection(doc: jsPDF, jugadores: RivalJugadorClave[], st
 
   const medir = (j: RivalJugadorClave) => {
     doc.setFontSize(7.5);
-    const lines = doc.splitTextToSize(j.motivo || 'Sin motivo capturado.', cardW - padX * 2);
+    const lines = doc.splitTextToSize(j.motivo || tx.sinMotivo, cardW - padX * 2);
     return 11 + lines.length * 3.4 + 3;
   };
   const dibujar = (x: number, yTop: number, h: number, j: RivalJugadorClave) => {
@@ -487,12 +486,12 @@ function addJugadoresClaveSection(doc: jsPDF, jugadores: RivalJugadorClave[], st
     doc.setFontSize(8.5);
     doc.setFont('helvetica', 'bold');
     doc.setTextColor(...COLORS.primary);
-    const encabezado = `${j.numero ? '#' + j.numero : ''}${j.numero && j.posicion ? '  ·  ' : ''}${j.posicion || ''}`.trim() || 'Jugador clave';
+    const encabezado = `${j.numero ? '#' + j.numero : ''}${j.numero && j.posicion ? '  ·  ' : ''}${j.posicion || ''}`.trim() || tx.jugadorClave;
     doc.text(encabezado, x + padX, yTop + 6);
     doc.setFontSize(7.5);
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(...COLORS.text);
-    const lines = doc.splitTextToSize(j.motivo || 'Sin motivo capturado.', cardW - padX * 2);
+    const lines = doc.splitTextToSize(j.motivo || tx.sinMotivo, cardW - padX * 2);
     doc.text(lines, x + padX, yTop + 10.5);
   };
 
@@ -509,11 +508,11 @@ function addJugadoresClaveSection(doc: jsPDF, jugadores: RivalJugadorClave[], st
 // Plan de Partido: estrategia + adaptaciones tácticas + ABP. Título y
 // subtítulos dinámicos según el rival y el equipo propio — para que no diga
 // "Pumas Chalco" o "ML7" cuando en realidad es otro rival o equipo.
-function addPlanPartidoSection(doc: jsPDF, equipo: string, rival: string, plan: RivalPlanPartido, startY: number, pageWidth: number): number {
+function addPlanPartidoSection(doc: jsPDF, equipo: string, rival: string, plan: RivalPlanPartido, startY: number, pageWidth: number, tx: TextosReportes): number {
   const pageHeight = doc.internal.pageSize.getHeight();
   let y = startY;
   if (y > pageHeight - 60) { doc.addPage(); y = 20; }
-  y = addSection(doc, `PLAN DE PARTIDO PARA ENFRENTAR A ${rival.toUpperCase()}`, y, pageWidth) + 2;
+  y = addSection(doc, tx.planPartidoTitulo(rival), y, pageWidth) + 2;
 
   doc.setFontSize(8.5);
   doc.setFont('helvetica', 'normal');
@@ -547,21 +546,21 @@ function addPlanPartidoSection(doc: jsPDF, equipo: string, rival: string, plan: 
     }
     y += 4;
   };
-  bloque(`Adaptaciones tácticas (recomendaciones que se dan a ${equipo})`, plan.adaptaciones);
-  bloque('ABP ofensivo (cómo aprovechar nuestras acciones a balón parado)', plan.abpOfensivo);
-  bloque('ABP defensivo (cómo defendernos en las ABP en contra)', plan.abpDefensivo);
+  bloque(tx.planAdaptaciones(equipo), plan.adaptaciones);
+  bloque(tx.planAbpOfensivo, plan.abpOfensivo);
+  bloque(tx.planAbpDefensivo, plan.abpDefensivo);
   return y + 2;
 }
 
 // Recomendaciones de trabajo de la semana: objetivos cortos derivados del
 // rival — a propósito NO son ejercicios armados (el sistema no sabe espacio,
 // cuántos entrenan, ni el microciclo), por eso la leyenda de abajo se queda.
-function addTemasEntrenamientoSection(doc: jsPDF, temas: string[], startY: number, pageWidth: number): number {
+function addTemasEntrenamientoSection(doc: jsPDF, temas: string[], startY: number, pageWidth: number, tx: TextosReportes): number {
   if (!temas || temas.length === 0) return startY;
   const pageHeight = doc.internal.pageSize.getHeight();
   let y = startY;
   if (y > pageHeight - 45) { doc.addPage(); y = 20; }
-  y = addSection(doc, 'RECOMENDACIONES DE TRABAJO DE LA SEMANA', y, pageWidth) + 2;
+  y = addSection(doc, tx.temasTitulo, y, pageWidth) + 2;
   doc.setFontSize(8.5);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(...COLORS.text);
@@ -574,7 +573,7 @@ function addTemasEntrenamientoSection(doc: jsPDF, temas: string[], startY: numbe
   doc.setFont('helvetica', 'italic');
   doc.setFontSize(7.5);
   doc.setTextColor(...COLORS.secondary);
-  const nota = doc.splitTextToSize('Esto no es un ejercicio armado — son objetivos derivados de los datos del rival; tú decides el ejercicio.', pageWidth - 30);
+  const nota = doc.splitTextToSize(tx.temasNota, pageWidth - 30);
   doc.text(nota, 15, y);
   return y + nota.length * 4 + 4;
 }
@@ -582,11 +581,11 @@ function addTemasEntrenamientoSection(doc: jsPDF, temas: string[], startY: numbe
 // DAFO del rival: cuadrante 2x2 (mismo texto completo, mismos colores, pero
 // en 4 cajas lado a lado como en el PowerPoint, no 4 listas apiladas a lo
 // largo de toda la hoja — así cabe en mucho menos espacio.
-function addDafoSection(doc: jsPDF, dafo: NonNullable<RivalReportData['dafo']>, startY: number, pageWidth: number): number {
+function addDafoSection(doc: jsPDF, dafo: NonNullable<RivalReportData['dafo']>, startY: number, pageWidth: number, tx: TextosReportes): number {
   const pageHeight = doc.internal.pageSize.getHeight();
   let y = startY;
   if (y > pageHeight - 60) { doc.addPage(); y = 20; }
-  y = addSection(doc, 'DAFO DEL RIVAL', y, pageWidth) + 3;
+  y = addSection(doc, tx.dafoRival, y, pageWidth) + 3;
 
   const gutter = 5;
   const colW = (pageWidth - 30 - gutter) / 2;
@@ -638,12 +637,12 @@ function addDafoSection(doc: jsPDF, dafo: NonNullable<RivalReportData['dafo']>, 
   };
 
   fila(
-    { t: 'Fortalezas del rival', items: dafo.fortalezas, c: COLORS.success },
-    { t: 'Debilidades del rival', items: dafo.debilidades, c: COLORS.danger }
+    { t: tx.dafoFortalezas, items: dafo.fortalezas, c: COLORS.success },
+    { t: tx.dafoDebilidades, items: dafo.debilidades, c: COLORS.danger }
   );
   fila(
-    { t: 'Oportunidades para nosotros', items: dafo.oportunidades, c: COLORS.secondary },
-    { t: 'Amenazas para nosotros', items: dafo.amenazas, c: COLORS.warning }
+    { t: tx.dafoOportunidades, items: dafo.oportunidades, c: COLORS.secondary },
+    { t: tx.dafoAmenazas, items: dafo.amenazas, c: COLORS.warning }
   );
   return y + 2;
 }
@@ -880,21 +879,22 @@ export async function exportRivalAnalysisToPDF(
   const pageWidth = doc.internal.pageSize.getWidth();
 
   const logoBase64 = loadLogo();
+  const tx = textosReportes(options.idioma);
 
-  let y = addHeader(doc, options, `ANALISIS DE RIVAL — ${data.rivalName.toUpperCase()}`, logoBase64);
+  let y = addHeader(doc, options, tx.rivalTitulo(data.rivalName), logoBase64);
 
-  y = addFaseSection(doc, 'FASE OFENSIVA', data.ofensiva, y, pageWidth);
-  y = addFaseSection(doc, 'FASE DEFENSIVA', data.defensiva, y, pageWidth);
-  if (data.balonParado) y = addBalonParadoSection(doc, data.balonParado, y, pageWidth);
-  if (data.jugadoresClave && data.jugadoresClave.length > 0) y = addJugadoresClaveSection(doc, data.jugadoresClave, y, pageWidth);
-  if (data.dafo) y = addDafoSection(doc, data.dafo, y, pageWidth);
-  if (data.planPartido) y = addPlanPartidoSection(doc, options.teamName, data.rivalName, data.planPartido, y, pageWidth);
-  if (data.temas && data.temas.length > 0) y = addTemasEntrenamientoSection(doc, data.temas, y, pageWidth);
+  y = addFaseSection(doc, tx.faseOfensiva, data.ofensiva, y, pageWidth, tx);
+  y = addFaseSection(doc, tx.faseDefensiva, data.defensiva, y, pageWidth, tx);
+  if (data.balonParado) y = addBalonParadoSection(doc, data.balonParado, y, pageWidth, tx);
+  if (data.jugadoresClave && data.jugadoresClave.length > 0) y = addJugadoresClaveSection(doc, data.jugadoresClave, y, pageWidth, tx);
+  if (data.dafo) y = addDafoSection(doc, data.dafo, y, pageWidth, tx);
+  if (data.planPartido) y = addPlanPartidoSection(doc, options.teamName, data.rivalName, data.planPartido, y, pageWidth, tx);
+  if (data.temas && data.temas.length > 0) y = addTemasEntrenamientoSection(doc, data.temas, y, pageWidth, tx);
 
-  addFooter(doc);
+  addFooter(doc, tx);
 
   const rivalSlug = data.rivalName.replace(/\s+/g, '_');
-  const fileName = `GolAnalytics_Rival_${rivalSlug}_${fechaArchivo()}.pdf`;
+  const fileName = `GolAnalytics_Rival_${rivalSlug}${tx.sufijoArchivo}_${fechaArchivo()}.pdf`;
   doc.save(fileName);
 }
 
