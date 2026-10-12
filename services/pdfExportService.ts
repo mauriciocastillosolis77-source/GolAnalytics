@@ -1,6 +1,7 @@
 import jsPDF from 'jspdf';
 import { LOGO_BASE64 } from '../constants/logoBase64';
 import { PITCH_BASE64 } from '../constants/pitchBase64';
+import { textosReportes, type Idioma, type TextosReportes } from '../utils/reportesI18n';
 
 interface TeamAnalysisData {
   tendencia: string;
@@ -85,6 +86,8 @@ const ZONA_LABEL_PDF: Record<string, string> = { Inicio: 'Inicio', Creacion: 'Cr
 interface ExportOptions {
   userName: string;
   teamName: string;
+  /** Idioma del archivo. Sin indicarlo sale en español, igual que siempre. */
+  idioma?: Idioma;
   playerName?: string;
   playerNumber?: number;
   playerPosition?: string;
@@ -117,6 +120,13 @@ function getTendenciaColor(tendencia: string): [number, number, number] {
   }
 }
 
+// Fecha para el nombre del archivo, en hora local. Antes se usaba la fecha en UTC
+// y por la tarde/noche en México el archivo salía con la fecha del día siguiente.
+function fechaArchivo(): string {
+  const hoy = new Date();
+  return `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-${String(hoy.getDate()).padStart(2, '0')}`;
+}
+
 function loadLogo(): string | undefined {
   try {
     return LOGO_BASE64;
@@ -128,6 +138,7 @@ function loadLogo(): string | undefined {
 
 function addHeader(doc: jsPDF, options: ExportOptions, title: string, logoBase64?: string): number {
   const pageWidth = doc.internal.pageSize.getWidth();
+  const tx = textosReportes(options.idioma);
 
   if (logoBase64) {
     try {
@@ -146,7 +157,7 @@ function addHeader(doc: jsPDF, options: ExportOptions, title: string, logoBase64
   doc.setFontSize(8);
   doc.setTextColor(...COLORS.secondary);
   doc.setFont('helvetica', 'normal');
-  doc.text('Midiendo el Progreso', textX, 21);
+  doc.text(tx.lema, textX, 21);
 
   doc.setDrawColor(...COLORS.primary);
   doc.setLineWidth(0.5);
@@ -162,15 +173,15 @@ function addHeader(doc: jsPDF, options: ExportOptions, title: string, logoBase64
   doc.setFont('helvetica', 'normal');
 
   const now = new Date();
-  const dateStr = now.toLocaleDateString('es-MX', { day: 'numeric', month: 'short', year: 'numeric' });
-  const timeStr = now.toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
+  const dateStr = now.toLocaleDateString(tx.locale, { day: 'numeric', month: 'short', year: 'numeric' });
+  const timeStr = now.toLocaleTimeString(tx.locale, { hour: '2-digit', minute: '2-digit' });
 
-  doc.text(`Equipo: ${options.teamName}  ·  Generado por: ${options.userName}`, 15, 45);
+  doc.text(tx.equipoGenerado(options.teamName, options.userName), 15, 45);
   doc.text(`${dateStr} - ${timeStr}`, pageWidth - 15, 45, { align: 'right' });
 
   if (options.playerName) {
-    let line2 = `Jugador: ${options.playerName} (#${options.playerNumber || '-'})`;
-    if (options.playerPosition) line2 += `  ·  Posicion: ${options.playerPosition}`;
+    let line2 = tx.jugadorLinea(options.playerName, options.playerNumber || '-');
+    if (options.playerPosition) line2 += tx.posicionLinea(options.playerPosition);
     doc.text(line2, 15, 51);
     return 57;
   }
@@ -257,7 +268,7 @@ function addParagraph(doc: jsPDF, text: string, startY: number, maxWidth: number
 
 // Dibuja las 4 tarjetas KPI del jugador (Total Acciones, Efectividad Global, Mejor y Peor Jornada),
 // replicando las tarjetas que se ven en la página de Rendimiento, con sus mismos colores.
-function addKpiCards(doc: jsPDF, kpis: NonNullable<ExportOptions['kpis']>, startY: number, pageWidth: number): number {
+function addKpiCards(doc: jsPDF, kpis: NonNullable<ExportOptions['kpis']>, startY: number, pageWidth: number, tx: TextosReportes): number {
   const cardColors: [number, number, number][] = [
     [13, 148, 136],  // teal — Total Acciones
     [37, 99, 235],   // azul — Efectividad Global
@@ -265,10 +276,10 @@ function addKpiCards(doc: jsPDF, kpis: NonNullable<ExportOptions['kpis']>, start
     [234, 88, 12],   // naranja — Peor Jornada
   ];
   const cards = [
-    { label: 'Total Acciones', value: `${kpis.totalAcciones}` },
-    { label: 'Efectividad Global', value: `${kpis.efectividadGlobal}%` },
-    { label: 'Mejor Jornada', value: kpis.mejorJornada ? `J${kpis.mejorJornada.jornada} (${kpis.mejorJornada.efectividad}%)` : '—' },
-    { label: 'Peor Jornada', value: kpis.peorJornada ? `J${kpis.peorJornada.jornada} (${kpis.peorJornada.efectividad}%)` : '—' },
+    { label: tx.kpiTotalAcciones, value: `${kpis.totalAcciones}` },
+    { label: tx.kpiEfectividad, value: `${kpis.efectividadGlobal}%` },
+    { label: tx.kpiMejor, value: kpis.mejorJornada ? tx.kpiJornada(kpis.mejorJornada.jornada, kpis.mejorJornada.efectividad) : '—' },
+    { label: tx.kpiPeor, value: kpis.peorJornada ? tx.kpiJornada(kpis.peorJornada.jornada, kpis.peorJornada.efectividad) : '—' },
   ];
 
   const gap = 4;
@@ -291,7 +302,7 @@ function addKpiCards(doc: jsPDF, kpis: NonNullable<ExportOptions['kpis']>, start
   return startY + cardHeight + 8;
 }
 
-function addTendenciaBox(doc: jsPDF, tendencia: string, descripcion: string, startY: number, pageWidth: number): number {
+function addTendenciaBox(doc: jsPDF, tendencia: string, descripcion: string, startY: number, pageWidth: number, tx: TextosReportes): number {
   const boxWidth = pageWidth - 30;
   const tendenciaColor = getTendenciaColor(tendencia);
   
@@ -303,7 +314,7 @@ function addTendenciaBox(doc: jsPDF, tendencia: string, descripcion: string, sta
   doc.setFontSize(10);
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
-  doc.text(tendencia.toUpperCase(), 50, startY + 14, { align: 'center' });
+  doc.text(tx.tendencia(tendencia), 50, startY + 14, { align: 'center' });
   
   doc.setFontSize(9);
   doc.setTextColor(...COLORS.text);
@@ -637,7 +648,7 @@ function addDafoSection(doc: jsPDF, dafo: NonNullable<RivalReportData['dafo']>, 
   return y + 2;
 }
 
-function addFooter(doc: jsPDF) {
+function addFooter(doc: jsPDF, tx: TextosReportes = textosReportes('es')) {
   const pageCount = doc.getNumberOfPages();
   const pageWidth = doc.internal.pageSize.getWidth();
   const pageHeight = doc.internal.pageSize.getHeight();
@@ -653,7 +664,7 @@ function addFooter(doc: jsPDF) {
     doc.setTextColor(...COLORS.text);
     doc.setFont('helvetica', 'italic');
     doc.text(
-      'Este documento fue generado desde GolAnalytics con fines informativos y formativos.',
+      tx.pie,
       pageWidth / 2,
       pageHeight - 18,
       { align: 'center' }
@@ -665,7 +676,7 @@ function addFooter(doc: jsPDF) {
     
     doc.setFont('helvetica', 'normal');
     doc.setTextColor(...COLORS.text);
-    doc.text(`Pagina ${i} de ${pageCount}`, pageWidth - 15, pageHeight - 12, { align: 'right' });
+    doc.text(tx.pagina(i, pageCount), pageWidth - 15, pageHeight - 12, { align: 'right' });
   }
 }
 
@@ -678,16 +689,17 @@ export async function exportTeamAnalysisToPDF(
   const maxWidth = pageWidth - 30;
   
   const logoBase64 = loadLogo();
+  const tx = textosReportes(options.idioma);
   
-  let y = addHeader(doc, options, 'ANALISIS EJECUTIVO DEL EQUIPO', logoBase64);
+  let y = addHeader(doc, options, tx.equipoTitulo, logoBase64);
   
-  y = addTendenciaBox(doc, analysis.tendencia, analysis.tendenciaDescripcion, y, pageWidth);
+  y = addTendenciaBox(doc, analysis.tendencia, analysis.tendenciaDescripcion, y, pageWidth, tx);
   
-  y = addSection(doc, 'RENDIMIENTO POR LINEA', y, pageWidth);
+  y = addSection(doc, tx.rendimientoPorLinea, y, pageWidth);
   
   const lineaWidth = (pageWidth - 40) / 3;
   const lineas = ['defensa', 'medio', 'ataque'] as const;
-  const lineaLabels = { defensa: 'DEFENSA', medio: 'MEDIOCAMPO', ataque: 'ATAQUE' };
+  const lineaLabels = { defensa: tx.defensa, medio: tx.medio, ataque: tx.ataque };
   
   lineas.forEach((linea, index) => {
     const lineaData = analysis.analisisPorLinea[linea];
@@ -710,16 +722,16 @@ export async function exportTeamAnalysisToPDF(
   
   y += 38;
   
-  y = addSection(doc, 'FORTALEZAS COLECTIVAS', y, pageWidth);
+  y = addSection(doc, tx.fortalezasColectivas, y, pageWidth);
   y = addBulletList(doc, analysis.fortalezasColectivas, y, maxWidth);
   
   y += 5;
-  y = addSection(doc, 'OPORTUNIDADES DE MEJORA', y, pageWidth);
+  y = addSection(doc, tx.oportunidadesMejora, y, pageWidth);
   y = addBulletList(doc, analysis.areasDeMejoraColectivas, y, maxWidth);
   
   if (analysis.jugadoresDestacados && analysis.jugadoresDestacados.length > 0) {
     y += 5;
-    y = addSection(doc, 'JUGADORES DESTACADOS', y, pageWidth);
+    y = addSection(doc, tx.jugadoresDestacados, y, pageWidth);
     
     analysis.jugadoresDestacados.forEach((jugador) => {
       if (y > 260) {
@@ -739,7 +751,7 @@ export async function exportTeamAnalysisToPDF(
   }
   
   y += 5;
-  y = addSection(doc, 'RESUMEN EJECUTIVO', y, pageWidth);
+  y = addSection(doc, tx.resumenEjecutivo, y, pageWidth);
   
   doc.setFillColor(...COLORS.lightGray);
   const resumenLines = doc.splitTextToSize(analysis.resumenEjecutivo, maxWidth - 10);
@@ -758,13 +770,13 @@ export async function exportTeamAnalysisToPDF(
   y += resumenHeight + 8;
   
   if (analysis.recomendacionesEntrenamiento && analysis.recomendacionesEntrenamiento.length > 0) {
-    y = addSection(doc, 'RECOMENDACIONES DE ENTRENAMIENTO', y, pageWidth);
+    y = addSection(doc, tx.recomendacionesEntrenamiento, y, pageWidth);
     y = addNumberedList(doc, analysis.recomendacionesEntrenamiento, y, maxWidth);
   }
   
-  addFooter(doc);
+  addFooter(doc, tx);
   
-  const fileName = `GolAnalytics_Equipo_${options.teamName.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.pdf`;
+  const fileName = `GolAnalytics_Equipo_${options.teamName.replace(/\s+/g, '_')}${tx.sufijoArchivo}_${fechaArchivo()}.pdf`;
   doc.save(fileName);
 }
 
@@ -778,19 +790,21 @@ export async function exportPlayerAnalysisToPDF(
   
   const logoBase64 = loadLogo();
   
-  let y = addHeader(doc, options, 'ANALISIS DE RENDIMIENTO INDIVIDUAL', logoBase64);
+  const tx = textosReportes(options.idioma);
+
+  let y = addHeader(doc, options, tx.jugadorTitulo, logoBase64);
   
   if (options.kpis) {
-    y = addKpiCards(doc, options.kpis, y, pageWidth);
+    y = addKpiCards(doc, options.kpis, y, pageWidth, tx);
   }
   
-  y = addTendenciaBox(doc, analysis.tendencia, analysis.tendenciaDescripcion, y, pageWidth);
+  y = addTendenciaBox(doc, analysis.tendencia, analysis.tendenciaDescripcion, y, pageWidth, tx);
   
-  y = addSection(doc, 'FORTALEZAS DEL JUGADOR', y, pageWidth);
+  y = addSection(doc, tx.fortalezasJugador, y, pageWidth);
   y = addBulletList(doc, analysis.fortalezas, y, maxWidth);
   
   y += 5;
-  y = addSection(doc, 'OPORTUNIDADES DE DESARROLLO', y, pageWidth);
+  y = addSection(doc, tx.oportunidadesDesarrollo, y, pageWidth);
   y = addBulletList(doc, analysis.areasDeMejora, y, maxWidth);
   
   if (analysis.comparativoProfesional) {
@@ -802,19 +816,19 @@ export async function exportPlayerAnalysisToPDF(
       doc.addPage();
       y = 20;
     }
-    y = addSection(doc, 'COMPARATIVO PROFESIONAL', y, pageWidth);
+    y = addSection(doc, tx.comparativoProfesional, y, pageWidth);
     
     // Subtítulo aclaratorio: explica qué representa esta sección
     doc.setFontSize(8);
     doc.setTextColor(...COLORS.text);
     doc.setFont('helvetica', 'italic');
-    doc.text('Cualidades de referencia de un jugador profesional en esta posicion, como guia de desarrollo.', 15, y);
+    doc.text(tx.comparativoNota, 15, y);
     y += 7;
     
     doc.setFontSize(10);
     doc.setTextColor(...COLORS.dark);
     doc.setFont('helvetica', 'bold');
-    doc.text(`Posicion: ${analysis.comparativoProfesional.posicion}`, 15, y);
+    doc.text(tx.posicionDosPuntos(analysis.comparativoProfesional.posicion), 15, y);
     y += 8;
     
     if (analysis.comparativoProfesional.metricasReferencia?.length > 0) {
@@ -824,7 +838,7 @@ export async function exportPlayerAnalysisToPDF(
         y = 20;
       }
       doc.setFont('helvetica', 'bold');
-      doc.text('Metricas de referencia:', 15, y);
+      doc.text(tx.metricasReferencia, 15, y);
       y += 6;
       y = addBulletList(doc, analysis.comparativoProfesional.metricasReferencia, y, maxWidth);
     }
@@ -834,7 +848,7 @@ export async function exportPlayerAnalysisToPDF(
   }
   
   y += 5;
-  y = addSection(doc, 'RECOMENDACIONES PARA EL ENTRENADOR', y, pageWidth);
+  y = addSection(doc, tx.recomendacionesEntrenador, y, pageWidth);
   
   doc.setFillColor(...COLORS.lightGray);
   const resumenLines = doc.splitTextToSize(analysis.resumenGeneral, maxWidth - 10);
@@ -851,10 +865,10 @@ export async function exportPlayerAnalysisToPDF(
   doc.setFont('helvetica', 'normal');
   doc.text(resumenLines, 20, y + 7);
   
-  addFooter(doc);
+  addFooter(doc, tx);
   
   const playerSlug = options.playerName?.replace(/\s+/g, '_') || 'Jugador';
-  const fileName = `GolAnalytics_${playerSlug}_${new Date().toISOString().split('T')[0]}.pdf`;
+  const fileName = `GolAnalytics_${playerSlug}${tx.sufijoArchivo}_${fechaArchivo()}.pdf`;
   doc.save(fileName);
 }
 
@@ -880,7 +894,7 @@ export async function exportRivalAnalysisToPDF(
   addFooter(doc);
 
   const rivalSlug = data.rivalName.replace(/\s+/g, '_');
-  const fileName = `GolAnalytics_Rival_${rivalSlug}_${new Date().toISOString().split('T')[0]}.pdf`;
+  const fileName = `GolAnalytics_Rival_${rivalSlug}_${fechaArchivo()}.pdf`;
   doc.save(fileName);
 }
 
@@ -913,20 +927,23 @@ export async function exportMinutosEquipoToPDF(rows: MinutosEquipoRow[], meta: M
   const doc = new jsPDF();
   const pageWidth = doc.internal.pageSize.getWidth();
   const logoBase64 = loadLogo();
+  const tx = textosReportes(options.idioma);
 
   // Columnas: x de inicio, ancho, título y alineación. Suman 180 mm (15 → 195).
-  const cols: Array<{ t: string; w: number; align: 'left' | 'center' }> = [
-    { t: '#', w: 9, align: 'center' },
-    { t: 'Jugador', w: 47, align: 'left' },
-    { t: 'PJ', w: 12, align: 'center' },
-    { t: 'Titular', w: 15, align: 'center' },
-    { t: 'Suplente', w: 17, align: 'center' },
-    { t: 'Minutos', w: 17, align: 'center' },
-    { t: '% de minutos', w: 30, align: 'left' },
-    { t: 'Lesión', w: 11, align: 'center' },
-    { t: 'No conv.', w: 12, align: 'center' },
-    { t: 'Falta', w: 10, align: 'center' },
+  // El título de cada una viene del idioma (mismo orden que tx.minutosColumnas).
+  const anchos: Array<{ w: number; align: 'left' | 'center' }> = [
+    { w: 9, align: 'center' },   // #
+    { w: 47, align: 'left' },    // Jugador
+    { w: 12, align: 'center' },  // PJ
+    { w: 15, align: 'center' },  // Titular
+    { w: 17, align: 'center' },  // Suplente
+    { w: 17, align: 'center' },  // Minutos
+    { w: 30, align: 'left' },    // % de minutos
+    { w: 11, align: 'center' },  // Lesión
+    { w: 12, align: 'center' },  // No conv.
+    { w: 10, align: 'center' },  // Falta
   ];
+  const cols = anchos.map((c, i) => ({ ...c, t: tx.minutosColumnas[i] }));
   const x0 = 15;
   const xs: number[] = [];
   cols.reduce((x, c) => { xs.push(x); return x + c.w; }, x0);
@@ -946,18 +963,18 @@ export async function exportMinutosEquipoToPDF(rows: MinutosEquipoRow[], meta: M
     return y + rowH + 1;
   };
 
-  let y = addHeader(doc, options, 'MINUTOS JUGADOS POR JUGADOR', logoBase64);
+  let y = addHeader(doc, options, tx.minutosTitulo, logoBase64);
 
   doc.setFontSize(9);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(...COLORS.text);
-  doc.text(`Periodo: ${meta.periodo}`, x0, y);
+  doc.text(tx.periodo(meta.periodo), x0, y);
   y += 5;
-  doc.text(`Partidos considerados: ${meta.partidosConsiderados}  ·  Minutos posibles: ${meta.minutosPosibles}`, x0, y);
+  doc.text(tx.partidosConsiderados(meta.partidosConsiderados, meta.minutosPosibles), x0, y);
   y += 5;
   if (meta.partidosSinDatos > 0) {
     doc.setTextColor(...COLORS.danger);
-    doc.text(`${meta.partidosSinDatos} partido${meta.partidosSinDatos === 1 ? '' : 's'} del periodo no entra${meta.partidosSinDatos === 1 ? '' : 'n'} al cálculo (sin alineación o sin duración de video).`, x0, y);
+    doc.text(tx.partidosSinDatos(meta.partidosSinDatos), x0, y);
     doc.setTextColor(...COLORS.text);
     y += 5;
   }
@@ -1009,17 +1026,13 @@ export async function exportMinutosEquipoToPDF(rows: MinutosEquipoRow[], meta: M
   doc.setFontSize(8);
   doc.setFont('helvetica', 'italic');
   doc.setTextColor(...COLORS.text);
-  [
-    'PJ: partidos en los que jugó, de inicio o entrando de cambio.  Titular: partidos que inició.  Suplente: partidos en los que entró de cambio.',
-    '% de minutos: minutos jugados entre los minutos posibles del periodo (la suma de la duración de los partidos considerados).',
-    'Lesión / No conv. / Falta: número de partidos en los que no estuvo disponible por esa razón.',
-  ].forEach((linea) => {
+  tx.minutosNotas.forEach((linea) => {
     const partes = doc.splitTextToSize(linea, anchoTabla) as string[];
     doc.text(partes, x0, y);
     y += partes.length * 3.8 + 0.8;
   });
 
-  addFooter(doc);
+  addFooter(doc, tx);
   const slug = (t: string) => t.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9]+/g, '_').replace(/^_|_$/g, '');
-  doc.save(`GolAnalytics_Minutos_${slug(options.teamName)}_${new Date().toISOString().split('T')[0]}.pdf`);
+  doc.save(`GolAnalytics_Minutos_${slug(options.teamName)}${tx.sufijoArchivo}_${fechaArchivo()}.pdf`);
 }

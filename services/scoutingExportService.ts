@@ -1,7 +1,7 @@
 import pptxgen from 'pptxgenjs';
 import jsPDF from 'jspdf';
 import { LOGO_BASE64 } from '../constants/logoBase64';
-import { geminiApiUrl } from './geminiConfig';
+import { traducirTextos, AVISO_TRADUCCION_SIN_GUARDAR } from './traduccionService';
 import {
   SECCIONES, CAJAS_442, SCOUT_NOMBRE,
   puestoLabel, valoracionDe, mediaSeccion, mediaGeneral, edadDe, mejoresPorPuesto, agruparNumeros, sumarNumeros,
@@ -435,47 +435,22 @@ function paginasJugador(l: Lienzo, tr: TraductorScouting, d: DatosJugadorExport,
 // ── Traducción de lo que escribió el usuario (solo para la versión en inglés) ─
 const CAMPOS_LIBRES: Array<keyof TextosLibres> = ['descripcion', 'modelo_juego', 'puntos_fuertes', 'puntos_debiles'];
 
-async function textosLibresDe(ficha: ScoutingPlayer, idioma: Idioma): Promise<{ textos: TextosLibres; fallo: boolean }> {
+/**
+ * Textos de la valoración final en el idioma del archivo.
+ * En inglés los traduce Gemini (una consulta por jugador) y la traducción queda
+ * guardada en Supabase: mientras el texto no cambie no se vuelve a consultar.
+ * Si Gemini no responde se lanza el error: el archivo NO se genera, porque
+ * saldría mitad en inglés y mitad en español.
+ */
+async function textosLibresDe(ficha: ScoutingPlayer, idioma: Idioma): Promise<{ textos: TextosLibres; guardada: boolean }> {
   const original: TextosLibres = { descripcion: ficha.descripcion || '', modelo_juego: ficha.modelo_juego || '', puntos_fuertes: ficha.puntos_fuertes || '', puntos_debiles: ficha.puntos_debiles || '' };
-  const conTexto = CAMPOS_LIBRES.filter((k) => original[k].trim());
-  if (idioma === 'es' || conTexto.length === 0) return { textos: original, fallo: false };
-
-  // Se guarda la traducción en este navegador: si el texto no cambió, no se vuelve a consultar a Gemini.
-  const llave = `golanalytics_scouting_en_${ficha.id}`;
-  const firma = JSON.stringify(original);
-  try {
-    const guardado = JSON.parse(localStorage.getItem(llave) || 'null');
-    if (guardado && guardado.firma === firma && guardado.en) return { textos: guardado.en as TextosLibres, fallo: false };
-  } catch { /* sin almacenamiento: se traduce de nuevo */ }
-
-  try {
-    const env = (import.meta as any).env || {};
-    const apiKey = env.VITE_API_KEY || env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY || '';
-    if (!apiKey) throw new Error('Falta la API key de Gemini.');
-    const entrada: Record<string, string> = {};
-    conTexto.forEach((k) => { entrada[k] = original[k]; });
-    const prompt = `You are a football scout writing a player report for an international audience.
-Translate the scouting notes below from Spanish into natural football English, the way scouts and analysts actually write.
-Use international (British) football vocabulary: football, pitch, match, centre-back, full-back, winger, striker, set piece, the box, off the ball.
-Keep the same meaning and the same level of detail. Do not add, remove or soften anything. Keep player, club and competition names exactly as written.
-Return ONLY a JSON object with exactly the same keys as the input, each holding its translation.
-
-${JSON.stringify(entrada)}`;
-    const res = await fetch(`${geminiApiUrl()}?key=${apiKey}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json' } }),
-    });
-    if (!res.ok) throw new Error(`Gemini API error: ${res.status}`);
-    const data = await res.json();
-    const json = JSON.parse(String(data.candidates?.[0]?.content?.parts?.[0]?.text || '{}').trim());
-    const en: TextosLibres = { ...original };
-    conTexto.forEach((k) => { if (typeof json[k] === 'string' && json[k].trim()) en[k] = json[k].trim(); });
-    try { localStorage.setItem(llave, JSON.stringify({ firma, en })); } catch { /* no pasa nada */ }
-    return { textos: en, fallo: false };
-  } catch (err) {
-    console.warn('No se pudieron traducir los textos de la ficha; salen en español:', err);
-    return { textos: original, fallo: true };
-  }
+  if (idioma === 'es') return { textos: original, guardada: true };
+  const entrada: Record<string, string> = {};
+  CAMPOS_LIBRES.forEach((k) => { entrada[k] = original[k]; });
+  const r = await traducirTextos(`scouting:${ficha.id}`, entrada, 'the scouting notes of a football player (profile, fit with the game model, strengths and weaknesses)');
+  const en: TextosLibres = { ...original };
+  CAMPOS_LIBRES.forEach((k) => { if (r.textos[k]) en[k] = r.textos[k]; });
+  return { textos: en, guardada: r.guardada };
 }
 
 // ── Punto de entrada ─────────────────────────────────────────────────────────
@@ -499,19 +474,23 @@ export async function exportarScouting(op: OpcionesExportScouting): Promise<{ ar
   const hoy = new Date();
   const fecha = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, '0')}-${String(hoy.getDate()).padStart(2, '0')}`;
   const avisos: string[] = [];
-  const sinTraducir: string[] = [];
   let archivos = 0;
 
-  const libresDe = async (d: DatosJugadorExport) => {
+  // Primero se traduce TODO (solo en inglés). Si la traducción de algún jugador
+  // falla, se sale aquí con el error y no se descarga ningún archivo.
+  const libres = new Map<DatosJugadorExport, TextosLibres>();
+  let sinGuardar = false;
+  for (const d of op.jugadores) {
     const r = await textosLibresDe(d.ficha, op.idioma);
-    if (r.fallo) sinTraducir.push(d.ficha.nombre);
-    return r.textos;
-  };
+    libres.set(d, r.textos);
+    if (!r.guardada) sinGuardar = true;
+  }
+  const libresDe = (d: DatosJugadorExport) => libres.get(d) as TextosLibres;
 
   if (op.archivoPorJugador) {
     for (const d of op.jugadores) {
       const l = nuevoLienzo(op.formato);
-      paginasJugador(l, tr, d, await libresDe(d), { n: 0 });
+      paginasJugador(l, tr, d, libresDe(d), { n: 0 });
       await l.guardar(`Scouting_${slug(d.ficha.nombre)}${sufijo}_${fecha}`);
       archivos++;
       // Pausa corta entre descargas: sin ella el navegador puede quedarse solo con la última.
@@ -521,7 +500,7 @@ export async function exportarScouting(op: OpcionesExportScouting): Promise<{ ar
     const l = nuevoLienzo(op.formato);
     const contador = { n: 0 };
     if (op.reporte) paginaReporte(l, tr, op.reporte.jugadores, op.reporte.filtros, ++contador.n);
-    for (const d of op.jugadores) paginasJugador(l, tr, d, await libresDe(d), contador);
+    for (const d of op.jugadores) paginasJugador(l, tr, d, libresDe(d), contador);
     const nombre = op.reporte
       ? (op.jugadores.length ? `Scouting_Reporte_ejecutivo_y_${op.jugadores.length}_jugadores` : 'Scouting_Reporte_ejecutivo')
       : `Scouting_${op.jugadores.length}_jugadores`;
@@ -529,9 +508,7 @@ export async function exportarScouting(op: OpcionesExportScouting): Promise<{ ar
     archivos = 1;
   }
 
-  if (sinTraducir.length > 0) {
-    avisos.push(`Gemini no respondió, así que los textos escritos a mano de ${sinTraducir.join(', ')} salieron en español. Lo demás sí salió en inglés. Puedes volver a exportar más tarde.`);
-  }
+  if (sinGuardar) avisos.push(AVISO_TRADUCCION_SIN_GUARDAR);
   return { archivos, avisos };
 }
 

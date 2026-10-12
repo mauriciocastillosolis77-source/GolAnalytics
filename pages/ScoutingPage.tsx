@@ -12,6 +12,7 @@ import {
 import { fetchNumerosJugador, guardarPartidoManual, eliminarPartidoManual, guardarTarjetas, type PartidoManual } from '../services/scoutingStatsService';
 import { exportarScouting, medirFoto, type FiltrosReporte, type DatosJugadorExport } from '../services/scoutingExportService';
 import type { Idioma } from '../utils/scoutingI18n';
+import { conModeloDeRespaldo, esErrorDeGemini, mensajeErrorGemini } from '../services/geminiConfig';
 import {
     fetchScoutingPlayers, fetchScoutingPlayer, guardarScoutingPlayer, eliminarScoutingPlayer,
     fetchJugadoresEquipo, setJugadorActivo,
@@ -499,6 +500,15 @@ const ComparacionJugador: React.FC<{ ficha: Borrador; lista: ScoutingPlayerLista
     );
 };
 
+/** Botón que aparece junto al mensaje cuando Gemini no pudo traducir: repite la exportación con el modelo de respaldo. */
+const BotonRespaldo: React.FC<{ ocupado: boolean; onClick: () => void }> = ({ ocupado, onClick }) => (
+    <div className="mt-2">
+        <button type="button" onClick={onClick} disabled={ocupado} className="bg-amber-600 hover:bg-amber-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white text-sm font-semibold py-1.5 px-3 rounded-md">
+            {ocupado ? 'Traduciendo…' : 'Intentar con el modelo de respaldo'}
+        </button>
+    </div>
+);
+
 const Segmento: React.FC<{ titulo: string; valor: string; opciones: Array<[string, string]>; onCambio: (v: string) => void }> = ({ titulo, valor, opciones, onCambio }) => (
     <div>
         <p className="text-xs font-medium text-gray-400 mb-1">{titulo}</p>
@@ -531,7 +541,8 @@ const ScoutingPage: React.FC = () => {
     const [expQue, setExpQue] = useState<'reporte' | 'reporte_jugadores' | 'jugadores'>('reporte');
     const [expIds, setExpIds] = useState<string[]>([]);
     const [exportando, setExportando] = useState(false);
-    const [avisoLista, setAvisoLista] = useState<{ tipo: 'ok' | 'error'; texto: string } | null>(null);
+    // respaldo = falló la traducción al inglés: junto al mensaje se ofrece el modelo de respaldo.
+    const [avisoLista, setAvisoLista] = useState<{ tipo: 'ok' | 'error'; texto: string; respaldo?: boolean } | null>(null);
     const [busqueda, setBusqueda] = useState('');
     const [filtroPuesto, setFiltroPuesto] = useState('');
 
@@ -541,7 +552,7 @@ const ScoutingPage: React.FC = () => {
     const [pestana, setPestana] = useState<Pestana>('datos');
     const [abriendo, setAbriendo] = useState(false);
     const [guardando, setGuardando] = useState(false);
-    const [aviso, setAviso] = useState<{ tipo: 'ok' | 'error'; texto: string } | null>(null);
+    const [aviso, setAviso] = useState<{ tipo: 'ok' | 'error'; texto: string; respaldo?: boolean } | null>(null);
     const [cambiandoActivo, setCambiandoActivo] = useState(false);
     const fotoInput = useRef<HTMLInputElement>(null);
 
@@ -692,20 +703,28 @@ const ScoutingPage: React.FC = () => {
     const resumenExport = (archivos: number, avisos: string[]) =>
         [`Se ${archivos === 1 ? 'descargó 1 archivo' : `descargaron ${archivos} archivos`}.`, ...avisos].join(' ');
 
-    const exportarFicha = async () => {
+    // En inglés, si Gemini no puede traducir los textos escritos a mano NO se descarga nada
+    // (un archivo en dos idiomas no sirve). Se avisa y se ofrece el modelo de respaldo; nunca reintenta solo.
+    const textoFalloExport = (err: any) => (expIdioma === 'en' && esErrorDeGemini(err)
+        ? `No se pudo traducir al inglés. ${mensajeErrorGemini(err)} No se descargó ningún archivo. Puedes intentar más tarde o usar el modelo de respaldo; el archivo en español sí está disponible.`
+        : `No se pudo exportar. ${err?.message || ''}`);
+
+    const exportarFicha = async (respaldo = false) => {
         if (!ficha.id) return;
         setExportando(true); setAviso(null);
         try {
-            const r = await exportarScouting({ formato: expFormato, idioma: expIdioma, jugadores: [await datosParaExportar(ficha as ScoutingPlayer, comparadoId)], archivoPorJugador: true });
+            const datos = [await datosParaExportar(ficha as ScoutingPlayer, comparadoId)];
+            const generar = () => exportarScouting({ formato: expFormato, idioma: expIdioma, jugadores: datos, archivoPorJugador: true });
+            const r = respaldo ? await conModeloDeRespaldo(generar) : await generar();
             setAviso({ tipo: r.avisos.length ? 'error' : 'ok', texto: resumenExport(r.archivos, r.avisos) });
         } catch (err: any) {
-            setAviso({ tipo: 'error', texto: `No se pudo exportar. ${err?.message || ''}` });
+            setAviso({ tipo: 'error', texto: textoFalloExport(err), respaldo: expIdioma === 'en' && esErrorDeGemini(err) });
         } finally {
             setExportando(false);
         }
     };
 
-    const exportarLista = async () => {
+    const exportarLista = async (respaldo = false) => {
         const llevaJugadores = expQue !== 'reporte';
         if (llevaJugadores && expIds.length === 0) { setAvisoLista({ tipo: 'error', texto: 'Elige al menos un jugador para exportar.' }); return; }
         setExportando(true); setAvisoLista(null);
@@ -715,14 +734,15 @@ const ScoutingPage: React.FC = () => {
                 // En el mismo orden en que se ven en la lista.
                 for (const id of lista.filter((x) => expIds.includes(x.id)).map((x) => x.id)) jugadores.push(await datosParaExportar(await fetchScoutingPlayer(id)));
             }
-            const r = await exportarScouting({
+            const generar = () => exportarScouting({
                 formato: expFormato, idioma: expIdioma, jugadores,
                 reporte: expQue === 'jugadores' ? undefined : { jugadores: lista, filtros: filtrosReporte },
                 archivoPorJugador: expQue === 'jugadores',
             });
+            const r = respaldo ? await conModeloDeRespaldo(generar) : await generar();
             setAvisoLista({ tipo: r.avisos.length ? 'error' : 'ok', texto: resumenExport(r.archivos, r.avisos) });
         } catch (err: any) {
-            setAvisoLista({ tipo: 'error', texto: `No se pudo exportar. ${err?.message || ''}` });
+            setAvisoLista({ tipo: 'error', texto: textoFalloExport(err), respaldo: expIdioma === 'en' && esErrorDeGemini(err) });
         } finally {
             setExportando(false);
         }
@@ -801,10 +821,15 @@ const ScoutingPage: React.FC = () => {
                         <div className="flex flex-wrap items-end gap-5">
                             <Segmento titulo="Formato" valor={expFormato} onCambio={(v) => setExpFormato(v as 'pdf' | 'pptx')} opciones={[['pdf', 'PDF'], ['pptx', 'PowerPoint']]} />
                             <Segmento titulo="Idioma" valor={expIdioma} onCambio={(v) => setExpIdioma(v as Idioma)} opciones={[['es', 'Español'], ['en', 'English']]} />
-                            <button onClick={exportarLista} disabled={exportando} className="bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600 text-white font-semibold py-2 px-5 rounded-md text-sm">{exportando ? 'Generando…' : 'Descargar'}</button>
+                            <button onClick={() => exportarLista()} disabled={exportando} className="bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600 text-white font-semibold py-2 px-5 rounded-md text-sm">{exportando ? 'Generando…' : 'Descargar'}</button>
                         </div>
-                        {expIdioma === 'en' && expQue !== 'reporte' && <p className="text-xs text-gray-500">En inglés, los textos que escribiste a mano (descripción, puntos fuertes…) se traducen con la IA: una consulta a Gemini por jugador la primera vez.</p>}
-                        {avisoLista && <div className={`rounded-lg p-3 text-sm border ${avisoLista.tipo === 'ok' ? 'bg-green-900/40 border-green-800 text-green-200' : 'bg-amber-900/40 border-amber-700 text-amber-200'}`}>{avisoLista.texto}</div>}
+                        {expIdioma === 'en' && expQue !== 'reporte' && <p className="text-xs text-gray-500">En inglés, los textos que escribiste a mano (descripción, puntos fuertes…) se traducen con la IA: una consulta a Gemini por jugador la primera vez. Si Gemini no responde, no se descarga nada.</p>}
+                        {avisoLista && (
+                            <div className={`rounded-lg p-3 text-sm border ${avisoLista.tipo === 'ok' ? 'bg-green-900/40 border-green-800 text-green-200' : 'bg-amber-900/40 border-amber-700 text-amber-200'}`}>
+                                {avisoLista.texto}
+                                {avisoLista.respaldo && <BotonRespaldo ocupado={exportando} onClick={() => exportarLista(true)} />}
+                            </div>
+                        )}
                     </div>
                 )}
 
@@ -904,7 +929,10 @@ const ScoutingPage: React.FC = () => {
             </div>
 
             {aviso && (
-                <div className={`rounded-lg p-3 text-sm border ${aviso.tipo === 'ok' ? 'bg-green-900/40 border-green-800 text-green-200' : 'bg-red-900/40 border-red-800 text-red-300'}`}>{aviso.texto}</div>
+                <div className={`rounded-lg p-3 text-sm border ${aviso.tipo === 'ok' ? 'bg-green-900/40 border-green-800 text-green-200' : 'bg-red-900/40 border-red-800 text-red-300'}`}>
+                    {aviso.texto}
+                    {aviso.respaldo && <BotonRespaldo ocupado={exportando} onClick={() => exportarFicha(true)} />}
+                </div>
             )}
 
             {panelExport === 'ficha' && (
@@ -916,11 +944,11 @@ const ScoutingPage: React.FC = () => {
                     <div className="flex flex-wrap items-end gap-5">
                         <Segmento titulo="Formato" valor={expFormato} onCambio={(v) => setExpFormato(v as 'pdf' | 'pptx')} opciones={[['pdf', 'PDF'], ['pptx', 'PowerPoint']]} />
                         <Segmento titulo="Idioma" valor={expIdioma} onCambio={(v) => setExpIdioma(v as Idioma)} opciones={[['es', 'Español'], ['en', 'English']]} />
-                        <button onClick={exportarFicha} disabled={exportando} className="bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600 text-white font-semibold py-2 px-5 rounded-md text-sm">{exportando ? 'Generando…' : 'Descargar'}</button>
+                        <button onClick={() => exportarFicha()} disabled={exportando} className="bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600 text-white font-semibold py-2 px-5 rounded-md text-sm">{exportando ? 'Generando…' : 'Descargar'}</button>
                     </div>
                     <p className="text-xs text-gray-500">
                         Sale lo que ves en pantalla{hayCambios ? ', incluidos los cambios que todavía no guardas' : ''}. La comparación es contra el jugador elegido en la pestaña Comparación.
-                        {expIdioma === 'en' && ' En inglés, los textos que escribiste a mano se traducen con la IA (una consulta a Gemini la primera vez).'}
+                        {expIdioma === 'en' && ' En inglés, los textos que escribiste a mano se traducen con la IA (una consulta a Gemini la primera vez). Si Gemini no responde, no se descarga nada.'}
                     </p>
                 </div>
             )}
