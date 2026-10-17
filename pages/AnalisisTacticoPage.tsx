@@ -127,6 +127,9 @@ const MAX_TRACK_CANVAS_WIDTH = 1920;
 // grabaciones reales (panorámico de 2 celulares ni un celular en movimiento), así
 // que se oculta de la pantalla. El código sigue aquí por si algún día se retoma.
 const MOSTRAR_TRACKING_AUTOMATICO = false;
+// Las telestraciones viejas (tabla telestration_clips) ya no se muestran al fondo de cada
+// análisis: ahora cada telestración se guarda como su propio análisis, con Descargar.
+const MOSTRAR_TELESTRACIONES_ANTIGUAS = false;
 const MAX_JUGADORES_MANUALES = 6;
 interface MarcaManual { t: number; x: number; y: number }   // t = segundo del video; x,y de 0 a 1 sobre el video COMPLETO (los pies)
 interface JugadorManual { id: number; color: string; label: string; marcas: MarcaManual[] }   // marcas ordenadas por t
@@ -1106,7 +1109,7 @@ const AnalisisTacticoPage: React.FC = () => {
 
   // Cargar clips de telestración del mismo partido al entrar a review
   useEffect(() => {
-    if (view !== 'review' || !selectedAnalysis?.match_id) {
+    if (!MOSTRAR_TELESTRACIONES_ANTIGUAS || view !== 'review' || !selectedAnalysis?.match_id) {
       setTelestrationClips([]); setTelestrationUrls({}); return;
     }
     setLoadingTelestrationClips(true);
@@ -2244,8 +2247,8 @@ const AnalisisTacticoPage: React.FC = () => {
           </div>
         )}
 
-        {/* ── Clips de telestración del partido ── */}
-        {loadingTelestrationClips ? (
+        {/* ── Clips de telestración del partido (formato viejo, oculto) ── */}
+        {!MOSTRAR_TELESTRACIONES_ANTIGUAS ? null : loadingTelestrationClips ? (
           <div className="flex items-center gap-3 bg-gray-800 rounded-xl p-4 text-gray-400">
             <Spinner /><span className="text-sm">Cargando telestraciones...</span>
           </div>

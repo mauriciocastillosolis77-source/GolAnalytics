@@ -8,7 +8,7 @@ import type { Match, Tag, Player, RivalAnalysis, RivalTipo, RivalZona, TeamAnaly
 import { TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona, etiquetaZona } from '../utils/zonas';
 import { esJugadorFicticio, cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios } from '../utils/efectividad';
 import { ALTURAS, LADOS, codigoPorteria, detalleGolDe, resumenGol, etiquetaPorteria } from '../utils/goles';
-import { esAccionBalonParado, contarCobros, contarPenales, envioMasUsado, ENVIO_LABEL, CORNER_FAVOR, CORNER_CONTRA, TL_FAVOR, TL_CONTRA, PENAL_FAVOR, PENAL_CONTRA } from '../utils/balonParado';
+import { lecturaDefiendeBp, esAccionBalonParado, contarCobros, contarPenales, envioMasUsado, ENVIO_LABEL, CORNER_FAVOR, CORNER_CONTRA, TL_FAVOR, TL_CONTRA, PENAL_FAVOR, PENAL_CONTRA } from '../utils/balonParado';
 import { textosPptx, porteriaEn, type TextosPptx } from '../utils/reportePptxI18n';
 import type { Idioma } from '../utils/scoutingI18n';
 import { traducirObjeto } from './traduccionService';
@@ -293,18 +293,8 @@ function resumenBalonParado(rival: RivalAnalysis) {
     lecturaPenal = mayus(texto);
   }
 
-  const conMarc = defiende.filter((d) => d.attr1);
-  const marcajes = contarLista(conMarc.map((d) => d.attr1), BP_MARCAJES);
-  const golesDef = defiende.filter((d) => d.attr2 === 'Gol').length;
-  const rematesDef = defiende.filter((d) => d.attr2 === 'Remate' || d.attr2 === 'Gol').length;
-  const conResDef = defiende.filter((d) => !!d.attr2).length;
-  const partesD: string[] = [];
-  if (conMarc.length > 0) {
-    const top = [...marcajes].sort((a, b) => b.n - a.n)[0];
-    partesD.push(`Defiende ${top.label.toLowerCase()} en ${top.n} de ${conMarc.length} cobros`);
-  }
-  if (conResDef > 0) partesD.push(`le remataron ${rematesDef} ${rematesDef === 1 ? 'vez' : 'veces'} y le anotaron ${golesDef}`);
-  const lecturaDefiende = mayus(partesD.length ? `${partesD.join('; ')}.` : 'Sin detalle suficiente.');
+  // Cuando defiende: leído por tipo de cobro (córner / tiro libre / penal).
+  const lecturaDefiende = lecturaDefiendeBp(defiende.map((m) => (m.cobro === 'Penal' ? { cobro: 'Penal', marc: null, res: m.attr1 || null, porteria: m.porteria || null } : { cobro: m.cobro || null, marc: m.attr1 || null, res: m.attr2 || null })), 'es').lectura || 'Sin detalle suficiente.';
 
   return {
     cobra: {
@@ -398,18 +388,7 @@ function resumenBalonParadoEn(rival: RivalAnalysis) {
     lecturaPenal = mayusEn(texto);
   }
 
-  const conMarc = defiende.filter((d) => d.attr1);
-  const marcajes = contarLista(conMarc.map((d) => d.attr1), BP_MARCAJES);
-  const golesDef = defiende.filter((d) => d.attr2 === 'Gol').length;
-  const rematesDef = defiende.filter((d) => d.attr2 === 'Remate' || d.attr2 === 'Gol').length;
-  const conResDef = defiende.filter((d) => !!d.attr2).length;
-  const partesD: string[] = [];
-  if (conMarc.length > 0) {
-    const top = [...marcajes].sort((a, b) => b.n - a.n)[0];
-    partesD.push(`Defends ${MARCAJE_EN[top.label] || top.label.toLowerCase()} at ${top.n} of ${conMarc.length} set pieces`);
-  }
-  if (conResDef > 0) partesD.push(`faced ${rematesDef} ${rematesDef === 1 ? 'attempt' : 'attempts'} on goal and conceded ${golesDef}`);
-  const lecturaDefiende = mayusEn(partesD.length ? `${partesD.join('; ')}.` : 'Not enough detail.');
+  const lecturaDefiende = lecturaDefiendeBp(defiende.map((m) => (m.cobro === 'Penal' ? { cobro: 'Penal', marc: null, res: m.attr1 || null, porteria: m.porteria || null } : { cobro: m.cobro || null, marc: m.attr1 || null, res: m.attr2 || null })), 'en', (c) => porteriaEn(c)).lectura || 'Not enough detail.';
 
   return {
     cobra: {
