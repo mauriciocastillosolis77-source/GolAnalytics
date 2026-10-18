@@ -1549,9 +1549,15 @@ const AnalisisRivalPage: React.FC = () => {
           {saveMsg && <p className={`text-center text-sm ${saveMsg.ok ? 'text-green-400' : 'text-red-400'}`}>{saveMsg.text}</p>}
           {!tabDafo && !tabJugadoresClave && !tabPlanPartido && !tabAlineacion && REPORT_QUESTION[repTipo] && <p className="text-sm text-gray-400 italic">{REPORT_QUESTION[repTipo]}</p>}
 
-          {tabAlineacion && selected ? (
-            <AlineacionSugeridaEditor analisis={selected} jugadores={playersEquipo} editable={isAdmin}
-              onGuardada={(data) => { setSelected(data); setAnalyses(prev => prev.map(a => a.id === data.id ? data : a)); }} />
+          {tabAlineacion ? (
+            selected ? (
+              <AlineacionSugeridaEditor analisis={selected} jugadores={playersEquipo} editable={isAdmin}
+                onGuardada={(data) => { setSelected(data); setAnalyses(prev => prev.map(a => a.id === data.id ? data : a)); }} />
+            ) : (
+              <div className="bg-gray-800 rounded-lg p-6 text-sm text-gray-300" data-alineacion-sin-guardar>
+                Primero guarda el análisis (botón «Guardar análisis» en la pestaña de etiquetar) — la alineación sugerida se guarda junto con el análisis del rival. Si ya tienes análisis de este rival, ábrelo desde la lista de Análisis del Rival.
+              </div>
+            )
           ) : tabPlanPartido ? (
             <div className="space-y-4">
               <p className="text-xs text-gray-500">Se genera solo, con lo que ya tienes en Fases, Balón Parado y DAFO — después puedes ajustar o mejorar cualquier campo a mano. Sale al final del PDF y del PowerPoint del partido.</p>
