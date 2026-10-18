@@ -74,6 +74,14 @@ interface RivalReportData {
   dafo?: { fortalezas: string[]; debilidades: string[]; oportunidades: string[]; amenazas: string[] };
   planPartido?: RivalPlanPartido;
   temas?: string[];
+  /** Alineación sugerida, ya con nombres y puestos en el idioma del archivo. */
+  alineacion?: AlineacionPDF;
+}
+
+export interface AlineacionPDF {
+  formacion: string;
+  puestos: Array<{ puesto: string; numero: string; nombre: string; x: number; y: number; motivo: string }>;
+  nota: string;
 }
 
 const ZONA_COLOR_RGB: Record<string, [number, number, number]> = {
@@ -552,6 +560,61 @@ function addPlanPartidoSection(doc: jsPDF, equipo: string, rival: string, plan: 
   return y + 2;
 }
 
+// Alineación sugerida: cancha vertical (atacamos hacia arriba) con el número y
+// nombre de cada jugador, y al lado el porqué de cada puesto y la nota general.
+function addAlineacionSection(doc: jsPDF, rival: string, al: AlineacionPDF, startY: number, pageWidth: number, tx: TextosReportes): number {
+  const pageHeight = doc.internal.pageSize.getHeight();
+  let y = startY;
+  const cw = 62, ch = 88;
+  if (y + 12 + ch > pageHeight - 28) { doc.addPage(); y = 20; }
+  y = addSection(doc, tx.alineacionTitulo(rival), y, pageWidth) + 2;
+  doc.setFontSize(8.5); doc.setFont('helvetica', 'italic'); doc.setTextColor(...COLORS.secondary);
+  doc.text(tx.formacionLinea(al.formacion), 15, y); y += 4;
+
+  // Cancha
+  const x0 = 15, y0 = y;
+  for (let i = 0; i < 8; i++) { doc.setFillColor(...(i % 2 ? [54, 124, 57] : [61, 139, 64]) as [number, number, number]); doc.rect(x0, y0 + (ch / 8) * i, cw, ch / 8 + 0.1, 'F'); }
+  doc.setDrawColor(232, 245, 233); doc.setLineWidth(0.3);
+  doc.rect(x0 + 2, y0 + 2, cw - 4, ch - 4);
+  doc.line(x0 + 2, y0 + ch / 2, x0 + cw - 2, y0 + ch / 2);
+  doc.circle(x0 + cw / 2, y0 + ch / 2, 6, 'S');
+  doc.rect(x0 + cw / 2 - 15, y0 + 2, 30, 12); doc.rect(x0 + cw / 2 - 15, y0 + ch - 14, 30, 12);
+  al.puestos.forEach((p) => {
+    const px = x0 + (p.x / 100) * cw, py = y0 + (p.y / 100) * ch;
+    doc.setFillColor(255, 206, 84); doc.setDrawColor(10, 11, 20); doc.setLineWidth(0.4);
+    doc.circle(px, py, 2.6, 'FD');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(6); doc.setTextColor(17, 17, 17);
+    doc.text(p.numero || '', px, py + 0.9, { align: 'center' });
+    doc.setFontSize(5.8); doc.setTextColor(255, 255, 255);
+    doc.text(p.nombre, px, py + 5.2, { align: 'center' });
+  });
+
+  // Por qué
+  const tx0 = x0 + cw + 8, tw = pageWidth - tx0 - 15;
+  let ty = y0 + 3;
+  doc.setFont('helvetica', 'bold'); doc.setFontSize(8.5); doc.setTextColor(...COLORS.primary);
+  doc.text(tx.porQue.toUpperCase(), tx0, ty); ty += 5;
+  const conMotivo = al.puestos.filter((p) => p.motivo.trim());
+  if (conMotivo.length === 0) {
+    doc.setFont('helvetica', 'italic'); doc.setFontSize(8); doc.setTextColor(...COLORS.text);
+    doc.text(tx.sinMotivos, tx0, ty); ty += 5;
+  }
+  conMotivo.forEach((p) => {
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(8); doc.setTextColor(...COLORS.primary);
+    const cab = `${p.nombre} · ${p.puesto}`;
+    doc.text(cab, tx0, ty); ty += 3.8;
+    doc.setFont('helvetica', 'normal'); doc.setTextColor(...COLORS.text);
+    const l = doc.splitTextToSize(p.motivo, tw);
+    doc.text(l, tx0, ty); ty += l.length * 3.8 + 2;
+  });
+  if (al.nota.trim()) {
+    doc.setFont('helvetica', 'italic'); doc.setFontSize(8); doc.setTextColor(...COLORS.secondary);
+    const l = doc.splitTextToSize(al.nota.trim(), tw);
+    doc.text(l, tx0, ty + 1); ty += l.length * 3.8 + 3;
+  }
+  return Math.max(y0 + ch, ty) + 6;
+}
+
 // Recomendaciones de trabajo de la semana: objetivos cortos derivados del
 // rival — a propósito NO son ejercicios armados (el sistema no sabe espacio,
 // cuántos entrenan, ni el microciclo), por eso la leyenda de abajo se queda.
@@ -889,6 +952,7 @@ export async function exportRivalAnalysisToPDF(
   if (data.jugadoresClave && data.jugadoresClave.length > 0) y = addJugadoresClaveSection(doc, data.jugadoresClave, y, pageWidth, tx);
   if (data.dafo) y = addDafoSection(doc, data.dafo, y, pageWidth, tx);
   if (data.planPartido) y = addPlanPartidoSection(doc, options.teamName, data.rivalName, data.planPartido, y, pageWidth, tx);
+  if (data.alineacion && data.alineacion.puestos.length > 0) y = addAlineacionSection(doc, data.rivalName, data.alineacion, y, pageWidth, tx);
   if (data.temas && data.temas.length > 0) y = addTemasEntrenamientoSection(doc, data.temas, y, pageWidth, tx);
 
   addFooter(doc, tx);

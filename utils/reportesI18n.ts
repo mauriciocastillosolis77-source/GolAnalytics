@@ -99,6 +99,10 @@ const ES = {
   conteoCorners: (n: number) => `${n} córner${n === 1 ? '' : 's'}`,
   conteoTirosLibres: (n: number) => `${n} tiro${n === 1 ? '' : 's'} libre${n === 1 ? '' : 's'}`,
   bpSinCobrosOtroEquipo: 'Sin cobros del otro equipo registrados todavía.',
+  alineacionTitulo: (rival: string) => `ALINEACIÓN SUGERIDA CONTRA ${rival.toUpperCase()}`,
+  formacionLinea: (f: string) => `Sistema: 1-${f}`,
+  porQue: 'Por qué',
+  sinMotivos: 'Sin comentarios por puesto.',
 };
 
 export type TextosReportes = typeof ES;
@@ -183,6 +187,10 @@ const EN: TextosReportes = {
   conteoCorners: (n) => `${n} ${plural(n, 'corner', 'corners')}`,
   conteoTirosLibres: (n) => `${n} ${plural(n, 'free kick', 'free kicks')}`,
   bpSinCobrosOtroEquipo: 'No set pieces from the other side logged yet.',
+  alineacionTitulo: (rival) => `SUGGESTED LINE-UP AGAINST ${rival.toUpperCase()}`,
+  formacionLinea: (f) => `Formation: 1-${f}`,
+  porQue: 'Why',
+  sinMotivos: 'No notes by position.',
 };
 
 /** Textos fijos de los reportes en el idioma pedido (sin idioma = español). */

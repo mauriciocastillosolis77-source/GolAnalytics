@@ -6,6 +6,7 @@ import { generateMatchReportPptx, mejorarRedaccionChecklist, previewEstiloDeJueg
 import { conModeloDeRespaldo, esErrorDeGemini, mensajeErrorGemini } from '../services/geminiConfig';
 import { SelectorIdioma } from '../components/ui/IdiomaExport';
 import PublicarReporteDT from '../components/reportes/PublicarReporteDT';
+import { fechaLocal } from '../utils/alineacion';
 import { textosReportes, type Idioma } from '../utils/reportesI18n';
 import { leerTextoIAReporte, contarJugadasPartido } from '../services/reporteIAGuardadoService';
 import { Link } from 'react-router-dom';
@@ -883,7 +884,7 @@ const GenerarReportesPage: React.FC = () => {
             <p className="text-lg font-semibold text-white">{selectedMatch.nombre_equipo} vs {selectedMatch.rival}</p>
             <p className="text-sm text-gray-400">
               Jornada {selectedMatch.jornada} · {selectedMatch.torneo} ({selectedMatch.categoria}) ·{' '}
-              {new Date(selectedMatch.fecha).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' })}
+              {fechaLocal(selectedMatch.fecha).toLocaleDateString('es-MX', { day: 'numeric', month: 'long', year: 'numeric' })}
             </p>
           </div>
         </div>

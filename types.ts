@@ -1,4 +1,5 @@
 import type { Session, User, AuthError } from '@supabase/supabase-js';
+import type { AlineacionSugerida } from './utils/alineacion';
 
 export interface Match {
   id: string;
@@ -269,6 +270,8 @@ export interface RivalAnalysis {
   jugadores_clave?: JugadorClave[] | null;
   plan_partido?: PlanPartido | null;
   temas_entrenamiento?: string[] | null;
+  // Alineación sugerida contra este rival (formación, jugador y motivo por puesto, nota).
+  alineacion?: AlineacionSugerida | null;
   created_by?: string | null;
   created_at: string;
 }

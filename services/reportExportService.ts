@@ -12,6 +12,7 @@ import { lecturaDefiendeBp, esAccionBalonParado, contarCobros, contarPenales, en
 import { textosPptx, porteriaEn, type TextosPptx } from '../utils/reportePptxI18n';
 import type { Idioma } from '../utils/scoutingI18n';
 import { traducirObjeto } from './traduccionService';
+import { alineacionConContenido, nombrePuesto, nombreCorto, fechaLocal } from '../utils/alineacion';
 
 // ── Marca GolAnalytics ──────────────────────────────────────────────────
 const COLOR = {
@@ -851,6 +852,9 @@ export async function generateMatchReportPptx(
         dafo: rivalAnalysis.dafo ? { fortalezas: rivalAnalysis.dafo.fortalezas || [], debilidades: rivalAnalysis.dafo.debilidades || [], oportunidades: rivalAnalysis.dafo.oportunidades || [], amenazas: rivalAnalysis.dafo.amenazas || [] } : null,
         plan: plan ? { estrategia: plan.estrategia || '', adaptaciones: plan.adaptaciones || [], abpOfensivo: plan.abpOfensivo || '', abpDefensivo: plan.abpDefensivo || '' } : null,
         temas: rivalAnalysis.temas_entrenamiento || [],
+        alineacion: alineacionConContenido(rivalAnalysis.alineacion)
+          ? { motivos: rivalAnalysis.alineacion.puestos.map((p) => p.motivo || ''), nota: rivalAnalysis.alineacion.nota || '' }
+          : null,
       } : null,
     };
     const r = await traducirObjeto(`partido:${match.id}`, libres,
@@ -886,6 +890,9 @@ export async function generateMatchReportPptx(
         dafo: rivalAnalysis.dafo && er.dafo ? { ...rivalAnalysis.dafo, ...er.dafo } : rivalAnalysis.dafo,
         plan_partido: plan && er.plan ? { ...plan, ...er.plan } : plan,
         temas_entrenamiento: rivalAnalysis.temas_entrenamiento ? er.temas : rivalAnalysis.temas_entrenamiento,
+        alineacion: rivalAnalysis.alineacion && er.alineacion
+          ? { ...rivalAnalysis.alineacion, nota: er.alineacion.nota, puestos: rivalAnalysis.alineacion.puestos.map((p, i) => ({ ...p, motivo: er.alineacion!.motivos[i] ?? p.motivo })) }
+          : rivalAnalysis.alineacion,
       };
     }
   }
@@ -893,7 +900,8 @@ export async function generateMatchReportPptx(
   // ── Construcción del .pptx ────────────────────────────────────────────
   const pres = new pptxgen();
   pres.layout = 'LAYOUT_WIDE';
-  const fechaFmt = new Date(match.fecha).toLocaleDateString(T.locale, { day: 'numeric', month: 'long', year: 'numeric' });
+  // La fecha en que se jugó (la registrada en el partido), sin el desfase de zona horaria.
+  const fechaFmt = fechaLocal(match.fecha).toLocaleDateString(T.locale, { day: 'numeric', month: 'long', year: 'numeric' });
   let slideNum = 0;
   const nextNum = () => (++slideNum).toString();
 
@@ -1515,6 +1523,45 @@ export async function generateMatchReportPptx(
     if (plan.abpOfensivo) bloquePlan(T.planAbpOfensivo, plan.abpOfensivo);
     if (plan.abpDefensivo) bloquePlan(T.planAbpDefensivo, plan.abpDefensivo);
 
+    footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
+  }
+
+  // Slide — Alineación sugerida contra el próximo rival (Análisis del Rival → "Alineación sugerida").
+  // Solo sale si tiene al menos un jugador asignado. Cancha vertical, atacamos hacia arriba.
+  if (rival && alineacionConContenido(rival.alineacion)) {
+    const al = rival.alineacion;
+    const slide = pres.addSlide();
+    slide.background = { color: COLOR.white };
+    sectionHeader(slide, T.proximoRival, T.alineacionTitulo(rivalNombre));
+    const cx = 0.6, cy = 1.45, cw = 3.6, ch = 5.15;
+    for (let i = 0; i < 8; i++) slide.addShape(pres.ShapeType.rect, { x: cx, y: cy + (ch / 8) * i, w: cw, h: ch / 8 + 0.01, fill: { color: i % 2 ? '367C39' : '3D8B40' }, line: { type: 'none' } });
+    const linea = { color: 'E8F5E9', width: 1 };
+    slide.addShape(pres.ShapeType.rect, { x: cx + 0.1, y: cy + 0.1, w: cw - 0.2, h: ch - 0.2, fill: { type: 'none' } as any, line: linea });
+    slide.addShape(pres.ShapeType.line, { x: cx + 0.1, y: cy + ch / 2, w: cw - 0.2, h: 0, line: linea });
+    slide.addShape(pres.ShapeType.ellipse, { x: cx + cw / 2 - 0.4, y: cy + ch / 2 - 0.4, w: 0.8, h: 0.8, fill: { type: 'none' } as any, line: linea });
+    slide.addShape(pres.ShapeType.rect, { x: cx + cw / 2 - 0.95, y: cy + 0.1, w: 1.9, h: 0.75, fill: { type: 'none' } as any, line: linea });
+    slide.addShape(pres.ShapeType.rect, { x: cx + cw / 2 - 0.95, y: cy + ch - 0.85, w: 1.9, h: 0.75, fill: { type: 'none' } as any, line: linea });
+    const conJugador = al.puestos.filter((p) => p.player_id);
+    conJugador.forEach((p) => {
+      const j = players.find((x) => x.id === p.player_id);
+      const px = cx + (p.x / 100) * cw, py = cy + (p.y / 100) * ch, d = 0.36;
+      slide.addShape(pres.ShapeType.ellipse, { x: px - d / 2, y: py - d / 2, w: d, h: d, fill: { color: COLOR.gold }, line: { color: COLOR.navy, width: 1.5 } });
+      slide.addText(j?.numero != null ? String(j.numero) : '', { x: px - d / 2, y: py - d / 2, w: d, h: d, fontFace: FONT_BODY, fontSize: 9, bold: true, color: '111111', align: 'center', valign: 'middle', isTextBox: true, margin: 0 });
+      slide.addText(j ? nombreCorto(j.nombre) : '—', { x: px - 0.6, y: py + d / 2, w: 1.2, h: 0.22, fontFace: FONT_BODY, fontSize: 8, bold: true, color: COLOR.white, align: 'center', isTextBox: true, margin: 0 });
+    });
+    slide.addText(T.sistema(al.formacion), { x: cx, y: cy + ch + 0.03, w: cw, h: 0.25, fontFace: FONT_BODY, fontSize: 9, italic: true, color: COLOR.gray, align: 'center', isTextBox: true, margin: 0 });
+
+    const conMotivo = conJugador.filter((p) => (p.motivo || '').trim());
+    const runs: any[] = [];
+    conMotivo.forEach((p, i) => {
+      const j = players.find((x) => x.id === p.player_id);
+      runs.push({ text: `${j ? nombreCorto(j.nombre) : '—'} · ${nombrePuesto(p.clave, al.formacion, idioma)}`, options: { bold: true, color: COLOR.indigo } });
+      runs.push({ text: ` — ${stripMd(p.motivo.trim())}`, options: { color: COLOR.ink, breakLine: true, paraSpaceAfter: 6 } });
+    });
+    if (conMotivo.length === 0) runs.push({ text: T.sinMotivos, options: { italic: true, color: COLOR.gray, breakLine: true, paraSpaceAfter: 6 } });
+    if ((al.nota || '').trim()) runs.push({ text: stripMd(al.nota.trim()), options: { italic: true, color: COLOR.gray } });
+    slide.addText(T.porQue, { x: 4.8, y: 1.45, w: 7.6, h: 0.3, fontFace: FONT_BODY, fontSize: 11, bold: true, color: COLOR.indigo, charSpacing: 2, isTextBox: true, margin: 0 });
+    slide.addText(runs, { x: 4.8, y: 1.85, w: 7.6, h: 4.95, fontFace: FONT_BODY, fontSize: conMotivo.length > 8 ? 10 : 11.5, valign: 'top', isTextBox: true, margin: 0, fit: 'shrink' } as any);
     footer(pres, slide, match.nombre_equipo, false, nextNum(), teamLogoBase64);
   }
 

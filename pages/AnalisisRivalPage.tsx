@@ -18,6 +18,8 @@ import { mejorarRedaccionChecklist } from '../services/reportExportService';
 import { generarPlanPartidoRival } from '../services/planPartidoService';
 import { etiquetaPorteria } from '../utils/goles';
 import PorteriaEstadio from '../components/charts/PorteriaEstadio';
+import AlineacionSugeridaEditor from '../components/rival/AlineacionSugeridaEditor';
+import { alineacionConContenido, nombrePuesto, nombreCorto } from '../utils/alineacion';
 import { SelectorIdioma, AvisoExportIngles, useExportConIdioma } from '../components/ui/IdiomaExport';
 import { textosReportes, type Idioma } from '../utils/reportesI18n';
 import { traducirObjeto } from '../services/traduccionService';
@@ -353,6 +355,7 @@ const AnalisisRivalPage: React.FC = () => {
   const [tabDafo, setTabDafo] = useState(false);
   const [tabJugadoresClave, setTabJugadoresClave] = useState(false);
   const [tabPlanPartido, setTabPlanPartido] = useState(false);
+  const [tabAlineacion, setTabAlineacion] = useState(false);
 
   // ── Partidos propios contra este rival (para Balón parado y DAFO) ──
   const [matchesEquipo, setMatchesEquipo] = useState<Match[]>([]);
@@ -1136,6 +1139,9 @@ const AnalisisRivalPage: React.FC = () => {
         dafo: dafoRep || null,
         plan: planRep ? { estrategia: planRep.estrategia, adaptaciones: planRep.adaptaciones, abpOfensivo: planRep.abpOfensivo, abpDefensivo: planRep.abpDefensivo } : null,
         temas: temasRep,
+        alineacion: alineacionConContenido(sel.alineacion)
+          ? { motivos: sel.alineacion.puestos.filter(p => p.player_id).map(p => p.motivo || ''), nota: sel.alineacion.nota || '' }
+          : null,
       };
       let guardada = true;
       if (idioma === 'en') {
@@ -1172,6 +1178,22 @@ const AnalisisRivalPage: React.FC = () => {
           planPartido: libres.plan || undefined,
           temas: libres.temas,
           dafo: libres.dafo || undefined,
+          alineacion: (() => {
+            const al = sel.alineacion;
+            if (!alineacionConContenido(al)) return undefined;
+            const conJugador = al.puestos.filter(p => p.player_id);
+            return {
+              formacion: al.formacion,
+              nota: libres.alineacion?.nota || '',
+              puestos: conJugador.map((p, i) => {
+                const j = playersEquipo.find(x => x.id === p.player_id);
+                return {
+                  puesto: nombrePuesto(p.clave, al.formacion, idioma), numero: j?.numero != null ? String(j.numero) : '',
+                  nombre: j ? nombreCorto(j.nombre) : '—', x: p.x, y: p.y, motivo: libres.alineacion?.motivos[i] || '',
+                };
+              }),
+            };
+          })(),
         },
         { userName: profile?.username || tx.firmaPorDefecto, teamName: teamName(sel.team_id), idioma }
       );
@@ -1517,16 +1539,20 @@ const AnalisisRivalPage: React.FC = () => {
 
           <div className="flex gap-2 flex-wrap">
             {REPORT_TIPOS.map(t => (
-              <button key={t} onClick={() => { setRepTipo(t); setTabDafo(false); setTabJugadoresClave(false); setTabPlanPartido(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${!tabDafo && !tabJugadoresClave && !tabPlanPartido && repTipo === t ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>{TIPO_LABEL[t]}</button>
+              <button key={t} onClick={() => { setRepTipo(t); setTabDafo(false); setTabJugadoresClave(false); setTabPlanPartido(false); setTabAlineacion(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${!tabDafo && !tabJugadoresClave && !tabPlanPartido && !tabAlineacion && repTipo === t ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>{TIPO_LABEL[t]}</button>
             ))}
-            <button onClick={() => { setTabDafo(true); setTabJugadoresClave(false); setTabPlanPartido(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabDafo ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>DAFO</button>
-            <button onClick={() => { setTabJugadoresClave(true); setTabDafo(false); setTabPlanPartido(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabJugadoresClave ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>Jugadores clave</button>
-            <button onClick={() => { setTabPlanPartido(true); setTabDafo(false); setTabJugadoresClave(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabPlanPartido ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>Plan de partido</button>
+            <button onClick={() => { setTabDafo(true); setTabJugadoresClave(false); setTabPlanPartido(false); setTabAlineacion(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabDafo && !tabAlineacion ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>DAFO</button>
+            <button onClick={() => { setTabJugadoresClave(true); setTabDafo(false); setTabPlanPartido(false); setTabAlineacion(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabJugadoresClave && !tabAlineacion ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>Jugadores clave</button>
+            <button onClick={() => { setTabPlanPartido(true); setTabDafo(false); setTabJugadoresClave(false); setTabAlineacion(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabPlanPartido && !tabAlineacion ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>Plan de partido</button>
+            <button onClick={() => { setTabAlineacion(true); setTabDafo(false); setTabJugadoresClave(false); setTabPlanPartido(false); }} className={`flex-1 px-3 py-2 rounded-lg text-sm transition-colors ${tabAlineacion ? 'bg-white text-gray-900' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}>Alineación sugerida</button>
           </div>
           {saveMsg && <p className={`text-center text-sm ${saveMsg.ok ? 'text-green-400' : 'text-red-400'}`}>{saveMsg.text}</p>}
-          {!tabDafo && !tabJugadoresClave && !tabPlanPartido && REPORT_QUESTION[repTipo] && <p className="text-sm text-gray-400 italic">{REPORT_QUESTION[repTipo]}</p>}
+          {!tabDafo && !tabJugadoresClave && !tabPlanPartido && !tabAlineacion && REPORT_QUESTION[repTipo] && <p className="text-sm text-gray-400 italic">{REPORT_QUESTION[repTipo]}</p>}
 
-          {tabPlanPartido ? (
+          {tabAlineacion && selected ? (
+            <AlineacionSugeridaEditor analisis={selected} jugadores={playersEquipo} editable={isAdmin}
+              onGuardada={(data) => { setSelected(data); setAnalyses(prev => prev.map(a => a.id === data.id ? data : a)); }} />
+          ) : tabPlanPartido ? (
             <div className="space-y-4">
               <p className="text-xs text-gray-500">Se genera solo, con lo que ya tienes en Fases, Balón Parado y DAFO — después puedes ajustar o mejorar cualquier campo a mano. Sale al final del PDF y del PowerPoint del partido.</p>
 
