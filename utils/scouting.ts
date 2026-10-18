@@ -109,6 +109,8 @@ export interface ScoutingPlayer {
   modelo_juego: string | null;
   puntos_fuertes: string | null;
   puntos_debiles: string | null;
+  /** Equipos (ids de `teams`) cuyo DT puede ver esta ficha en "Scouting DT". Vacío = solo el admin. */
+  compartir_con?: string[] | null;
   created_at?: string;
   updated_at?: string;
 }

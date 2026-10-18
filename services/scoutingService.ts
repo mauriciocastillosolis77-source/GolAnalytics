@@ -10,6 +10,9 @@ import type { ScoutingPlayer } from '../utils/scouting';
 /** Mensaje claro cuando falta correr el SQL de esta entrega. */
 function traducirError(error: any, accion: string): Error {
   const msg = String(error?.message || error || '');
+  if (/compartir_con/.test(msg)) {
+    return new Error('Falta la columna para compartir con el DT en Supabase. Corre el SQL de Scouting DT y vuelve a intentar.');
+  }
   if (/scouting_players/.test(msg) && /(does not exist|schema cache|not find)/i.test(msg)) {
     return new Error('Falta crear la tabla de Scouting en Supabase. Corre el SQL de esta entrega y vuelve a intentar.');
   }
@@ -18,10 +21,14 @@ function traducirError(error: any, accion: string): Error {
 
 // Para la lista no se trae la foto: así carga rápido aunque haya muchas fichas.
 const COLUMNAS_LISTA = 'id, player_id, nombre, equipo, competicion, puesto, dorsal, nacionalidad, tipo_jugador, valoracion, cualidades, updated_at';
-export type ScoutingPlayerLista = Pick<ScoutingPlayer, 'id' | 'player_id' | 'nombre' | 'equipo' | 'competicion' | 'puesto' | 'dorsal' | 'nacionalidad' | 'tipo_jugador' | 'valoracion' | 'cualidades' | 'updated_at'>;
+export type ScoutingPlayerLista = Pick<ScoutingPlayer, 'id' | 'player_id' | 'nombre' | 'equipo' | 'competicion' | 'puesto' | 'dorsal' | 'nacionalidad' | 'tipo_jugador' | 'valoracion' | 'cualidades' | 'updated_at' | 'compartir_con'>;
 
 export async function fetchScoutingPlayers(): Promise<ScoutingPlayerLista[]> {
-  const { data, error } = await supabase.from('scouting_players').select(COLUMNAS_LISTA).order('nombre', { ascending: true });
+  let { data, error }: { data: any[] | null; error: any } = await supabase.from('scouting_players').select(`${COLUMNAS_LISTA}, compartir_con`).order('nombre', { ascending: true });
+  // Si todavía no se corre el SQL de Scouting DT, la lista se carga igual (sin la columna nueva).
+  if (error && /compartir_con/.test(String(error.message || ''))) {
+    ({ data, error } = await supabase.from('scouting_players').select(COLUMNAS_LISTA).order('nombre', { ascending: true }));
+  }
   if (error) throw traducirError(error, 'cargar las fichas');
   return (data || []) as unknown as ScoutingPlayerLista[];
 }

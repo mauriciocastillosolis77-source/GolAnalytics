@@ -13,6 +13,7 @@ import AnalisisRivalPage from './pages/AnalisisRivalPage';
 import ModeloJuegoPage from './pages/ModeloJuegoPage';
 import ScoutingPage from './pages/ScoutingPage';
 import AnalisisPostPartidoDTPage from './pages/AnalisisPostPartidoDTPage';
+import ScoutingDTPage from './pages/ScoutingDTPage';
 import NotFoundPage from './pages/NotFoundPage';
 import Layout from './components/layout/Layout';
 import { Spinner } from './components/ui/Spinner';
@@ -52,6 +53,7 @@ const App: React.FC = () => {
             <Route path="/analisis-rival" element={<ProtectedRoute><Layout><AnalisisRivalPage /></Layout></ProtectedRoute>} />
             <Route path="/modelo-juego" element={<ProtectedRoute><Layout><ModeloJuegoPage /></Layout></ProtectedRoute>} />
             <Route path="/analisis-post-partido-dt" element={<ProtectedRoute><Layout><AnalisisPostPartidoDTPage /></Layout></ProtectedRoute>} />
+            <Route path="/scouting-dt" element={<ProtectedRoute><Layout><ScoutingDTPage /></Layout></ProtectedRoute>} />
             <Route 
               path="/tagger" 
               element={

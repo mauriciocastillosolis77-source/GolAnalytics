@@ -13,6 +13,7 @@ import { fetchNumerosJugador, guardarPartidoManual, eliminarPartidoManual, guard
 import { exportarScouting, medirFoto, type FiltrosReporte, type DatosJugadorExport } from '../services/scoutingExportService';
 import type { Idioma } from '../utils/scoutingI18n';
 import { conModeloDeRespaldo, esErrorDeGemini, mensajeErrorGemini } from '../services/geminiConfig';
+import { fetchTeams, type Team } from '../services/teamsService';
 import {
     fetchScoutingPlayers, fetchScoutingPlayer, guardarScoutingPlayer, eliminarScoutingPlayer,
     fetchJugadoresEquipo, setJugadorActivo,
@@ -58,7 +59,7 @@ const Campo: React.FC<{ label: string; ayuda?: string; children: React.ReactNode
 
 const colorMedia = (m: number | null) => (m === null ? '#4b5563' : m >= 7 ? '#16a34a' : m >= 5 ? '#d97706' : '#dc2626');
 
-const ChipMedia: React.FC<{ valor: number | null; grande?: boolean }> = ({ valor, grande }) => (
+export const ChipMedia: React.FC<{ valor: number | null; grande?: boolean }> = ({ valor, grande }) => (
     <span
         className={`inline-flex items-center justify-center rounded-md font-bold text-white ${grande ? 'text-xl w-14 h-11' : 'text-sm w-11 h-8'}`}
         style={{ backgroundColor: colorMedia(valor) }}
@@ -297,7 +298,7 @@ const NumerosJugador: React.FC<{ fichaId?: string; playerId: string | null; comp
 // y equipo) filtra quiénes entran a la cancha. Se dibuja sobre hoja blanca,
 // como la plantilla, porque es lo que después se va a exportar.
 // ─────────────────────────────────────────────────────────────────────────────
-const BotonFiltro: React.FC<{ activo: boolean; onClick: () => void; children: React.ReactNode }> = ({ activo, onClick, children }) => (
+export const BotonFiltro: React.FC<{ activo: boolean; onClick: () => void; children: React.ReactNode }> = ({ activo, onClick, children }) => (
     <button onClick={onClick} aria-pressed={activo}
         className={`w-full px-2 py-1.5 text-xs font-semibold border-2 border-black text-center truncate ${activo ? 'bg-red-600 text-white' : 'bg-white text-black hover:bg-gray-100'}`}>
         {children}
@@ -307,7 +308,7 @@ const TituloPanel: React.FC<{ children: React.ReactNode }> = ({ children }) => (
     <div className="bg-gray-300 border-y-2 border-black px-2 py-1 text-xs font-black italic uppercase text-black text-center -skew-x-12"><span className="inline-block skew-x-12">{children}</span></div>
 );
 
-const ReporteEjecutivo: React.FC<{ lista: ScoutingPlayerLista[]; onAbrir: (id: string) => void; filtros: FiltrosReporte; onFiltros: (f: FiltrosReporte) => void }> = ({ lista, onAbrir, filtros, onFiltros }) => {
+export const ReporteEjecutivo: React.FC<{ lista: ScoutingPlayerLista[]; onAbrir: (id: string) => void; filtros: FiltrosReporte; onFiltros: (f: FiltrosReporte) => void }> = ({ lista, onAbrir, filtros, onFiltros }) => {
     // Los filtros viven en la página: son los mismos con los que se exporta el reporte.
     const { competicion, tipo, equipo } = filtros;
     const setCompeticion = (v: string) => onFiltros({ ...filtros, competicion: v });
@@ -555,12 +556,14 @@ const ScoutingPage: React.FC = () => {
     const [aviso, setAviso] = useState<{ tipo: 'ok' | 'error'; texto: string; respaldo?: boolean } | null>(null);
     const [cambiandoActivo, setCambiandoActivo] = useState(false);
     const fotoInput = useRef<HTMLInputElement>(null);
+    const [equipos, setEquipos] = useState<Team[]>([]);
 
     const cargar = async () => {
         setError(null);
         try {
-            const [fichas, jugadores] = await Promise.all([fetchScoutingPlayers(), fetchJugadoresEquipo().catch(() => [] as JugadorEquipo[])]);
+            const [fichas, jugadores, teams] = await Promise.all([fetchScoutingPlayers(), fetchJugadoresEquipo().catch(() => [] as JugadorEquipo[]), fetchTeams()]);
             setLista(fichas);
+            setEquipos(teams);
             setJugadoresEquipo(jugadores.filter((p) => !esJugadorFicticio(p.nombre)));
         } catch (err: any) {
             setError(err?.message || 'No se pudo cargar Scouting.');
@@ -1091,6 +1094,21 @@ const ScoutingPage: React.FC = () => {
                                         {ficha.video_url && /^https?:\/\//i.test(ficha.video_url) && (
                                             <a href={ficha.video_url} target="_blank" rel="noopener noreferrer" className="shrink-0 px-3 py-2 rounded-md text-sm bg-gray-700 text-cyan-300 hover:bg-gray-600">Abrir</a>
                                         )}
+                                    </div>
+                                </Campo>
+                                <Campo label="Compartir con el DT de" className="col-span-2" ayuda="Sin marcar = solo tú la ves. El DT la ve en Scouting DT, en modo lectura, y entra en su reporte ejecutivo.">
+                                    <div className="flex flex-wrap gap-2" data-compartir-dt>
+                                        {equipos.length === 0 && <span className="text-sm text-gray-500">No hay equipos registrados.</span>}
+                                        {equipos.map((t) => {
+                                            const activo = (ficha.compartir_con || []).includes(t.id);
+                                            return (
+                                                <button key={t.id} type="button" aria-pressed={activo}
+                                                    onClick={() => set('compartir_con', activo ? (ficha.compartir_con || []).filter((id) => id !== t.id) : [...(ficha.compartir_con || []), t.id])}
+                                                    className={`px-3 py-1.5 rounded-full text-sm border transition-colors ${activo ? 'bg-cyan-600 border-cyan-600 text-white' : 'border-gray-600 text-gray-300 hover:bg-gray-700'}`}>
+                                                    {activo ? '✓ ' : ''}{t.nombre}
+                                                </button>
+                                            );
+                                        })}
                                     </div>
                                 </Campo>
                             </div>
