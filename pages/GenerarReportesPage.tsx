@@ -5,6 +5,7 @@ import { Spinner } from '../components/ui/Spinner';
 import { generateMatchReportPptx, mejorarRedaccionChecklist, previewEstiloDeJuego } from '../services/reportExportService';
 import { conModeloDeRespaldo, esErrorDeGemini, mensajeErrorGemini } from '../services/geminiConfig';
 import { SelectorIdioma } from '../components/ui/IdiomaExport';
+import PublicarReporteDT from '../components/reportes/PublicarReporteDT';
 import { textosReportes, type Idioma } from '../utils/reportesI18n';
 import { leerTextoIAReporte, contarJugadasPartido } from '../services/reporteIAGuardadoService';
 import { Link } from 'react-router-dom';
@@ -887,6 +888,9 @@ const GenerarReportesPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Publicar el PDF final para el DT de este equipo (Análisis Post Partido DT) */}
+      {selectedMatch && <PublicarReporteDT match={selectedMatch} />}
     </div>
   );
 };

@@ -123,6 +123,17 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
             <span className="ml-3">Modelo de juego</span>
           </NavLink>
 
+          <NavLink
+            to="/analisis-post-partido-dt"
+            className={({ isActive }) =>
+              `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
+            }
+            onClick={() => setSidebarOpen(false)}
+          >
+            <ReportIcon />
+            <span className="ml-3">Análisis Post Partido DT</span>
+          </NavLink>
+
           {profile?.rol === ROLES.ADMIN && (
             <>
               <NavLink
