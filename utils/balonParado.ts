@@ -173,3 +173,99 @@ export const envioMasUsado = (tags: { accion: string; detalle?: Record<string, a
     ENVIOS.forEach(e => { const n = c[e] || 0; if (n > 0 && (!best || n > best.n)) best = { envio: e, n }; });
     return best;
 };
+
+// ─── Análisis del rival: "cuando el rival DEFIENDE" leído por tipo de cobro ───
+// Antes solo se guardaba el marcaje, sin saber si fue córner, tiro libre o penal.
+// Ahora cada momento trae `cobro`; los viejos (sin cobro) se leen como "Sin tipo".
+// Penal: no hay marcaje; `res` guarda el resultado del penal (gol/atajado/fuera/palo)
+// y `porteria` a dónde le tiraron.
+export type ItemDefiendeBp = { cobro?: string | null; marc: string | null; res: string | null; porteria?: string | null };
+const BP_MARCAJES_TXT = ['En zona', 'Al hombre', 'Mixto'];
+const MARCAJE_TXT_EN: Record<string, string> = { 'En zona': 'zonally', 'Al hombre': 'man-to-man', 'Mixto': 'with a mixed system' };
+const mayusBp = (x: string) => (x ? x.charAt(0).toUpperCase() + x.slice(1) : x);
+
+export function lecturaDefiendeBp(
+    items: ItemDefiendeBp[],
+    idioma: 'es' | 'en' = 'es',
+    porteriaTxt?: (codigo: string) => string,
+): { lectura: string; porTipo: { label: string; n: number; lectura: string }[] } {
+    const en = idioma === 'en';
+    const txtPorteria = porteriaTxt || ((c: string) => (etiquetaPorteria(c) || '').toLowerCase());
+
+    // Córner, tiro libre o sin tipo: marcaje + resultado.
+    const leerCobros = (lista: ItemDefiendeBp[]): string => {
+        const conMarc = lista.filter(d => d.marc);
+        const conteo = BP_MARCAJES_TXT.map(o => ({ label: o, n: conMarc.filter(d => d.marc === o).length }));
+        const goles = lista.filter(d => d.res === 'Gol').length;
+        const remates = lista.filter(d => d.res === 'Remate' || d.res === 'Gol').length;
+        const conRes = lista.filter(d => !!d.res).length;
+        const partes: string[] = [];
+        if (conMarc.length > 0) {
+            const top = [...conteo].sort((a, b) => b.n - a.n)[0];
+            partes.push(en
+                ? `defends ${MARCAJE_TXT_EN[top.label] || top.label.toLowerCase()} at ${top.n} of ${conMarc.length} set pieces`
+                : `defiende ${top.label.toLowerCase()} en ${top.n} de ${conMarc.length} cobros`);
+        }
+        if (conRes > 0) partes.push(en
+            ? `faced ${remates} ${remates === 1 ? 'attempt' : 'attempts'} on goal and conceded ${goles}`
+            : `le remataron ${remates} ${remates === 1 ? 'vez' : 'veces'} y le anotaron ${goles}`);
+        return partes.join('; ');
+    };
+
+    // Penal en contra del rival: cuántos le anotaron, cuántos atajó, a dónde le tiran.
+    const leerPenales = (lista: ItemDefiendeBp[]): string => {
+        const n = lista.length;
+        const goles = lista.filter(d => d.res === 'gol').length;
+        const atajados = lista.filter(d => d.res === 'atajado').length;
+        const otros = lista.filter(d => d.res === 'fuera' || d.res === 'palo').length;
+        const partes: string[] = [];
+        if (en) {
+            partes.push(`faced ${n} ${n === 1 ? 'penalty' : 'penalties'} and conceded ${goles}${atajados > 0 ? `, keeper saved ${atajados}` : ''}${otros > 0 ? `, ${otros} missed` : ''}`);
+        } else {
+            partes.push(`le tiraron ${n} ${n === 1 ? 'penal' : 'penales'} y le anotaron ${goles}${atajados > 0 ? `; su portero atajó ${atajados}` : ''}${otros > 0 ? `; ${otros} ${otros === 1 ? 'se fue' : 'se fueron'} fuera o al palo` : ''}`);
+        }
+        const conPorteria = lista.filter(d => d.porteria);
+        if (conPorteria.length > 0) {
+            const labels = conPorteria.map(d => txtPorteria(d.porteria as string)).filter(Boolean);
+            const unicos = Array.from(new Set(labels));
+            const top = unicos.map(l => ({ label: l, n: labels.filter(x => x === l).length })).sort((a, b) => b.n - a.n)[0];
+            if (top) partes.push(en
+                ? `most common direction: ${top.label} (${top.n} of ${conPorteria.length})`
+                : `lado donde más le tiran: ${top.label} (${top.n} de ${conPorteria.length})`);
+        }
+        return partes.join('; ');
+    };
+
+    const grupos: { key: string; label: string; labelEn: string; items: ItemDefiendeBp[]; penal?: boolean }[] = [
+        { key: 'Córner', label: 'Córner', labelEn: 'Corners', items: items.filter(d => d.cobro === 'Córner') },
+        { key: 'Tiro libre', label: 'Tiro libre', labelEn: 'Free kicks', items: items.filter(d => d.cobro === 'Tiro libre') },
+        { key: 'Penal', label: 'Penal', labelEn: 'Penalties', items: items.filter(d => d.cobro === 'Penal'), penal: true },
+        { key: 'Sin tipo', label: 'Sin tipo de cobro', labelEn: 'Type not recorded', items: items.filter(d => !d.cobro) },
+    ];
+    const porTipo = grupos
+        .filter(g => g.items.length > 0)
+        .map(g => {
+            const texto = g.penal ? leerPenales(g.items) : leerCobros(g.items);
+            return { label: en ? g.labelEn : g.label, n: g.items.length, lectura: texto ? `${mayusBp(texto)}.` : (en ? 'Not enough detail.' : 'Sin detalle suficiente.') };
+        });
+
+    // Si todo es del formato viejo (sin tipo), la lectura queda igual que antes.
+    let lectura = '';
+    if (porTipo.length === 1 && grupos[3].items.length === items.length) {
+        const t = leerCobros(items);
+        lectura = t ? `${mayusBp(t)}.` : '';
+    } else {
+        const plural: Record<string, [string, string]> = {
+            'Córner': ['Córners', 'Corners'], 'Tiro libre': ['Tiros libres', 'Free kicks'], 'Penal': ['Penales', 'Penalties'], 'Sin tipo': ['Sin tipo de cobro', 'Type not recorded'],
+        };
+        lectura = grupos
+            .filter(g => g.items.length > 0)
+            .map(g => {
+                const texto = g.penal ? leerPenales(g.items) : leerCobros(g.items);
+                return texto ? `${plural[g.key][en ? 1 : 0]}: ${texto}.` : '';
+            })
+            .filter(Boolean)
+            .join(' ');
+    }
+    return { lectura, porTipo };
+}

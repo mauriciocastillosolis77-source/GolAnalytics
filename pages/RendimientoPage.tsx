@@ -7,7 +7,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { ACTION_GROUPS } from '../constants/actionGroups';
 import { analyzePlayerPerformance, type PerformanceAnalysis } from '../services/geminiPerformanceService';
 import { getCachedAnalysis, saveAnalysis, getPlayerAnalysisHistory, formatHistoryDate } from '../services/analysisHistoryService';
-import { exportPlayerAnalysisToPDF } from '../services/pdfExportService';
+import { exportPlayerAnalysisToPDF, exportMinutosEquipoToPDF } from '../services/pdfExportService';
 import { cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios, esJugadorFicticio, calcularPorcentajeAtajadas, ACCIONES_FUERA_DE_EFECTIVIDAD } from '../utils/efectividad';
 import MapaZonas from '../components/charts/MapaZonas';
 import GolesPorTipo from '../components/charts/GolesPorTipo';
@@ -15,7 +15,10 @@ import MapaPorteria from '../components/charts/MapaPorteria';
 import { esAccionBalonParado, contarPenales, PENAL_FAVOR, PENAL_CONTRA } from '../utils/balonParado';
 import type { PlayerMatchStatus } from '../types';
 import { fetchEstatusPorPartidos } from '../services/asistenciaService';
-import { calcularMinutosPorPartidos } from '../services/minutosService';
+import { calcularResumenMinutos, type ResumenMinutos } from '../services/minutosService';
+import { SelectorIdioma, AvisoExportIngles, useExportConIdioma } from '../components/ui/IdiomaExport';
+import { textosReportes, type Idioma } from '../utils/reportesI18n';
+import { traducirObjeto } from '../services/traduccionService';
 
 const RendimientoPage: React.FC = () => {
     const { profile } = useAuth();
@@ -162,20 +165,34 @@ const RendimientoPage: React.FC = () => {
     // Minutos jugados calculados (no capturados) — uno por jugador, sumado
     // sobre todos los partidos dentro del filtro actual.
     const [minutosMap, setMinutosMap] = useState<Record<string, number>>({});
+    // Mismo cálculo, con más detalle: partidos jugados, de titular, de suplente
+    // y los minutos posibles del periodo (para el % de minutos y el PDF del DT).
+    const RESUMEN_VACIO: ResumenMinutos = { porJugador: {}, minutosPosibles: 0, partidosConsiderados: 0, partidosSinDatos: 0 };
+    const [resumenMinutos, setResumenMinutos] = useState<ResumenMinutos>(RESUMEN_VACIO);
+    const [exportandoMinutos, setExportandoMinutos] = useState(false);
+    // Idioma de los PDF (la pantalla siempre está en español; solo cambia el archivo).
+    const [idiomaMinutos, setIdiomaMinutos] = useState<Idioma>('es');
+    const expJugador = useExportConIdioma();
+    // Al cambiar de jugador o de análisis se quita el mensaje de la exportación anterior.
+    useEffect(() => { expJugador.limpiar(); }, [aiAnalysis, selectedPlayerId, expJugador.limpiar]);
     const [mostrarTablaEquipo, setMostrarTablaEquipo] = useState(false);
     useEffect(() => {
         let cancelado = false;
         (async () => {
             try {
                 const ids = Array.from(filteredMatchIds);
-                const [rows, minutos] = await Promise.all([
+                const [rows, resumen] = await Promise.all([
                     fetchEstatusPorPartidos(ids),
-                    calcularMinutosPorPartidos(ids),
+                    calcularResumenMinutos(ids),
                 ]);
-                if (!cancelado) { setEstatusRows(rows); setMinutosMap(minutos); }
+                if (!cancelado) {
+                    const minutos: Record<string, number> = {};
+                    Object.entries(resumen.porJugador).forEach(([id, j]) => { minutos[id] = j.minutos; });
+                    setEstatusRows(rows); setMinutosMap(minutos); setResumenMinutos(resumen);
+                }
             } catch (err) {
                 console.error('No se pudo cargar alineación/minutos:', err);
-                if (!cancelado) { setEstatusRows([]); setMinutosMap({}); }
+                if (!cancelado) { setEstatusRows([]); setMinutosMap({}); setResumenMinutos(RESUMEN_VACIO); }
             }
         })();
         return () => { cancelado = true; };
@@ -558,9 +575,44 @@ const RendimientoPage: React.FC = () => {
             const lesion = filas.filter(r => r.estatus === 'lesionado').length;
             const noConvocado = filas.filter(r => r.estatus === 'no_convocado').length;
             const falta = filas.filter(r => r.estatus === 'falta').length;
-            return { jugador: p.nombre, minutos, lesion, noConvocado, falta };
-        }).sort((a, b) => b.minutos - a.minutos);
-    }, [filteredPlayers, estatusRows, minutosMap]);
+            const r = resumenMinutos.porJugador[p.id];
+            const pctMinutos = resumenMinutos.minutosPosibles > 0 ? Math.round((minutos / resumenMinutos.minutosPosibles) * 100) : null;
+            return { id: p.id, jugador: p.nombre, numero: p.numero, minutos, pj: r?.pj || 0, titular: r?.titular || 0, suplente: r?.suplente || 0, pctMinutos, lesion, noConvocado, falta };
+        }).sort((a, b) => b.minutos - a.minutos || b.pj - a.pj || a.jugador.localeCompare(b.jugador));
+    }, [filteredPlayers, estatusRows, minutosMap, resumenMinutos]);
+
+    // PDF para el DT: la misma tabla, con el filtro que esté puesto en este momento.
+    const handleExportMinutosPdf = async () => {
+        setExportandoMinutos(true);
+        try {
+            const equipos = Array.from(new Set(filteredMatches.map(m => m.nombre_equipo))).filter(Boolean);
+            const torneos = Array.from(new Set(filteredMatches.map(m => m.torneo))).filter(Boolean);
+            const jornadas = filteredMatches.map(m => m.jornada).filter(j => typeof j === 'number');
+            const jMin = jornadas.length ? Math.min(...jornadas) : null;
+            const jMax = jornadas.length ? Math.max(...jornadas) : null;
+            const tx = textosReportes(idiomaMinutos);
+            const periodo = [
+                torneos.length === 1 ? torneos[0] : torneos.length > 1 ? tx.periodoTorneos(torneos) : tx.periodoSinPartidos,
+                filters.categoria ? tx.periodoCategoria(filters.categoria) : '',
+                jMin === null ? '' : jMin === jMax ? tx.periodoJornada(jMin) : tx.periodoJornadas(jMin, jMax as number),
+            ].filter(Boolean).join('  ·  ');
+            await exportMinutosEquipoToPDF(tablaEquipoMinutos, {
+                periodo,
+                partidosConsiderados: resumenMinutos.partidosConsiderados,
+                partidosSinDatos: resumenMinutos.partidosSinDatos,
+                minutosPosibles: resumenMinutos.minutosPosibles,
+            }, {
+                userName: profile?.username || tx.firmaPorDefecto,
+                teamName: equipos.length === 1 ? equipos[0] : (filters.equipo || 'Equipo'),
+                idioma: idiomaMinutos,
+            });
+        } catch (err) {
+            console.error('No se pudo generar el PDF de minutos:', err);
+            alert('No se pudo generar el PDF de minutos. Intenta de nuevo.');
+        } finally {
+            setExportandoMinutos(false);
+        }
+    };
 
     const selectedPlayer = players.find(p => p.id === selectedPlayerId);
 
@@ -1542,39 +1594,55 @@ const RendimientoPage: React.FC = () => {
                                             <p className="text-gray-300">{aiAnalysis.resumenGeneral}</p>
                                         </div>
 
-                                        {/* Botón Descargar PDF */}
-                                        <div className="flex justify-center pt-4">
+                                        {/* Botón Descargar PDF (español o inglés) */}
+                                        <div className="flex justify-center items-center gap-3 flex-wrap pt-4">
+                                            <SelectorIdioma value={expJugador.idioma} onChange={expJugador.setIdioma} disabled={expJugador.ocupado} />
                                             <button
-                                                onClick={async () => {
-                                                    try {
-                                                        // El equipo real del jugador se obtiene de sus partidos (mismo team_id)
-                                                        const playerTeamMatch = matches.find(m => m.team_id === selectedPlayer?.team_id && m.nombre_equipo);
-                                                        await exportPlayerAnalysisToPDF(aiAnalysis, {
-                                                            userName: profile?.username || 'Usuario',
-                                                            teamName: playerTeamMatch?.nombre_equipo || 'Equipo',
-                                                            playerName: selectedPlayer?.nombre,
-                                                            playerNumber: selectedPlayer?.numero,
-                                                            playerPosition: selectedPlayer?.posicion,
-                                                            kpis: {
-                                                                totalAcciones: kpis.totalAcciones,
-                                                                efectividadGlobal: kpis.efectividadGlobal,
-                                                                mejorJornada: kpis.mejorJornada,
-                                                                peorJornada: kpis.peorJornada
-                                                            }
-                                                        });
-                                                    } catch (error) {
-                                                        console.error('Error exporting PDF:', error);
-                                                        alert('Error al generar el PDF. Intenta de nuevo.');
+                                                disabled={expJugador.ocupado}
+                                                onClick={() => expJugador.exportar(async (idioma) => {
+                                                    // El equipo real del jugador se obtiene de sus partidos (mismo team_id)
+                                                    const playerTeamMatch = matches.find(m => m.team_id === selectedPlayer?.team_id && m.nombre_equipo);
+                                                    // En inglés: el texto de la IA y la posición se traducen (una consulta a Gemini,
+                                                    // y queda guardada). Si la traducción falla, no se genera el archivo.
+                                                    let analisis = aiAnalysis;
+                                                    let posicion = selectedPlayer?.posicion;
+                                                    let guardada = true;
+                                                    if (idioma === 'en') {
+                                                        const r = await traducirObjeto(
+                                                            `jugador:${selectedPlayer?.id || 'x'}`,
+                                                            { analisis: aiAnalysis, posicionJugador: selectedPlayer?.posicion || '' },
+                                                            'an individual performance analysis of a youth football player, written for his coach',
+                                                            ['tendencia'],
+                                                        );
+                                                        analisis = r.datos.analisis;
+                                                        posicion = r.datos.posicionJugador || posicion;
+                                                        guardada = r.guardada;
                                                     }
-                                                }}
-                                                className="flex items-center gap-2 px-6 py-3 rounded-lg font-medium bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white transition-colors"
+                                                    await exportPlayerAnalysisToPDF(analisis, {
+                                                        userName: profile?.username || 'Usuario',
+                                                        teamName: playerTeamMatch?.nombre_equipo || 'Equipo',
+                                                        playerName: selectedPlayer?.nombre,
+                                                        playerNumber: selectedPlayer?.numero,
+                                                        playerPosition: posicion,
+                                                        kpis: {
+                                                            totalAcciones: kpis.totalAcciones,
+                                                            efectividadGlobal: kpis.efectividadGlobal,
+                                                            mejorJornada: kpis.mejorJornada,
+                                                            peorJornada: kpis.peorJornada
+                                                        },
+                                                        idioma,
+                                                    });
+                                                    return { guardada };
+                                                })}
+                                                className="flex items-center gap-2 px-6 py-3 rounded-lg font-medium bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 disabled:from-gray-600 disabled:to-gray-600 disabled:cursor-not-allowed text-white transition-colors"
                                             >
                                                 <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                                                     <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
                                                 </svg>
-                                                <span>Descargar PDF</span>
+                                                <span>{expJugador.ocupado ? (expJugador.idioma === 'en' ? 'Traduciendo…' : 'Generando…') : 'Descargar PDF'}</span>
                                             </button>
                                         </div>
+                                        <AvisoExportIngles error={expJugador.error} aviso={expJugador.aviso} ocupado={expJugador.ocupado} onRespaldo={expJugador.conRespaldo} />
                                     </div>
                                 )}
                             </div>
@@ -1594,11 +1662,33 @@ const RendimientoPage: React.FC = () => {
                 </button>
                 {mostrarTablaEquipo && (
                     <div className="mt-3 overflow-x-auto">
+                        <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+                            <div className="text-xs text-gray-400">
+                                <p>Acumulado de los partidos del filtro actual: {resumenMinutos.partidosConsiderados} partido{resumenMinutos.partidosConsiderados === 1 ? '' : 's'} · {resumenMinutos.minutosPosibles} minutos posibles.</p>
+                                {resumenMinutos.partidosSinDatos > 0 && (
+                                    <p className="text-amber-400">{resumenMinutos.partidosSinDatos} partido{resumenMinutos.partidosSinDatos === 1 ? '' : 's'} del filtro no entra{resumenMinutos.partidosSinDatos === 1 ? '' : 'n'} al cálculo (sin alineación o sin duración de video).</p>
+                                )}
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap">
+                                <SelectorIdioma value={idiomaMinutos} onChange={setIdiomaMinutos} disabled={exportandoMinutos} />
+                                <button
+                                    onClick={handleExportMinutosPdf}
+                                    disabled={exportandoMinutos || tablaEquipoMinutos.length === 0}
+                                    className="bg-cyan-600 hover:bg-cyan-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white text-sm font-semibold py-2 px-4 rounded-md"
+                                >
+                                    {exportandoMinutos ? 'Generando…' : 'Descargar PDF para el DT'}
+                                </button>
+                            </div>
+                        </div>
                         <table className="w-full text-sm">
                             <thead>
                                 <tr className="text-left text-gray-400 border-b border-gray-700">
                                     <th className="py-2 pr-4">Jugador</th>
+                                    <th className="py-2 pr-4" title="Partidos en los que jugó, de inicio o de cambio">PJ</th>
+                                    <th className="py-2 pr-4" title="Partidos que inició">Titular</th>
+                                    <th className="py-2 pr-4" title="Partidos en los que entró de cambio">Suplente</th>
                                     <th className="py-2 pr-4">Minutos</th>
+                                    <th className="py-2 pr-4" title="Minutos jugados entre los minutos posibles del periodo">% de minutos</th>
                                     <th className="py-2 pr-4">Lesión</th>
                                     <th className="py-2 pr-4">No convocado</th>
                                     <th className="py-2 pr-4">Falta</th>
@@ -1606,9 +1696,13 @@ const RendimientoPage: React.FC = () => {
                             </thead>
                             <tbody>
                                 {tablaEquipoMinutos.map(row => (
-                                    <tr key={row.jugador} className="border-b border-gray-700/50">
+                                    <tr key={row.id} className="border-b border-gray-700/50">
                                         <td className="py-2 pr-4 text-white">{row.jugador}</td>
-                                        <td className="py-2 pr-4 text-gray-200">{row.minutos}</td>
+                                        <td className="py-2 pr-4 text-gray-200">{row.pj}</td>
+                                        <td className="py-2 pr-4 text-gray-200">{row.titular}</td>
+                                        <td className="py-2 pr-4 text-gray-200">{row.suplente}</td>
+                                        <td className="py-2 pr-4 text-gray-200 font-semibold">{row.minutos}</td>
+                                        <td className="py-2 pr-4 text-gray-200">{row.pctMinutos === null ? '–' : `${row.pctMinutos}%`}</td>
                                         <td className="py-2 pr-4 text-gray-200">{row.lesion}</td>
                                         <td className="py-2 pr-4 text-gray-200">{row.noConvocado}</td>
                                         <td className="py-2 pr-4 text-gray-200">{row.falta}</td>

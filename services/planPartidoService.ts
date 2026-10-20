@@ -8,7 +8,8 @@ import type { PlanPartido } from '../types';
 // como el DAFO — no se escribe desde cero.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const GEMINI_API_URL = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent';
+// El modelo de Gemini se define en un solo lugar: services/geminiConfig.ts
+import { geminiApiUrl } from './geminiConfig';
 function getGeminiApiKey(): string {
   const env = (import.meta as any).env;
   const apiKey = env.VITE_API_KEY || env.VITE_GEMINI_API_KEY || env.GEMINI_API_KEY || '';
@@ -53,7 +54,7 @@ Reglas: usa solo los datos de arriba, no inventes cifras que no estén. Español
 Responde ÚNICAMENTE con JSON válido con esta forma exacta:
 {"estrategia":"...","adaptaciones":["..."],"abpOfensivo":"...","abpDefensivo":"...","temas":["..."]}`;
 
-  const response = await fetch(`${GEMINI_API_URL}?key=${getGeminiApiKey()}`, {
+  const response = await fetch(`${geminiApiUrl()}?key=${getGeminiApiKey()}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: 'application/json' } }),

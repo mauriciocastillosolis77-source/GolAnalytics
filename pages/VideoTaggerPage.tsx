@@ -152,14 +152,20 @@ const VideoTaggerPage: React.FC = () => {
     const isAnyAnalysisRunning = isGeminiAnalyzing || isCustomAnalyzing || isBatchAnalyzing || isSegmentAnalyzing;
 
     // Filtrar jugadores por equipo del partido seleccionado
+    // Los jugadores marcados como inactivos (desde su ficha en Scouting) ya no
+    // se muestran — salvo en un partido donde sí tienen jugadas o alineación,
+    // para poder seguir corrigiendo partidos viejos en los que jugaron.
     const filteredPlayers = useMemo(() => {
-        if (!selectedMatchId) return [...players].sort((a, b) => a.numero - b.numero);
+        const conJugadas = new Set(tags.map(t => t.player_id));
+        const visible = (p: Player) => p.activo !== false || conJugadas.has(p.id) || !!estatusPorJugador[p.id]?.estatus;
+        const lista = players.filter(visible);
+        if (!selectedMatchId) return lista.sort((a, b) => a.numero - b.numero);
         const selectedMatch = matches.find(m => m.id === selectedMatchId);
-        if (!selectedMatch?.team_id) return [...players].sort((a, b) => a.numero - b.numero);
-        return players
+        if (!selectedMatch?.team_id) return lista.sort((a, b) => a.numero - b.numero);
+        return lista
             .filter(p => p.team_id === selectedMatch.team_id)
             .sort((a, b) => a.numero - b.numero);
-    }, [players, selectedMatchId, matches]);
+    }, [players, selectedMatchId, matches, tags, estatusPorJugador]);
 
     // Filtro de la lista "Jugadas Etiquetadas". Es solo de vista: no cambia `tags` ni lo que se guarda.
     const [filtroAccion, setFiltroAccion] = useState<string>('');
@@ -2229,7 +2235,9 @@ const VideoTaggerPage: React.FC = () => {
                                             </button>
                                         )}
                                         {ACCIONES_GOL.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (() => {
-                                            const resumen = resumenGol(detalleGolDe(tag));
+                                            const dGol = detalleGolDe(tag);
+                                            const asistente = dGol.asistencia ? players.find(p => p.id === dGol.asistencia) : undefined;
+                                            const resumen = [resumenGol(dGol), asistente ? `asistencia de ${asistente.nombre.trim().split(/\s+/)[0]}` : null].filter(Boolean).join(' · ') || null;
                                             return (
                                                 <button
                                                     onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
@@ -2573,6 +2581,25 @@ const VideoTaggerPage: React.FC = () => {
                                 <div className="flex gap-1">
                                     {GOLPEOS.map(g => <button key={g} onClick={() => aplicar({ golpeo: g })} className={`flex-1 ${chip(d.golpeo === g)}`}>{GOLPEO_LABEL[g]}</button>)}
                                 </div>
+                                {detallePendiente.accion === 'Goles a favor' && (() => {
+                                    // Asistencia: opcional. Un gol se guarda igual sin ella (tiro libre, penal, error del rival…).
+                                    const candidatos = filteredPlayers.filter(p => p.id !== detallePendiente.player_id && !esJugadorFicticio(p.nombre));
+                                    const guardado = d.asistencia ? players.find(p => p.id === d.asistencia) : undefined;
+                                    if (guardado && !candidatos.some(p => p.id === guardado.id)) candidatos.push(guardado);
+                                    return (
+                                        <>
+                                            <p className="text-xs text-gray-400">Asistencia (opcional)</p>
+                                            <select
+                                                value={d.asistencia || ''}
+                                                onChange={e => aplicar({ asistencia: e.target.value || null })}
+                                                className="w-full bg-gray-700 p-2 rounded text-sm"
+                                            >
+                                                <option value="">Sin asistencia</option>
+                                                {candidatos.map(p => <option key={p.id} value={p.id}>#{p.numero} {p.nombre}</option>)}
+                                            </select>
+                                        </>
+                                    );
+                                })()}
                                 <div className="flex items-center gap-2">
                                     <p className="flex-1 text-sm bg-gray-900 rounded px-2 py-1.5 text-gray-200">
                                         Di: <span className="text-cyan-300">"contraataque dentro del área abajo izquierda"</span> · <span className="text-cyan-300">"listo"</span> para cerrar

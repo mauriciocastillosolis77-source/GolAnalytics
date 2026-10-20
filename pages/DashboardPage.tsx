@@ -6,6 +6,8 @@ import { Spinner } from '../components/ui/Spinner';
 import { analyzeTeamPerformance } from '../services/geminiTeamAnalysisService';
 import { saveTeamAnalysis, getCachedTeamAnalysis, getTeamAnalysisHistory } from '../services/teamAnalysisHistoryService';
 import { exportTeamAnalysisToPDF } from '../services/pdfExportService';
+import { SelectorIdioma, AvisoExportIngles, useExportConIdioma } from '../components/ui/IdiomaExport';
+import { traducirObjeto } from '../services/traduccionService';
 import { useAuth } from '../contexts/AuthContext';
 import { cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios, esTagDeJugadorFicticio, calcularPorcentajeAtajadas } from '../utils/efectividad';
 import MapaZonas from '../components/charts/MapaZonas';
@@ -165,6 +167,9 @@ const DashboardPage: React.FC = () => {
     const [isAnalyzing, setIsAnalyzing] = useState(false);
     const [analysisError, setAnalysisError] = useState<string | null>(null);
     const [isFromCache, setIsFromCache] = useState(false);
+    // Idioma del PDF del equipo (la pantalla siempre está en español; solo cambia el archivo).
+    const expEquipo = useExportConIdioma();
+    useEffect(() => { expEquipo.limpiar(); }, [teamAnalysis, expEquipo.limpiar]);
     const [showHistory, setShowHistory] = useState(false);
     const [analysisHistory, setAnalysisHistory] = useState<TeamAnalysisHistory[]>([]);
     const [showAISection, setShowAISection] = useState(false);
@@ -1433,27 +1438,42 @@ const DashboardPage: React.FC = () => {
                                         </ul>
                                     </div>
 
-                                    <div className="flex justify-center pt-4">
+                                    <div className="flex justify-center items-center gap-3 flex-wrap pt-4">
+                                        <SelectorIdioma value={expEquipo.idioma} onChange={expEquipo.setIdioma} disabled={expEquipo.ocupado} />
                                         <button
-                                            onClick={async () => {
-                                                try {
-                                                    await exportTeamAnalysisToPDF(teamAnalysis, {
-                                                        userName: profile?.nombre || 'Usuario',
-                                                        teamName: selectedTeamName
-                                                    });
-                                                } catch (error) {
-                                                    console.error('Error exporting PDF:', error);
-                                                    alert('Error al generar el PDF. Intenta de nuevo.');
+                                            disabled={expEquipo.ocupado}
+                                            onClick={() => expEquipo.exportar(async (idioma) => {
+                                                // En inglés: el texto de la IA se traduce (una consulta a Gemini, y queda
+                                                // guardada). Los nombres de los jugadores no se traducen. Si la traducción
+                                                // falla, no se genera el archivo.
+                                                let analisis = teamAnalysis;
+                                                let guardada = true;
+                                                if (idioma === 'en') {
+                                                    const r = await traducirObjeto(
+                                                        'equipo',
+                                                        teamAnalysis,
+                                                        'an executive performance analysis of a youth football team, written for the coaching staff',
+                                                        ['tendencia', 'nombre'],
+                                                    );
+                                                    analisis = r.datos;
+                                                    guardada = r.guardada;
                                                 }
-                                            }}
-                                            className="flex items-center gap-2 px-6 py-3 rounded-lg font-medium bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white transition-colors"
+                                                await exportTeamAnalysisToPDF(analisis, {
+                                                    userName: profile?.nombre || 'Usuario',
+                                                    teamName: selectedTeamName,
+                                                    idioma,
+                                                });
+                                                return { guardada };
+                                            })}
+                                            className="flex items-center gap-2 px-6 py-3 rounded-lg font-medium bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 disabled:from-gray-600 disabled:to-gray-600 disabled:cursor-not-allowed text-white transition-colors"
                                         >
                                             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                                                 <path fillRule="evenodd" d="M3 17a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zm3.293-7.707a1 1 0 011.414 0L9 10.586V3a1 1 0 112 0v7.586l1.293-1.293a1 1 0 111.414 1.414l-3 3a1 1 0 01-1.414 0l-3-3a1 1 0 010-1.414z" clipRule="evenodd" />
                                             </svg>
-                                            <span>Descargar PDF</span>
+                                            <span>{expEquipo.ocupado ? (expEquipo.idioma === 'en' ? 'Traduciendo…' : 'Generando…') : 'Descargar PDF'}</span>
                                         </button>
                                     </div>
+                                    <AvisoExportIngles error={expEquipo.error} aviso={expEquipo.aviso} ocupado={expEquipo.ocupado} onRespaldo={expEquipo.conRespaldo} />
                                 </div>
                             )}
                         </div>

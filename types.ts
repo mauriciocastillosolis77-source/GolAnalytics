@@ -1,4 +1,5 @@
 import type { Session, User, AuthError } from '@supabase/supabase-js';
+import type { AlineacionSugerida } from './utils/alineacion';
 
 export interface Match {
   id: string;
@@ -28,6 +29,10 @@ export interface Player {
   posicion: string;
   team_id?: string;
   created_at?: string;
+  // false = ya no está en el equipo: deja de salir en la lista del Etiquetador,
+  // pero su historial se conserva. Se cambia desde su ficha en Scouting.
+  // Si la columna todavía no existe en Supabase llega undefined y cuenta como activo.
+  activo?: boolean;
 }
 
 export interface Tag {
@@ -265,6 +270,8 @@ export interface RivalAnalysis {
   jugadores_clave?: JugadorClave[] | null;
   plan_partido?: PlanPartido | null;
   temas_entrenamiento?: string[] | null;
+  // Alineación sugerida contra este rival (formación, jugador y motivo por puesto, nota).
+  alineacion?: AlineacionSugerida | null;
   created_by?: string | null;
   created_at: string;
 }
