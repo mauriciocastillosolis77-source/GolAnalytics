@@ -64,11 +64,12 @@ const TOOLS: ToolDef[] = [
 
 // ─── Tipos de análisis ────────────────────────────────────────────────────────
 // El usuario elige uno al crear cada análisis. Los nombres aparecen también en la biblioteca.
-type ModoAnalisis = 'momento' | 'secuencia' | 'tracking';
+type ModoAnalisis = 'momento' | 'secuencia' | 'tracking' | 'congelar';
 const MODOS_ANALISIS: { id: ModoAnalisis; nombre: string; descripcion: string; badge: string; badgeClass: string }[] = [
   { id: 'momento', nombre: 'Análisis momento clave', descripcion: 'El video se detiene en un momento, muestra tus dibujos y continúa.', badge: 'Funciona hoy', badgeClass: 'bg-green-900/50 text-green-300' },
   { id: 'secuencia', nombre: 'Análisis de secuencia', descripcion: 'El video se detiene en varios momentos. En cada pausa muestra dibujos y una explicación que se borran antes de continuar.', badge: 'Nuevo', badgeClass: 'bg-cyan-900/50 text-cyan-300' },
   { id: 'tracking', nombre: 'Telestración en movimiento', descripcion: `Marcas con clics a 2, 3 o 4 jugadores durante una jugada de hasta ${MAX_PLAY_SECONDS} segundos, y el círculo y la línea los van siguiendo.`, badge: 'Nuevo', badgeClass: 'bg-cyan-900/50 text-cyan-300' },
+  { id: 'congelar', nombre: 'Congelar y corregir', descripcion: 'El video se congela en el momento del error, cada jugador se mueve de donde está a donde debió estar con tu texto, y el video sigue.', badge: 'Nuevo', badgeClass: 'bg-cyan-900/50 text-cyan-300' },
 ];
 
 // Un análisis guardado es de secuencia si sus dibujos traen número de pausa.
@@ -80,6 +81,7 @@ const contarPausasGuardadas = (analysis: TacticalAnalysis): number => {
 const etiquetaTipoAnalisis = (analysis: TacticalAnalysis): string => {
   // Las telestraciones con seguimiento se guardan como un análisis más, pero sin
   // dibujos (los círculos y la línea ya van dentro del video). Así se distinguen.
+  if ((analysis.annotations || []).some((a: any) => a?.congelar === true)) return 'Congelar y corregir';
   if ((analysis.annotations || []).length === 0) return 'Telestración en movimiento';
   const n = contarPausasGuardadas(analysis);
   return n > 0 ? `Secuencia · ${n} pausa${n !== 1 ? 's' : ''}` : 'Momento clave';
@@ -194,6 +196,144 @@ function drawMarcasManuales(ctx: CanvasRenderingContext2D, W: number, items: Arr
     ctx.beginPath(); ctx.arc(marcaExacta.x, marcaExacta.y, Math.max(3, W * 0.003), 0, Math.PI * 2);
     ctx.fill(); ctx.stroke(); ctx.restore();
   }
+}
+
+// ─── Congelar y corregir ──────────────────────────────────────────────────────
+// El clip corre, se congela en el momento del error y muestra cómo debió moverse cada
+// jugador: aro rojo donde está (punto A), flecha y "jugador fantasma" verde que se desliza
+// hasta donde debió estar (punto B), zona descubierta opcional y el texto del analista.
+// Al terminar la pausa el video sigue. Todo sale de clics del analista (no usa Railway).
+const MAX_CONGELAR_SECONDS = 30;          // la jugada puede ser más larga que en la telestración
+const MAX_JUGADORES_CONGELAR = 6;
+const PAUSA_CONGELAR_DEFAULT = 6;
+interface PuntoVideo { x: number; y: number }   // 0 a 1 sobre el video COMPLETO
+interface CorreccionJugador { id: number; label: string; a: PuntoVideo | null; b: PuntoVideo | null }
+const COLOR_ERROR = '#EF4444', COLOR_FLECHA = '#FACC15', COLOR_CORRECTO = '#22C55E';
+
+// fase = segundos transcurridos dentro de la pausa (Infinity = todo ya en su lugar, para editar).
+// alpha = desvanecimiento después de la pausa. Las posiciones ya vienen en pixeles del canvas.
+function drawCongelar(
+  ctx: CanvasRenderingContext2D, W: number, H: number,
+  corr: Array<{ a: PuntoVideo; b: PuntoVideo | null }>, zona: PuntoVideo[], zonaCompleta: boolean,
+  texto: string, rx: number, silueta: boolean, fase: number, alpha: number, duracion: number,
+) {
+  if (alpha <= 0) return;
+  const completas = corr.filter(c => c.b);
+  const n = Math.max(1, completas.length);
+  const sc = Math.min(1, duracion / (3.4 + 0.4 * (n - 1)));   // si la pausa es corta, todo pasa más rápido
+  const ph = (v: number) => (fase === Infinity ? 1 : Math.max(0, Math.min(1, v)));
+  const ry = rx * 0.42, lw = Math.max(3, W * 0.0025);
+  const lerp = (a: number, b: number, k: number) => a + (b - a) * k;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // Zona descubierta (polígono de hasta 4 esquinas)
+  if (zona.length > 0) {
+    const za = zonaCompleta ? ph((fase - 0.3 * sc) / (0.5 * sc)) : 1;
+    if (za > 0) {
+      ctx.save(); ctx.globalAlpha = alpha * za;
+      ctx.beginPath(); zona.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y)));
+      if (zonaCompleta) { ctx.closePath(); ctx.fillStyle = 'rgba(239,68,68,0.28)'; ctx.fill(); }
+      ctx.setLineDash([lw * 3, lw * 2]); ctx.strokeStyle = 'rgba(255,120,110,0.95)'; ctx.lineWidth = lw * 0.8; ctx.stroke();
+      ctx.setLineDash([]);
+      if (!zonaCompleta) zona.forEach(p => { ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(3, W * 0.003), 0, Math.PI * 2); ctx.fill(); });
+      ctx.restore();
+    }
+  }
+
+  const ring = (x: number, y: number, color: string, dashed: boolean, a: number) => {
+    if (a <= 0) return;
+    ctx.save(); ctx.globalAlpha = alpha * a;
+    ctx.shadowColor = 'rgba(0,0,0,0.7)'; ctx.shadowBlur = 6;
+    ctx.beginPath(); ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+    ctx.fillStyle = color + '33'; ctx.fill();
+    if (dashed) ctx.setLineDash([lw * 2.5, lw * 1.5]);
+    ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.stroke();
+    ctx.restore();
+  };
+  const figura = (x: number, y: number, a: number) => {
+    if (a <= 0 || !silueta) return;
+    const h = rx * 3.4, w = h * 0.34;
+    ctx.save(); ctx.globalAlpha = alpha * a;
+    ctx.fillStyle = 'rgba(34,197,94,0.45)'; ctx.strokeStyle = COLOR_CORRECTO; ctx.lineWidth = Math.max(1.5, lw * 0.5);
+    ctx.setLineDash([lw * 1.4, lw]);
+    ctx.fillRect(x - w * 0.38, y - h * 0.4, w * 0.3, h * 0.4); ctx.fillRect(x + w * 0.08, y - h * 0.4, w * 0.3, h * 0.4);
+    ctx.beginPath(); ctx.rect(x - w / 2, y - h * 0.82, w, h * 0.45); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.arc(x, y - h * 0.92, w * 0.3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  };
+  const etiqueta = (x: number, y: number, txt: string, bg: string, a: number) => {
+    if (a <= 0) return;
+    ctx.save(); ctx.globalAlpha = alpha * a;
+    const fs = Math.max(12, W * 0.011);
+    ctx.font = `bold ${fs}px sans-serif`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(txt).width + fs;
+    const top = y - rx * 3.6 - fs * 1.6;
+    ctx.fillStyle = bg; ctx.beginPath(); (ctx as any).roundRect ? (ctx as any).roundRect(x - tw / 2, top, tw, fs * 1.5, 4) : ctx.rect(x - tw / 2, top, tw, fs * 1.5); ctx.fill();
+    ctx.fillStyle = '#fff'; ctx.fillText(txt, x, top + fs * 0.75);
+    ctx.restore();
+  };
+
+  // Punto A: dónde está mal ubicado
+  const aA = ph(fase / (0.6 * sc));
+  corr.forEach(c => { ring(c.a.x, c.a.y, COLOR_ERROR, false, aA); });
+  corr.forEach(c => { if (c.b || fase === Infinity) etiqueta(c.a.x, c.a.y, 'Posición actual', 'rgba(220,38,38,0.95)', aA); });
+
+  // Flecha y fantasma de A a B
+  completas.forEach((c, i) => {
+    const b = c.b as PuntoVideo;
+    const m = ph((fase - (0.8 + i * 0.4) * sc) / (1.6 * sc));
+    if (m <= 0) return;
+    const ex = lerp(c.a.x, b.x, m), ey = lerp(c.a.y, b.y, m);
+    ctx.save();
+    ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 4;
+    ctx.strokeStyle = COLOR_FLECHA; ctx.lineWidth = lw; ctx.lineCap = 'round';
+    ctx.setLineDash([lw * 3, lw * 2]);
+    ctx.beginPath(); ctx.moveTo(c.a.x, c.a.y); ctx.lineTo(ex, ey); ctx.stroke();
+    ctx.setLineDash([]);
+    if (m > 0.15) {
+      const ang = Math.atan2(ey - c.a.y, ex - c.a.x), s = Math.max(10, lw * 4.5);
+      ctx.fillStyle = COLOR_FLECHA; ctx.beginPath(); ctx.moveTo(ex, ey);
+      ctx.lineTo(ex - s * Math.cos(ang - 0.45), ey - s * Math.sin(ang - 0.45));
+      ctx.lineTo(ex - s * Math.cos(ang + 0.45), ey - s * Math.sin(ang + 0.45));
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+    figura(ex, ey, 1);
+    ring(ex, ey, COLOR_CORRECTO, true, 1);
+  });
+
+  // Texto del analista, arriba, con una línea hacia el punto B del primer jugador
+  const limpio = (texto || '').trim();
+  if (limpio && completas.length > 0) {
+    const ta = ph((fase - (2.3 + 0.4 * (n - 1)) * sc) / (0.5 * sc));
+    if (ta > 0) {
+      const b = completas[0].b as PuntoVideo;
+      ctx.save(); ctx.globalAlpha = alpha * ta;
+      const fs = Math.max(16, W * 0.02);
+      ctx.font = `bold ${fs}px sans-serif`;
+      const maxW = W * 0.45, palabras = limpio.split(/\s+/), lineas: string[] = [];
+      let cur = '';
+      for (const p of palabras) { const prueba = cur ? `${cur} ${p}` : p; if (ctx.measureText(prueba).width > maxW && cur) { lineas.push(cur); cur = p; } else cur = prueba; }
+      if (cur) lineas.push(cur);
+      const lh = fs * 1.2, pad = fs * 0.6;
+      const bw = Math.min(maxW, Math.max(...lineas.map(l => ctx.measureText(l).width))) + pad * 2;
+      const bh = lineas.length * lh + pad * 1.2;
+      const bx = Math.max(W * 0.02, Math.min(W * 0.98 - bw, b.x - bw / 2));
+      const by = H * 0.05;
+      const yObjetivo = b.y - (silueta ? rx * 3.6 : ry * 2);
+      if (yObjetivo > by + bh) {
+        ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = Math.max(1.5, lw * 0.6);
+        ctx.beginPath(); ctx.moveTo(Math.max(bx + 8, Math.min(bx + bw - 8, b.x)), by + bh); ctx.lineTo(b.x, yObjetivo); ctx.stroke();
+      }
+      ctx.fillStyle = 'rgba(10,20,16,0.88)'; ctx.fillRect(bx, by, bw, bh);
+      ctx.fillStyle = COLOR_CORRECTO; ctx.fillRect(bx, by, Math.max(4, W * 0.004), bh);
+      ctx.fillStyle = '#fff'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+      lineas.forEach((l, i) => ctx.fillText(l, bx + pad, by + pad * 0.6 + i * lh));
+      ctx.restore();
+    }
+  }
+  ctx.restore();
 }
 
 // mm:ss.d — para marcar inicio y fin de la jugada con décimas de segundo.
@@ -938,6 +1078,29 @@ const AnalisisTacticoPage: React.FC = () => {
     manualRef.current = { on: trackManual, players: manualPlayers, activeId: activeManualId, size: manualSize, linea: manualLinea };
   }, [trackManual, manualPlayers, activeManualId, manualSize, manualLinea]);
 
+  // ── Congelar y corregir ──
+  const [congelarOn, setCongelarOn] = useState(false);                     // la vista abierta es "Congelar y corregir"
+  const [pausaT, setPausaT] = useState<number | null>(null);               // segundo del video donde se congela
+  const [pausaDur, setPausaDur] = useState(PAUSA_CONGELAR_DEFAULT);         // segundos que dura congelado
+  const [correcciones, setCorrecciones] = useState<CorreccionJugador[]>([]);
+  const [activeCorrId, setActiveCorrId] = useState<number | null>(null);
+  const [textoCorr, setTextoCorr] = useState('');
+  const [zonaCorr, setZonaCorr] = useState<PuntoVideo[]>([]);
+  const [marcandoZona, setMarcandoZona] = useState(false);
+  const [siluetaCorr, setSiluetaCorr] = useState(true);
+  const [freezeUi, setFreezeUi] = useState(false);                         // la pausa se está mostrando
+  const [congelarMsg, setCongelarMsg] = useState<string | null>(null);
+  const congelarRef = useRef<{ on: boolean; pausaT: number | null; dur: number; corr: CorreccionJugador[]; texto: string; zona: PuntoVideo[]; marcandoZona: boolean; silueta: boolean; size: string }>(
+    { on: false, pausaT: null, dur: PAUSA_CONGELAR_DEFAULT, corr: [], texto: '', zona: [], marcandoZona: false, silueta: true, size: 'mediano' });
+  useEffect(() => {
+    congelarRef.current = { on: congelarOn, pausaT, dur: pausaDur, corr: correcciones, texto: textoCorr, zona: zonaCorr, marcandoZona, silueta: siluetaCorr, size: manualSize };
+  }, [congelarOn, pausaT, pausaDur, correcciones, textoCorr, zonaCorr, marcandoZona, siluetaCorr, manualSize]);
+  // Estado de la pausa mientras corre el video: active = congelado ahora; done = ya se mostró en esta pasada;
+  // resumeAt = cuándo siguió el video (para desvanecer los dibujos).
+  const freezeRef = useRef<{ active: boolean; done: boolean; start: number; resumeAt: number }>({ active: false, done: false, start: 0, resumeAt: 0 });
+  const freezeAnimRef = useRef<number | null>(null);
+  const freezeTickRef = useRef<() => void>(() => {});
+
   // ── Vista Tracking ────────────────────────────────────────────────────────
   const trackingVideoRef = useRef<HTMLVideoElement>(null);
   const trackingCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -1235,12 +1398,63 @@ const AnalisisTacticoPage: React.FC = () => {
       drawMarcasManuales(ctx, W, items, rx, man.linea, exacta);
     }
 
+    // Congelar y corregir
+    const cg = congelarRef.current;
+    if (cg.on && cg.pausaT !== null) {
+      const fz = freezeRef.current;
+      // Si el video está antes de la pausa, la pausa se vuelve a mostrar al llegar.
+      if (!fz.active && video.currentTime < cg.pausaT - 0.1) { fz.done = false; fz.resumeAt = 0; }
+      // Llegó al momento de la pausa: se congela (en el cuadro exacto) y corre la animación.
+      if (!fz.active && !fz.done && !video.paused && video.currentTime >= cg.pausaT - 0.02 && cg.corr.some(c => c.a && c.b)) {
+        fz.active = true; fz.start = performance.now();
+        video.pause();
+        video.currentTime = cg.pausaT;
+        setFreezeUi(true);
+        if (freezeAnimRef.current) cancelAnimationFrame(freezeAnimRef.current);
+        freezeAnimRef.current = requestAnimationFrame(freezeTickRef.current);
+      }
+      let fase: number | null = null, alpha = 1;
+      if (fz.active) fase = (performance.now() - fz.start) / 1000;
+      else if (fz.done && fz.resumeAt && !video.paused) {
+        const e = (performance.now() - fz.resumeAt) / 600;
+        if (e < 1) { fase = Infinity; alpha = 1 - e; }
+      } else if (video.paused && !isRecordingRef.current && Math.abs(video.currentTime - cg.pausaT) < 0.05) fase = Infinity; // editando: todo en su lugar
+      if (fase !== null) {
+        const aCanvas = (q: PuntoVideo) => ({ x: ((q.x * vw - sx) / sWidth) * W, y: ((q.y * vh - sy) / sHeight) * H });
+        const rx = vw * (TAMANOS_CIRCULO[cg.size] ?? TAMANOS_CIRCULO.mediano) * (W / sWidth);
+        const corr = cg.corr.filter(c => c.a).map(c => ({ a: aCanvas(c.a as PuntoVideo), b: c.b ? aCanvas(c.b) : null }));
+        const zonaCompleta = cg.zona.length >= 3 && !cg.marcandoZona;
+        drawCongelar(ctx, W, H, corr, cg.zona.map(aCanvas), zonaCompleta, cg.texto, rx, cg.silueta, fase, alpha, cg.dur);
+      }
+    }
+
     // Logos: solo mientras se graba, para que salgan en el clip sin estorbar al marcar.
     if (isRecordingRef.current) drawWatermarkLogos(ctx, W, H, trackLogosRef.current.gol, trackLogosRef.current.team);
     if (!video.paused && !video.ended) {
       animFrameRef.current = requestAnimationFrame(drawTrackingCanvas);
     }
   }, []);
+
+  // Mientras dura la pausa el video está detenido, así que nada redibuja solo: este ciclo
+  // anima los dibujos (y los deja grabarse) y al terminar la pausa vuelve a correr el video.
+  freezeTickRef.current = () => {
+    const fz = freezeRef.current, v = trackingVideoRef.current;
+    if (!fz.active || !v) return;
+    if ((performance.now() - fz.start) / 1000 >= congelarRef.current.dur) {
+      fz.active = false; fz.done = true; fz.resumeAt = performance.now();
+      setFreezeUi(false);
+      v.play();
+      return;
+    }
+    drawTrackingCanvas();
+    freezeAnimRef.current = requestAnimationFrame(freezeTickRef.current);
+  };
+  const cancelarPausaEnCurso = () => {
+    const fz = freezeRef.current;
+    if (freezeAnimRef.current) cancelAnimationFrame(freezeAnimRef.current);
+    fz.active = false; fz.done = false; fz.resumeAt = 0;
+    setFreezeUi(false);
+  };
 
   // ─── Registrar listeners del video vía ref callback ──────────────────────
   // Usar useEffect con ref no funciona aquí porque el <video> se monta
@@ -1314,7 +1528,8 @@ const AnalisisTacticoPage: React.FC = () => {
   useEffect(() => {
     const video = trackingVideoRef.current;
     if (video?.paused) drawTrackingCanvas();
-  }, [markedPlayers, manualPlayers, activeManualId, manualSize, manualLinea, trackManual, trackZoom, trackPanX, trackPanY, drawTrackingCanvas]);
+  }, [markedPlayers, manualPlayers, activeManualId, manualSize, manualLinea, trackManual, trackZoom, trackPanX, trackPanY, drawTrackingCanvas,
+      congelarOn, pausaT, pausaDur, correcciones, textoCorr, zonaCorr, marcandoZona, siluetaCorr]);
 
   // ─── Clic en canvas tracking: marcar/desmarcar ───────────────────────────
   const handleTrackingCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -1322,14 +1537,49 @@ const AnalisisTacticoPage: React.FC = () => {
     const canvas = trackingCanvasRef.current;
     const video = trackingVideoRef.current;
     if (!canvas || !video) return;
-    if (trackManual && isRecordingRef.current) return;                 // grabando: los clics no hacen nada
-    if (trackManual && !video.paused) { video.pause(); return; }       // un clic con el video corriendo solo lo pausa
+    if ((trackManual || congelarOn) && isRecordingRef.current) return;                 // grabando: los clics no hacen nada
+    if (congelarOn && freezeRef.current.active) return;                                // mostrando la pausa
+    if ((trackManual || congelarOn) && !video.paused) { video.pause(); return; }       // un clic con el video corriendo solo lo pausa
     if (!video.paused) return;
     const rect = canvas.getBoundingClientRect();
     const scaleX = canvas.width / rect.width, scaleY = canvas.height / rect.height;
     const clickX = (e.clientX - rect.left) * scaleX;
     const clickY = (e.clientY - rect.top) * scaleY;
     const W = canvas.width, H = canvas.height;
+
+    // ── Congelar y corregir: punto A (dónde está), punto B (dónde debió estar) o esquinas de la zona ──
+    if (congelarOn) {
+      if (pausaT === null) { setCongelarMsg('Primero lleva el video al momento del error y da clic en “Pausar aquí”.'); return; }
+      if (Math.abs(video.currentTime - pausaT) > 0.05) {
+        video.currentTime = pausaT;
+        setCongelarMsg('Los jugadores se marcan en el momento de la pausa. Ya te llevé ahí: da clic otra vez.');
+        return;
+      }
+      setCongelarMsg(null);
+      const cr = trackCropRef.current;
+      const vwC = video.videoWidth || 1, vhC = video.videoHeight || 1;
+      const p: PuntoVideo = {
+        x: Math.max(0, Math.min(1, (cr.sx + (clickX / W) * cr.sWidth) / vwC)),
+        y: Math.max(0, Math.min(1, (cr.sy + (clickY / H) * cr.sHeight) / vhC)),
+      };
+      if (marcandoZona) {
+        const nueva = [...zonaCorr, p];
+        setZonaCorr(nueva);
+        if (nueva.length >= 4) setMarcandoZona(false);
+        return;
+      }
+      const activa = correcciones.find(c => c.id === activeCorrId);
+      if (activa && !activa.a) { setCorrecciones(prev => prev.map(c => c.id === activa.id ? { ...c, a: p } : c)); return; }
+      if (activa && !activa.b) { setCorrecciones(prev => prev.map(c => c.id === activa.id ? { ...c, b: p } : c)); return; }
+      // No hay jugador pendiente: este clic empieza al siguiente (su punto A).
+      if (correcciones.length >= MAX_JUGADORES_CONGELAR) { setCongelarMsg(`Máximo ${MAX_JUGADORES_CONGELAR} jugadores por pausa.`); return; }
+      const usados = new Set(correcciones.map(c => Number(c.label)));
+      let n = 1; while (usados.has(n)) n++;
+      const nueva: CorreccionJugador = { id: Date.now() + Math.random(), label: String(n), a: p, b: null };
+      setCorrecciones(prev => [...prev, nueva]);
+      setActiveCorrId(nueva.id);
+      return;
+    }
 
     // ── Telestración por marcas: el clic pone (o mueve) la marca del jugador elegido en este momento ──
     if (trackManual) {
@@ -1399,11 +1649,13 @@ const AnalisisTacticoPage: React.FC = () => {
       let n = 1; while (usados.has(n)) n++;
       return [...prev, { id: Date.now() + Math.random(), color: TRACKING_COLORS[(n - 1) % TRACKING_COLORS.length], label: String(n), tramos: [{ desde: -Infinity, track_id: trackId }] }];
     });
-  }, [currentPlayers, markedPlayers, reassignId, trackManual, manualPlayers, activeManualId, manualAdvance]);
+  }, [currentPlayers, markedPlayers, reassignId, trackManual, manualPlayers, activeManualId, manualAdvance,
+      congelarOn, pausaT, correcciones, activeCorrId, marcandoZona, zonaCorr]);
 
   // Controles de reproducción dentro del tramo de la jugada.
   const trackTogglePlay = () => {
     const v = trackingVideoRef.current; if (!v) return;
+    if (freezeRef.current.active) { cancelarPausaEnCurso(); return; }   // detener la pausa: se queda en ese cuadro para editar
     if (!v.paused) { v.pause(); return; }
     const r = trackRangeRef.current;
     if (r && v.currentTime >= r.end - 0.15) v.currentTime = r.start; // al final → vuelve a empezar
@@ -1413,11 +1665,13 @@ const AnalisisTacticoPage: React.FC = () => {
     const v = trackingVideoRef.current; if (!v) return;
     const r = trackRangeRef.current;
     const min = r ? r.start : 0, max = r ? r.end : (v.duration || Infinity);
+    if (freezeRef.current.active) cancelarPausaEnCurso();
     v.pause();
     v.currentTime = Math.max(min, Math.min(max, v.currentTime + delta));
   };
   const trackGoToStart = () => {
     const v = trackingVideoRef.current; if (!v) return;
+    if (freezeRef.current.active) cancelarPausaEnCurso();
     v.pause();
     v.currentTime = trackRangeRef.current ? trackRangeRef.current.start : 0;
   };
@@ -1453,7 +1707,9 @@ const AnalisisTacticoPage: React.FC = () => {
     setReassignId(null); setTelestrationSavedMsg(null);
     // Si el video ya está al final de la jugada (o fuera de ella), se graba desde el inicio.
     const rango = trackRangeRef.current;
-    if (rango && (video.currentTime >= rango.end - 0.15 || video.currentTime < rango.start)) {
+    if (congelarOn) cancelarPausaEnCurso();
+    // En "Congelar y corregir" siempre se graba la jugada completa, desde el inicio.
+    if (rango && (congelarOn || video.currentTime >= rango.end - 0.15 || video.currentTime < rango.start)) {
       video.pause();
       await new Promise<void>(resolve => {
         const done = () => { video.removeEventListener('seeked', done); resolve(); };
@@ -1488,6 +1744,7 @@ const AnalisisTacticoPage: React.FC = () => {
   };
 
   const handleStopRecording = () => {
+    if (freezeRef.current.active) cancelarPausaEnCurso();
     recorderRef.current?.stop();
     trackingVideoRef.current?.pause();
   };
@@ -1508,11 +1765,21 @@ const AnalisisTacticoPage: React.FC = () => {
       const { data: ud, error: ue } = await supabase.storage.from(CLIP_BUCKET).upload(fileName, recordedBlob, { contentType: recordedBlob.type, upsert: false });
       if (ue) throw ue;
       const tipoFinal = (showCustomTipo ? tipoAnalisisCustom.trim() : tipoAnalisis.trim()) || null;
+      // Congelar y corregir: se guardan las correcciones (A → B) para que la biblioteca lo
+      // reconozca y por si algún día se quiere volver a abrir. El dibujo ya va dentro del video.
+      const anotacionesCongelar: TacticalAnnotation[] = congelarOn
+        ? correcciones.filter(c => c.a && c.b).map(c => ({
+            id: String(c.id), type: 'arrow_player' as AnnotationType,
+            x1: (c.a as PuntoVideo).x, y1: (c.a as PuntoVideo).y, x2: (c.b as PuntoVideo).x, y2: (c.b as PuntoVideo).y,
+            color: COLOR_CORRECTO, strokeWidth: 3, label: c.label, text: textoCorr.trim() || undefined,
+            congelar: true, pausa_timestamp: pausaT, pausa_segundos: pausaDur,
+          } as any))
+        : [];
       const payload: TacticalAnalysisInsert = {
         match_id: selectedMatchId, team_id: matchTeamId, video_id: selectedVideoId,
         // Segundo del video donde empieza la jugada (igual que "En el video" de los demás análisis)
         timestamp_video: trackRangeRef.current ? trackRangeRef.current.start : recordStartTimeRef.current,
-        annotations: [],
+        annotations: anotacionesCongelar,
         description: telestrationDescription.trim() || undefined,
         created_by: user.id, clip_storage_path: ud.path, tipo_analisis: tipoFinal,
       };
@@ -1525,7 +1792,7 @@ const AnalisisTacticoPage: React.FC = () => {
       setAnalyses(prev => [data, ...prev]);
       setRecordedBlob(null); setTelestrationDescription('');
       setTipoAnalisis(''); setTipoAnalisisCustom(''); setShowCustomTipo(false);
-      setTelestrationSavedMsg(`Telestración guardada en la carpeta “${tipoFinal ?? SIN_CATEGORIA}”. La encuentras en la biblioteca de Análisis Táctico, junto con los demás análisis de este partido.`);
+      setTelestrationSavedMsg(`${congelarOn ? 'Análisis' : 'Telestración'} guardado${congelarOn ? '' : 'a'} en la carpeta “${tipoFinal ?? SIN_CATEGORIA}”. La encuentras en la biblioteca de Análisis Táctico, junto con los demás análisis de este partido.`);
     } catch (err: any) {
       console.error(err);
       setTrackingError(`No se pudo guardar la telestración (${err?.message || err}). El clip sigue aquí: puedes intentar guardarlo otra vez.`);
@@ -1534,6 +1801,7 @@ const AnalisisTacticoPage: React.FC = () => {
 
   // Salir de la vista de telestración (a crear otro análisis o a la biblioteca).
   const salirDeTracking = (destino: 'create' | 'list') => {
+    cancelarPausaEnCurso(); setMarcandoZona(false); setCongelarMsg(null);
     trackingVideoRef.current?.pause(); recorderRef.current?.stop(); isRecordingRef.current = false;
     setMarkedPlayers([]); setReassignId(null); setRecordedBlob(null); setIsRecording(false);
     setTelestrationSavedMsg(null);
@@ -1682,6 +1950,7 @@ const AnalisisTacticoPage: React.FC = () => {
     setTrackingJobId(null); setTrackingError(null);
     setPlayStart(null); setPlayEnd(null); setPlayMsg(null); aplicarRango(null);
     setTrackManual(false); setManualPlayers([]); setActiveManualId(null);
+    setCongelarOn(false); setPausaT(null); setCorrecciones([]); setActiveCorrId(null); setZonaCorr([]); setMarcandoZona(false);
     resetZoomClip();
   };
 
@@ -1747,19 +2016,20 @@ const AnalisisTacticoPage: React.FC = () => {
   const quitarPausa = (id: string) => setPausas(prev => prev.filter(x => x.id !== id));
 
   // Marcar inicio y fin de la jugada sobre el video cargado.
+  const maxJugada = modo === 'congelar' ? MAX_CONGELAR_SECONDS : MAX_PLAY_SECONDS;
   const markPlayStart = () => {
     const v = videoRef.current; if (!v) return;
     const t = v.currentTime;
     setPlayStart(t); setPlayMsg(null);
     // El fin anterior solo se conserva si sigue siendo válido con el nuevo inicio.
-    setPlayEnd(prev => (prev !== null && prev > t && prev - t <= MAX_PLAY_SECONDS ? prev : null));
+    setPlayEnd(prev => (prev !== null && prev > t && prev - t <= maxJugada ? prev : null));
   };
   const markPlayEnd = () => {
     const v = videoRef.current; if (!v || playStart === null) return;
     const t = v.currentTime;
     if (t <= playStart) { setPlayMsg('El fin debe ser posterior al inicio de la jugada.'); return; }
-    if (t - playStart > MAX_PLAY_SECONDS) {
-      setPlayMsg(`Así la jugada duraría ${(t - playStart).toFixed(1)} segundos y el máximo es ${MAX_PLAY_SECONDS}. Marca el fin antes, o mueve el inicio más adelante.`);
+    if (t - playStart > maxJugada) {
+      setPlayMsg(`Así la jugada duraría ${(t - playStart).toFixed(1)} segundos y el máximo es ${maxJugada}. Marca el fin antes, o mueve el inicio más adelante.`);
       return;
     }
     setPlayMsg(null); setPlayEnd(t);
@@ -1777,9 +2047,54 @@ const AnalisisTacticoPage: React.FC = () => {
     if (!misma) { setManualPlayers([]); setActiveManualId(null); }
     setTrackingError(null); setPlayMsg(null); setTrackingJobId(null); setTrackingFrames([]); setCurrentPlayers([]);
     setMarkedPlayers([]); setReassignId(null); setRecordedBlob(null); setTelestrationSavedMsg(null);
+    setCongelarOn(false);
     setTrackManual(true);
     aplicarRango({ start: playStart, end: playEnd });
     setView('tracking');
+  };
+
+  // Abre "Congelar y corregir" sobre la jugada marcada.
+  const openCongelar = () => {
+    if (playStart === null || playEnd === null) { setPlayMsg('Marca el inicio y el fin de la jugada.'); return; }
+    if (playEnd - playStart < 1) { setPlayMsg('La jugada debe durar al menos 1 segundo.'); return; }
+    if (playEnd - playStart > MAX_CONGELAR_SECONDS) { setPlayMsg(`La jugada no puede durar más de ${MAX_CONGELAR_SECONDS} segundos.`); return; }
+    videoRef.current?.pause();
+    // Misma jugada que ya estaba abierta → se conserva lo marcado (por si dio clic en Volver).
+    const misma = congelarOn && trackRange !== null && Math.abs(trackRange.start - playStart) < 0.01 && Math.abs(trackRange.end - playEnd) < 0.01;
+    if (!misma) { setPausaT(null); setCorrecciones([]); setActiveCorrId(null); setZonaCorr([]); setTextoCorr(''); setPausaDur(PAUSA_CONGELAR_DEFAULT); }
+    setMarcandoZona(false); setCongelarMsg(null);
+    freezeRef.current = { active: false, done: false, start: 0, resumeAt: 0 };
+    setTrackingError(null); setPlayMsg(null); setTrackingJobId(null); setTrackingFrames([]); setCurrentPlayers([]);
+    setMarkedPlayers([]); setReassignId(null); setRecordedBlob(null); setTelestrationSavedMsg(null);
+    setTrackManual(false); setCongelarOn(false);
+    setCongelarOn(true);
+    aplicarRango({ start: playStart, end: playEnd });
+    setView('tracking');
+  };
+
+  // Fija la pausa en el cuadro actual del video.
+  const fijarPausaAqui = () => {
+    const v = trackingVideoRef.current, r = trackRangeRef.current; if (!v) return;
+    if (freezeRef.current.active) cancelarPausaEnCurso();
+    v.pause();
+    const t = Math.round(v.currentTime * 30) / 30;
+    if (r && (t <= r.start + 0.05 || t >= r.end - 0.05)) { setCongelarMsg('La pausa tiene que quedar entre el inicio y el fin de la jugada.'); return; }
+    setPausaT(t); setCongelarMsg(null);
+    freezeRef.current.done = false;
+    if (Math.abs(v.currentTime - t) > 0.001) v.currentTime = t;
+  };
+  const irALaPausa = () => {
+    const v = trackingVideoRef.current; if (!v || pausaT === null) return;
+    if (freezeRef.current.active) cancelarPausaEnCurso();
+    v.pause(); v.currentTime = pausaT;
+  };
+  const agregarJugadorCorr = () => {
+    if (correcciones.length >= MAX_JUGADORES_CONGELAR) return;
+    const usados = new Set(correcciones.map(c => Number(c.label)));
+    let n = 1; while (usados.has(n)) n++;
+    const nueva: CorreccionJugador = { id: Date.now() + Math.random(), label: String(n), a: null, b: null };
+    setCorrecciones(prev => [...prev, nueva]); setActiveCorrId(nueva.id); setMarcandoZona(false);
+    irALaPausa();
   };
 
   const addManualPlayer = () => {
@@ -1796,7 +2111,7 @@ const AnalisisTacticoPage: React.FC = () => {
   const openProcessedPlay = (p: ProcessedPlay) => {
     videoRef.current?.pause();
     setTrackingError(null); setMarkedPlayers([]); setReassignId(null); setRecordedBlob(null);
-    setTrackManual(false);
+    setTrackManual(false); setCongelarOn(false);
     setTrackingJobId(p.jobId);
     aplicarRango({ start: p.startSecond, end: p.endSecond });
     setView('tracking');
@@ -1820,7 +2135,7 @@ const AnalisisTacticoPage: React.FC = () => {
       const jobId = await createTrackingJob({ videoId: selectedVideoId, matchId: selectedMatchId, teamId: profile.team_id, createdBy: user.id });
       await uploadToRailway({ videoBlob: compressed, jobId, videoId: selectedVideoId, matchId: selectedMatchId, teamId: profile.team_id, startSecond: start, onProgress });
       await pollJobStatus(jobId, onProgress);
-      setTrackManual(false);
+      setTrackManual(false); setCongelarOn(false);
       setTrackingJobId(jobId); setTrackingPercent(100);
       aplicarRango({ start, end });
       setProcessedPlays(prev => [...prev.filter(p => p.jobId !== jobId), { jobId, startSecond: start, endSecond: end }].sort((x, y) => x.startSecond - y.startSecond));
@@ -1958,7 +2273,7 @@ const AnalisisTacticoPage: React.FC = () => {
             className="flex items-center gap-2 text-gray-400 hover:text-cyan-400 transition-colors text-sm">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M19 12H5M12 19l-7-7 7-7" /></svg>Volver
           </button>
-          <h2 className="text-lg font-bold text-white">Telestración en movimiento</h2>
+          <h2 className="text-lg font-bold text-white">{congelarOn ? 'Congelar y corregir' : 'Telestración en movimiento'}</h2>
           <span className="text-xs bg-violet-900/40 text-violet-400 border border-violet-800 px-2 py-0.5 rounded">{selectedVideo?.video_file}</span>
           {trackRange && <span className="text-xs bg-gray-800 text-gray-300 border border-gray-700 px-2 py-0.5 rounded font-mono">Jugada {formatTime(trackRange.start)} → {formatTime(trackRange.end)} · {(trackRange.end - trackRange.start).toFixed(1)} s</span>}
           {isRecording && <span className="flex items-center gap-1.5 text-xs bg-red-900/40 text-red-400 border border-red-700 px-2 py-0.5 rounded animate-pulse"><span className="w-2 h-2 bg-red-500 rounded-full inline-block" />Grabando</span>}
@@ -1979,7 +2294,21 @@ const AnalisisTacticoPage: React.FC = () => {
           <>
             <div className="bg-gray-800/60 border border-gray-700 rounded-lg px-4 py-2 text-xs text-gray-400 flex items-center gap-2">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4 text-violet-400 flex-shrink-0"><circle cx="12" cy="12" r="10" /><path d="M12 8v4M12 16h.01" /></svg>
-              {trackManual ? (
+              {congelarOn ? (() => {
+                const activa = correcciones.find(c => c.id === activeCorrId);
+                const enPausa = pausaT !== null && Math.abs(currentVideoTime - pausaT) < 0.05;
+                const txt = isRecording ? (freezeUi ? 'Grabando la pausa…' : 'Grabando el clip: corre la jugada, se congela en la pausa y sigue.')
+                  : freezeUi ? `Así lo verá el cuerpo técnico. La pausa dura ${pausaDur} s; da clic en ⏸ para detenerla y editar.`
+                  : !isVideoPaused ? 'Reproduciendo. Da clic en el video para pausar.'
+                  : pausaT === null ? 'Lleva el video al momento del error (con ▶ o los botones de segundos) y da clic en “Pausar aquí”, abajo.'
+                  : !enPausa ? 'Para marcar jugadores, da clic en “Ir a la pausa”.'
+                  : marcandoZona ? `Zona descubierta: da clic en la esquina ${zonaCorr.length + 1} de 4.`
+                  : activa && !activa.a ? `Jugador ${activa.label}: da clic en sus pies, donde está mal ubicado (punto A).`
+                  : activa && !activa.b ? `Jugador ${activa.label}: da clic donde debió estar (punto B).`
+                  : correcciones.length === 0 ? 'Da clic en los pies del jugador mal ubicado (punto A) y después donde debió estar (punto B).'
+                  : 'Listo. Para corregir a otro jugador da clic en sus pies; o da clic en ▶ para ver cómo queda.';
+                return <span className={congelarMsg ? 'text-amber-300' : ''}>{congelarMsg ?? txt}</span>;
+              })() : trackManual ? (
                 <span>
                   {isRecording ? 'Grabando el clip con los círculos y la línea.'
                     : !isVideoPaused ? 'Reproduciendo: así se ve con las marcas que llevas. Da clic en el video para pausar.'
@@ -2034,7 +2363,7 @@ const AnalisisTacticoPage: React.FC = () => {
                 <div className="flex items-center gap-3">
                 <button onClick={trackTogglePlay}
                   className="w-8 h-8 flex items-center justify-center bg-white/20 hover:bg-white/30 rounded-full transition-colors">
-                  {isVideoPaused
+                  {isVideoPaused && !freezeUi
                     ? <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-white"><path d="M8 5v14l11-7z" /></svg>
                     : <svg viewBox="0 0 24 24" fill="currentColor" className="w-4 h-4 text-white"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" /></svg>}
                 </button>
@@ -2045,7 +2374,8 @@ const AnalisisTacticoPage: React.FC = () => {
                 </span>
                 <div className="flex-1" />
                 {!isRecording ? (
-                  <button onClick={handleStartRecording} disabled={!!recordedBlob}
+                  <button onClick={handleStartRecording} disabled={!!recordedBlob || (congelarOn && (pausaT === null || !correcciones.some(c => c.a && c.b)))}
+                    title={congelarOn && (pausaT === null || !correcciones.some(c => c.a && c.b)) ? 'Primero fija la pausa y marca al menos un jugador (punto A y punto B)' : undefined}
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600 hover:bg-red-700 disabled:opacity-40 text-white rounded-lg text-xs font-medium transition-colors">
                     <span className="w-2 h-2 bg-white rounded-full" />Grabar
                   </button>
@@ -2058,6 +2388,104 @@ const AnalisisTacticoPage: React.FC = () => {
                 </div>
               </div>
             </div>
+
+            {/* Congelar y corregir: pausa, jugadores (A → B), texto, zona y opciones */}
+            {congelarOn && (
+              <div className="bg-gray-800 rounded-xl p-3 space-y-3">
+                {/* Pausa */}
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <p className="text-gray-500 font-medium uppercase tracking-wider mr-1">Pausa</p>
+                  {pausaT === null
+                    ? <span className="text-gray-400">Sin fijar</span>
+                    : <span className="text-white font-mono bg-gray-900 border border-gray-700 rounded px-2 py-1">{trackRange ? `${Math.max(0, pausaT - trackRange.start).toFixed(1)} s de la jugada` : formatTimeDec(pausaT)}</span>}
+                  <button type="button" onClick={fijarPausaAqui} disabled={isRecording}
+                    className="px-2.5 py-1 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 text-white rounded-lg font-medium transition-colors">{pausaT === null ? 'Pausar aquí' : 'Mover la pausa aquí'}</button>
+                  {pausaT !== null && (
+                    <button type="button" onClick={irALaPausa} disabled={isRecording}
+                      className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-gray-200 rounded-lg transition-colors">Ir a la pausa</button>
+                  )}
+                  <label className="flex items-center gap-2 ml-2 text-gray-400">Duración
+                    <input type="range" min={2} max={60} step={1} value={pausaDur} disabled={isRecording}
+                      onChange={e => setPausaDur(Number(e.target.value))} className="w-32 accent-violet-500" />
+                    <span className="text-white font-mono w-12">{pausaDur} s</span>
+                  </label>
+                </div>
+                {trackRange && (
+                  <div>
+                    <div className="relative bg-gray-900 border border-gray-700 rounded cursor-pointer h-5"
+                      onClick={e => {
+                        const v = trackingVideoRef.current; if (!v || isRecording) return;
+                        if (freezeRef.current.active) cancelarPausaEnCurso();
+                        const r = e.currentTarget.getBoundingClientRect();
+                        v.pause();
+                        v.currentTime = trackRange.start + (trackRange.end - trackRange.start) * Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+                      }}>
+                      {pausaT !== null && <span className="absolute top-0 bottom-0 bg-red-500 rounded" style={{ width: 4, marginLeft: -2, left: `${((pausaT - trackRange.start) / Math.max(trackRange.end - trackRange.start, 0.001)) * 100}%` }} title="Pausa" />}
+                      <span className="absolute top-0 bottom-0 bg-white pointer-events-none" style={{ width: 2, marginLeft: -1, left: `${Math.max(0, Math.min(100, ((currentVideoTime - trackRange.start) / Math.max(trackRange.end - trackRange.start, 0.001)) * 100))}%` }} />
+                    </div>
+                    <p className="text-[11px] text-gray-500 mt-1">La raya roja es la pausa; clic en la barra para ir a ese momento. El clip dura la jugada ({(trackRange.end - trackRange.start).toFixed(1)} s) más la pausa ({pausaDur} s).</p>
+                  </div>
+                )}
+
+                {/* Jugadores */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-xs text-gray-500 font-medium uppercase tracking-wider mr-1">Jugadores</p>
+                  {correcciones.length === 0 && <span className="text-xs text-gray-500">Ninguno todavía</span>}
+                  {correcciones.map(c => (
+                    <div key={c.id} className={`flex items-center gap-1.5 pl-2 pr-1 py-1 rounded-lg border text-xs ${activeCorrId === c.id ? 'bg-white/10 border-green-500 text-green-300' : 'border-gray-600 text-gray-300'}`}>
+                      <button type="button" disabled={isRecording} onClick={() => { setActiveCorrId(c.id); setMarcandoZona(false); }} className="flex items-center gap-1.5 disabled:opacity-50">
+                        <span className="font-medium">Jugador {c.label}</span>
+                        <span className={c.a ? 'text-red-400' : 'text-gray-500'}>A {c.a ? '✓' : '—'}</span>
+                        <span className="text-gray-500">→</span>
+                        <span className={c.b ? 'text-green-400' : 'text-gray-500'}>B {c.b ? '✓' : '—'}</span>
+                      </button>
+                      <button type="button" disabled={isRecording} title="Volver a marcar los puntos A y B de este jugador"
+                        onClick={() => { setCorrecciones(prev => prev.map(x => x.id === c.id ? { ...x, a: null, b: null } : x)); setActiveCorrId(c.id); setMarcandoZona(false); irALaPausa(); }}
+                        className="px-1.5 py-0.5 rounded bg-white/10 hover:bg-white/20 disabled:opacity-40">Rehacer</button>
+                      <button type="button" disabled={isRecording} title="Quitar a este jugador"
+                        onClick={() => { setCorrecciones(prev => prev.filter(x => x.id !== c.id)); if (activeCorrId === c.id) setActiveCorrId(null); }}
+                        className="px-1 opacity-60 hover:opacity-100 disabled:opacity-30">✕</button>
+                    </div>
+                  ))}
+                  <button type="button" onClick={agregarJugadorCorr}
+                    disabled={isRecording || pausaT === null || correcciones.length >= MAX_JUGADORES_CONGELAR || correcciones.some(c => !c.a || !c.b)}
+                    title={pausaT === null ? 'Primero fija la pausa' : correcciones.some(c => !c.a || !c.b) ? 'Primero termina los puntos A y B del jugador que estás marcando' : undefined}
+                    className="px-2.5 py-1 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-medium transition-colors">+ Agregar jugador</button>
+                </div>
+
+                {/* Texto */}
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Texto que aparece en la pausa</label>
+                  <input type="text" value={textoCorr} onChange={e => setTextoCorr(e.target.value)} maxLength={140} disabled={isRecording}
+                    placeholder="Ej. Así es como debería moverse: cerrar la banda, no la central"
+                    className="w-full bg-gray-700 text-white rounded-lg px-3 py-2 text-sm border border-gray-600 focus:border-violet-500 focus:outline-none disabled:opacity-50" />
+                </div>
+
+                {/* Zona y opciones */}
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-gray-400">
+                  {zonaCorr.length === 0 || marcandoZona ? (
+                    <button type="button" disabled={isRecording || pausaT === null}
+                      onClick={() => { if (marcandoZona) { setMarcandoZona(false); setZonaCorr([]); } else { setZonaCorr([]); setMarcandoZona(true); irALaPausa(); } }}
+                      className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 text-gray-200 rounded-lg transition-colors">
+                      {marcandoZona ? `Cancelar zona (${zonaCorr.length} de 4)` : 'Marcar zona descubierta (4 esquinas)'}
+                    </button>
+                  ) : (
+                    <span className="flex items-center gap-2">Zona descubierta marcada
+                      <button type="button" disabled={isRecording} onClick={() => setZonaCorr([])} className="text-gray-500 hover:text-red-400 underline disabled:opacity-40">Quitar</button>
+                    </span>
+                  )}
+                  <label className="flex items-center gap-2">Tamaño del círculo
+                    <select value={manualSize} onChange={e => setManualSize(e.target.value)} className="bg-gray-700 text-white rounded px-1.5 py-1 border border-gray-600">
+                      <option value="chico">chico</option><option value="mediano">mediano</option><option value="grande">grande</option>
+                    </select>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={siluetaCorr} onChange={e => setSiluetaCorr(e.target.checked)} className="accent-violet-500" />Mostrar silueta del jugador
+                  </label>
+                </div>
+                <p className="text-[11px] text-gray-500">La silueta toma su tamaño del círculo: si se ve más grande o más chica que el jugador, cambia el tamaño del círculo. Para ver cómo queda, da clic en ⏮ Inicio y luego en ▶.</p>
+              </div>
+            )}
 
             {/* Telestración por marcas: jugadores, opciones y línea de tiempo de las marcas */}
             {trackManual && (
@@ -2316,7 +2744,7 @@ const AnalisisTacticoPage: React.FC = () => {
         {modo === null && (
           <div className="bg-gray-800 rounded-xl p-4 space-y-3">
             <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider">Elige el tipo de análisis</h3>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
               {MODOS_ANALISIS.map(m => (
                 <button key={m.id} type="button" onClick={() => { setModo(m.id); setError(null); }}
                   className="text-left bg-gray-900/60 hover:bg-gray-700/60 border border-gray-700 hover:border-cyan-500 rounded-lg p-4 transition-colors">
@@ -2389,7 +2817,7 @@ const AnalisisTacticoPage: React.FC = () => {
         {videoUrl && selectedVideo && (
           <div className="bg-gray-800 rounded-xl p-4 space-y-3">
             <h3 className="text-sm font-semibold text-gray-300 uppercase tracking-wider flex items-center gap-2">
-              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">4</span>{modo === 'tracking' ? 'Marca la jugada que quieres mostrar' : modo === 'secuencia' ? 'Captura cada momento de la secuencia' : 'Captura el frame a analizar'}
+              <span className="bg-cyan-600 text-white text-xs w-5 h-5 rounded-full flex items-center justify-center">4</span>{modo === 'tracking' || modo === 'congelar' ? 'Marca la jugada que quieres mostrar' : modo === 'secuencia' ? 'Captura cada momento de la secuencia' : 'Captura el frame a analizar'}
             </h3>
             {modo === 'secuencia' && (
               <p className="text-gray-400 text-xs">Avanza el video al primer momento, captura el frame, dibuja y escribe la explicación. Luego guarda la pausa y repite con el siguiente momento. Al final marca dónde termina el clip y guarda la secuencia.</p>
@@ -2436,7 +2864,7 @@ const AnalisisTacticoPage: React.FC = () => {
               <button onClick={() => stepVideo(0.1)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">+0.1s</button>
               <button onClick={() => stepVideo(5)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">+5s</button>
             </div>
-            {modo !== 'tracking' && (<>
+            {modo !== 'tracking' && modo !== 'congelar' && (<>
             <div className="flex items-center gap-3 bg-gray-700/50 rounded-lg px-3 py-2">
               <span className="text-xs text-gray-400">Segundos de contexto:</span>
               <input type="number" min={3} max={30} value={secondsBefore} onChange={e => setSecondsBefore(Number(e.target.value))} className="w-14 bg-gray-700 text-white text-center rounded px-2 py-1 text-sm border border-gray-600 focus:border-cyan-500 focus:outline-none" />
@@ -2482,9 +2910,9 @@ const AnalisisTacticoPage: React.FC = () => {
                 )}
               </div>
             )}
-            {modo === 'tracking' && (
+            {(modo === 'tracking' || modo === 'congelar') && (
               <div className="bg-gray-700/50 rounded-lg px-3 py-3 space-y-2">
-                <p className="text-xs text-gray-400">Lleva el video al inicio de la jugada y da clic en <span className="text-gray-200">Marcar inicio</span>; avanza hasta donde termina y da clic en <span className="text-gray-200">Marcar fin</span>. Máximo {MAX_PLAY_SECONDS} segundos. Después marcas a los jugadores con clics y el círculo los va siguiendo.</p>
+                <p className="text-xs text-gray-400">Lleva el video al inicio de la jugada y da clic en <span className="text-gray-200">Marcar inicio</span>; avanza hasta donde termina y da clic en <span className="text-gray-200">Marcar fin</span>. Máximo {maxJugada} segundos. {modo === 'congelar' ? 'Después eliges el momento de la pausa y marcas a cada jugador: dónde está y dónde debió estar.' : 'Después marcas a los jugadores con clics y el círculo los va siguiendo.'}</p>
                 <div className="flex flex-wrap items-center gap-2">
                   <button onClick={markPlayStart} disabled={isTracking} type="button" className="flex items-center gap-2 px-3 py-1.5 bg-gray-600 hover:bg-gray-500 disabled:opacity-40 disabled:cursor-not-allowed text-gray-200 rounded-lg text-xs font-medium transition-colors">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-3.5 h-3.5"><path d="M5 4v16M9 12h10M15 8l4 4-4 4" /></svg>
@@ -2528,7 +2956,7 @@ const AnalisisTacticoPage: React.FC = () => {
               </div>
             )}
             <div className="flex flex-wrap gap-2">
-              {modo !== 'tracking' && (
+              {modo !== 'tracking' && modo !== 'congelar' && (
               <button onClick={captureFrame} className="flex items-center gap-2 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium transition-colors">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><rect x="3" y="3" width="18" height="18" rx="2" /><circle cx="12" cy="12" r="3" /></svg>{modo === 'secuencia' && frameDataUrl ? 'Volver a capturar este momento' : 'Capturar frame actual'}
               </button>
@@ -2538,6 +2966,13 @@ const AnalisisTacticoPage: React.FC = () => {
                 title={playStart === null || playEnd === null ? 'Primero marca el inicio y el fin de la jugada' : undefined}
                 className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" /></svg>Marcar jugadores
+              </button>
+              )}
+              {modo === 'congelar' && (
+              <button onClick={openCongelar} disabled={playStart === null || playEnd === null}
+                title={playStart === null || playEnd === null ? 'Primero marca el inicio y el fin de la jugada' : undefined}
+                className="flex items-center gap-2 px-4 py-2 bg-violet-600 hover:bg-violet-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium transition-colors">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><rect x="6" y="5" width="4" height="14" rx="1" /><rect x="14" y="5" width="4" height="14" rx="1" /></svg>Elegir la pausa y los jugadores
               </button>
               )}
               {MOSTRAR_TRACKING_AUTOMATICO && modo === 'tracking' && (
