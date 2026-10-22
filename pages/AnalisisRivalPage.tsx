@@ -3,6 +3,7 @@ import { supabase } from '../services/supabaseClient';
 import { useAuth } from '../contexts/AuthContext';
 import { ROLES } from '../constants';
 import { Spinner } from '../components/ui/Spinner';
+import { SelectorVelocidad, useVelocidadVideo, aplicarVelocidad, VELOCIDADES_VIDEO } from '../components/ui/SelectorVelocidad';
 import type { RivalAnalysis, RivalAnalysisInsert, RivalMomento, RivalNotas, RivalTipo, RivalZona, Match, Tag, Player, DafoRival, JugadorClave, PlanPartido } from '../types';
 import {
   CORNER_FAVOR, CORNER_CONTRA, TL_FAVOR, TL_CONTRA, PENAL_FAVOR, PENAL_CONTRA,
@@ -314,6 +315,9 @@ const AnalisisRivalPage: React.FC = () => {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [videoFileName, setVideoFileName] = useState('');
   const videoRef = useRef<HTMLVideoElement>(null);
+  // Velocidad de reproducción (se recuerda; la misma que en Análisis Táctico).
+  const [velocidad, setVelocidad] = useVelocidadVideo();
+  useEffect(() => { aplicarVelocidad(videoRef.current, velocidad); }, [velocidad]);
   const secondaryWindowRef = useRef<Window | null>(null);
 
   // ── Selección actual de etiquetado ──
@@ -481,6 +485,7 @@ const AnalisisRivalPage: React.FC = () => {
 
   const openSecondaryWindow = () => {
     if (!videoUrl) return;
+    const opcionesVelocidad = VELOCIDADES_VIDEO.map(v => `<option value="${v}"${v === velocidad ? ' selected' : ''}>${v}x</option>`).join('');
     const sw = window.open('', '_blank', 'width=960,height=620');
     if (!sw) return;
     const navButton = (label: string, delta: number) => `<button onclick="seek(${delta})" style="background:#374151;color:#fff;border:none;padding:8px 14px;border-radius:6px;font-size:13px;cursor:pointer;">${label}</button>`;
@@ -488,9 +493,16 @@ const AnalisisRivalPage: React.FC = () => {
       <video id="v" src="${videoUrl}" controls autoplay style="flex:1;width:100%;min-height:0;"></video>
       <div style="background:#111827;padding:10px;display:flex;gap:8px;justify-content:center;">
         ${navButton('-10s', -10)}${navButton('-5s', -5)}${navButton('+5s', 5)}${navButton('+10s', 10)}
+        <select id="speed" title="Velocidad de reproducción" onchange="setSpeed(parseFloat(this.value))" style="background:#374151;color:#fff;border:none;padding:8px 10px;border-radius:6px;font-size:13px;cursor:pointer;">${opcionesVelocidad}</select>
       </div>
       <script>
         var v = document.getElementById('v');
+        function setSpeed(r) {
+          v.defaultPlaybackRate = r; v.playbackRate = r;
+          try { localStorage.setItem('golanalytics_velocidad_video', String(r)); } catch (e) {}
+        }
+        setSpeed(${velocidad});
+        v.addEventListener('loadedmetadata', function() { v.playbackRate = v.defaultPlaybackRate; });
         function seek(d) {
           v.currentTime = Math.max(0, v.currentTime + d);
           if (window.opener) window.opener.postMessage({ type: 'gol_videocontrol_from_popup', action: 'seek', delta: d }, '*');
@@ -1310,13 +1322,14 @@ const AnalisisRivalPage: React.FC = () => {
             </div>
             {videoUrl ? (
               <>
-                <video ref={videoRef} src={videoUrl} className="w-full rounded-lg max-h-72" controls />
+                <video ref={videoRef} src={videoUrl} className="w-full rounded-lg max-h-72" controls onLoadedMetadata={e => aplicarVelocidad(e.currentTarget, velocidad)} />
                 <div className="flex items-center justify-center gap-1.5">
                   <span className="text-xs text-gray-500 mr-1">Navegar:</span>
                   <button onClick={() => stepVideo(-10)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">-10s</button>
                   <button onClick={() => stepVideo(-5)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">-5s</button>
                   <button onClick={() => stepVideo(5)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">+5s</button>
                   <button onClick={() => stepVideo(10)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">+10s</button>
+                  <span className="ml-2"><SelectorVelocidad value={velocidad} onChange={setVelocidad} /></span>
                 </div>
               </>
             ) : (
