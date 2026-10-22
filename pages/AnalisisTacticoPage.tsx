@@ -6,6 +6,7 @@ import { Spinner } from '../components/ui/Spinner';
 import type { Match, TacticalAnalysis, TacticalAnnotation, TacticalAnalysisInsert, AnnotationType } from '../types';
 import { fetchVideosForMatch, type Video as VideoMeta } from '../services/videosService';
 import { LOGO_BASE64 } from '../constants/logoBase64';
+import { SelectorVelocidad, useVelocidadVideo, aplicarVelocidad } from '../components/ui/SelectorVelocidad';
 import {
   compressVideo,
   createTrackingJob,
@@ -214,9 +215,13 @@ const COLOR_ERROR = '#EF4444', COLOR_FLECHA = '#FACC15', COLOR_CORRECTO = '#22C5
 // alpha = desvanecimiento después de la pausa. Las posiciones ya vienen en pixeles del canvas.
 function drawCongelar(
   ctx: CanvasRenderingContext2D, W: number, H: number,
-  corr: Array<{ a: PuntoVideo; b: PuntoVideo | null }>, zona: PuntoVideo[], zonaCompleta: boolean,
+  corr: Array<{ a: PuntoVideo; b: PuntoVideo | null; label: string }>, zona: PuntoVideo[], zonaCompleta: boolean,
   texto: string, rx: number, silueta: boolean, fase: number, alpha: number, duracion: number,
+  edicion: boolean = false, activoLabel: string | null = null,
 ) {
+  // Al editar: cada jugador lleva su número y el elegido se ve brillante (los demás tenues).
+  // Nada de esto sale en el clip grabado.
+  const enfasis = (label: string) => (edicion && activoLabel !== null && label !== activoLabel ? 0.35 : 1);
   if (alpha <= 0) return;
   const completas = corr.filter(c => c.b);
   const n = Math.max(1, completas.length);
@@ -262,6 +267,15 @@ function drawCongelar(
     ctx.beginPath(); ctx.arc(x, y - h * 0.92, w * 0.3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
     ctx.restore();
   };
+  const numero = (x: number, y: number, txt: string, color: string, a: number) => {
+    if (!edicion || a <= 0) return;
+    ctx.save(); ctx.globalAlpha = alpha * a;
+    const fs = Math.max(13, rx * 0.8);
+    ctx.font = `bold ${fs}px monospace`; ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+    ctx.lineWidth = Math.max(3, fs * 0.22); ctx.strokeStyle = 'rgba(0,0,0,0.85)'; ctx.lineJoin = 'round';
+    ctx.strokeText(txt, x, y + ry + 3); ctx.fillStyle = color; ctx.fillText(txt, x, y + ry + 3);
+    ctx.restore();
+  };
   const etiqueta = (x: number, y: number, txt: string, bg: string, a: number) => {
     if (a <= 0) return;
     ctx.save(); ctx.globalAlpha = alpha * a;
@@ -276,8 +290,8 @@ function drawCongelar(
 
   // Punto A: dónde está mal ubicado
   const aA = ph(fase / (0.6 * sc));
-  corr.forEach(c => { ring(c.a.x, c.a.y, COLOR_ERROR, false, aA); });
-  corr.forEach(c => { if (c.b || fase === Infinity) etiqueta(c.a.x, c.a.y, 'Posición actual', 'rgba(220,38,38,0.95)', aA); });
+  corr.forEach(c => { ring(c.a.x, c.a.y, COLOR_ERROR, false, aA * enfasis(c.label)); numero(c.a.x, c.a.y, c.label, '#FCA5A5', enfasis(c.label)); });
+  corr.forEach(c => { if (c.b || fase === Infinity) etiqueta(c.a.x, c.a.y, 'Posición actual', 'rgba(220,38,38,0.95)', aA * enfasis(c.label)); });
 
   // Flecha y fantasma de A a B
   completas.forEach((c, i) => {
@@ -285,7 +299,9 @@ function drawCongelar(
     const m = ph((fase - (0.8 + i * 0.4) * sc) / (1.6 * sc));
     if (m <= 0) return;
     const ex = lerp(c.a.x, b.x, m), ey = lerp(c.a.y, b.y, m);
+    const en = enfasis(c.label);
     ctx.save();
+    ctx.globalAlpha = alpha * en;
     ctx.shadowColor = 'rgba(0,0,0,0.6)'; ctx.shadowBlur = 4;
     ctx.strokeStyle = COLOR_FLECHA; ctx.lineWidth = lw; ctx.lineCap = 'round';
     ctx.setLineDash([lw * 3, lw * 2]);
@@ -299,8 +315,9 @@ function drawCongelar(
       ctx.closePath(); ctx.fill();
     }
     ctx.restore();
-    figura(ex, ey, 1);
-    ring(ex, ey, COLOR_CORRECTO, true, 1);
+    figura(ex, ey, en);
+    ring(ex, ey, COLOR_CORRECTO, true, en);
+    numero(ex, ey, c.label, '#86EFAC', en);
   });
 
   // Texto del analista, arriba, con una línea hacia el punto B del primer jugador
@@ -958,6 +975,9 @@ const AnalisisTacticoPage: React.FC = () => {
   const [selectedVideo, setSelectedVideo] = useState<VideoMeta | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
+  // Velocidad de reproducción, la misma para todos los videos de esta pantalla (se recuerda).
+  const [velocidad, setVelocidad] = useVelocidadVideo();
+  const refConVelocidad = useCallback((v: HTMLVideoElement | null) => aplicarVelocidad(v, velocidad), [velocidad]);
   // ── Zoom digital para clips/frames de Análisis Táctico ──────────────────
   // Mismo principio que el zoom del video de "pantalla aparte" (acerca los
   // píxeles que ya existen, no inventa detalle nuevo). Se elige ANTES de
@@ -1090,11 +1110,22 @@ const AnalisisTacticoPage: React.FC = () => {
   const [siluetaCorr, setSiluetaCorr] = useState(true);
   const [freezeUi, setFreezeUi] = useState(false);                         // la pausa se está mostrando
   const [congelarMsg, setCongelarMsg] = useState<string | null>(null);
-  const congelarRef = useRef<{ on: boolean; pausaT: number | null; dur: number; corr: CorreccionJugador[]; texto: string; zona: PuntoVideo[]; marcandoZona: boolean; silueta: boolean; size: string }>(
-    { on: false, pausaT: null, dur: PAUSA_CONGELAR_DEFAULT, corr: [], texto: '', zona: [], marcandoZona: false, silueta: true, size: 'mediano' });
+  const congelarRef = useRef<{ on: boolean; pausaT: number | null; dur: number; corr: CorreccionJugador[]; texto: string; zona: PuntoVideo[]; marcandoZona: boolean; silueta: boolean; size: string; activoLabel: string | null }>(
+    { on: false, pausaT: null, dur: PAUSA_CONGELAR_DEFAULT, corr: [], texto: '', zona: [], marcandoZona: false, silueta: true, size: 'mediano', activoLabel: null });
   useEffect(() => {
-    congelarRef.current = { on: congelarOn, pausaT, dur: pausaDur, corr: correcciones, texto: textoCorr, zona: zonaCorr, marcandoZona, silueta: siluetaCorr, size: manualSize };
-  }, [congelarOn, pausaT, pausaDur, correcciones, textoCorr, zonaCorr, marcandoZona, siluetaCorr, manualSize]);
+    congelarRef.current = { on: congelarOn, pausaT, dur: pausaDur, corr: correcciones, texto: textoCorr, zona: zonaCorr, marcandoZona, silueta: siluetaCorr, size: manualSize,
+      activoLabel: correcciones.find(c => c.id === activeCorrId)?.label ?? null };
+  }, [congelarOn, pausaT, pausaDur, correcciones, textoCorr, zonaCorr, marcandoZona, siluetaCorr, manualSize, activeCorrId]);
+  // Historial para "Deshacer": cómo estaban los jugadores y la zona antes de cada cambio.
+  type FotoCorr = { corr: CorreccionJugador[]; zona: PuntoVideo[]; active: number | null; marcando: boolean };
+  const [historialCorr, setHistorialCorr] = useState<FotoCorr[]>([]);
+  const guardarHistorial = () => setHistorialCorr(h => [...h.slice(-49), { corr: correcciones, zona: zonaCorr, active: activeCorrId, marcando: marcandoZona }]);
+  const deshacerCorr = () => {
+    if (!historialCorr.length) return;
+    const f = historialCorr[historialCorr.length - 1];
+    setCorrecciones(f.corr); setZonaCorr(f.zona); setActiveCorrId(f.active); setMarcandoZona(f.marcando); setCongelarMsg(null);
+    setHistorialCorr(historialCorr.slice(0, -1));
+  };
   // Estado de la pausa mientras corre el video: active = congelado ahora; done = ya se mostró en esta pasada;
   // resumeAt = cuándo siguió el video (para desvanecer los dibujos).
   const freezeRef = useRef<{ active: boolean; done: boolean; start: number; resumeAt: number }>({ active: false, done: false, start: 0, resumeAt: 0 });
@@ -1177,6 +1208,9 @@ const AnalisisTacticoPage: React.FC = () => {
   const [loadingTelestrationClips, setLoadingTelestrationClips] = useState(false);
   const [telestrationUrls, setTelestrationUrls] = useState<Record<string, string>>({});
   const [view, setView] = useState<'list' | 'create' | 'review' | 'tracking'>('list');
+  useEffect(() => {
+    [videoRef.current, reviewVideoRef.current, trackingVideoRef.current].forEach(v => aplicarVelocidad(v, velocidad));
+  }, [velocidad, view, videoUrl, clipUrl]);
 
   useEffect(() => { activeToolRef.current = activeTool; }, [activeTool]);
   useEffect(() => { activeColorRef.current = activeColor; }, [activeColor]);
@@ -1413,18 +1447,18 @@ const AnalisisTacticoPage: React.FC = () => {
         if (freezeAnimRef.current) cancelAnimationFrame(freezeAnimRef.current);
         freezeAnimRef.current = requestAnimationFrame(freezeTickRef.current);
       }
-      let fase: number | null = null, alpha = 1;
+      let fase: number | null = null, alpha = 1, edicion = false;
       if (fz.active) fase = (performance.now() - fz.start) / 1000;
       else if (fz.done && fz.resumeAt && !video.paused) {
         const e = (performance.now() - fz.resumeAt) / 600;
         if (e < 1) { fase = Infinity; alpha = 1 - e; }
-      } else if (video.paused && !isRecordingRef.current && Math.abs(video.currentTime - cg.pausaT) < 0.05) fase = Infinity; // editando: todo en su lugar
+      } else if (video.paused && !isRecordingRef.current && Math.abs(video.currentTime - cg.pausaT) < 0.05) { fase = Infinity; edicion = true; } // editando: todo en su lugar
       if (fase !== null) {
         const aCanvas = (q: PuntoVideo) => ({ x: ((q.x * vw - sx) / sWidth) * W, y: ((q.y * vh - sy) / sHeight) * H });
         const rx = vw * (TAMANOS_CIRCULO[cg.size] ?? TAMANOS_CIRCULO.mediano) * (W / sWidth);
-        const corr = cg.corr.filter(c => c.a).map(c => ({ a: aCanvas(c.a as PuntoVideo), b: c.b ? aCanvas(c.b) : null }));
+        const corr = cg.corr.filter(c => c.a).map(c => ({ a: aCanvas(c.a as PuntoVideo), b: c.b ? aCanvas(c.b) : null, label: c.label }));
         const zonaCompleta = cg.zona.length >= 3 && !cg.marcandoZona;
-        drawCongelar(ctx, W, H, corr, cg.zona.map(aCanvas), zonaCompleta, cg.texto, rx, cg.silueta, fase, alpha, cg.dur);
+        drawCongelar(ctx, W, H, corr, cg.zona.map(aCanvas), zonaCompleta, cg.texto, rx, cg.silueta, fase, alpha, cg.dur, edicion, cg.activoLabel);
       }
     }
 
@@ -1529,7 +1563,7 @@ const AnalisisTacticoPage: React.FC = () => {
     const video = trackingVideoRef.current;
     if (video?.paused) drawTrackingCanvas();
   }, [markedPlayers, manualPlayers, activeManualId, manualSize, manualLinea, trackManual, trackZoom, trackPanX, trackPanY, drawTrackingCanvas,
-      congelarOn, pausaT, pausaDur, correcciones, textoCorr, zonaCorr, marcandoZona, siluetaCorr]);
+      congelarOn, pausaT, pausaDur, correcciones, textoCorr, zonaCorr, marcandoZona, siluetaCorr, activeCorrId]);
 
   // ─── Clic en canvas tracking: marcar/desmarcar ───────────────────────────
   const handleTrackingCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -1563,12 +1597,26 @@ const AnalisisTacticoPage: React.FC = () => {
         y: Math.max(0, Math.min(1, (cr.sy + (clickY / H) * cr.sHeight) / vhC)),
       };
       if (marcandoZona) {
+        guardarHistorial();
         const nueva = [...zonaCorr, p];
         setZonaCorr(nueva);
         if (nueva.length >= 4) setMarcandoZona(false);
         return;
       }
       const activa = correcciones.find(c => c.id === activeCorrId);
+      // Si no hay jugador a medias, un clic sobre un aro ya marcado elige a ese jugador.
+      if (!activa || (activa.a && activa.b)) {
+        const rxPx = vwC * (TAMANOS_CIRCULO[manualSize] ?? TAMANOS_CIRCULO.mediano) * (W / cr.sWidth);
+        const enCanvas = (q: PuntoVideo) => ({ x: ((q.x * vwC - cr.sx) / cr.sWidth) * W, y: ((q.y * vhC - cr.sy) / cr.sHeight) * H });
+        let mejor: CorreccionJugador | null = null, mejorD = Infinity;
+        for (const c of correcciones) for (const q of [c.a, c.b]) {
+          if (!q) continue;
+          const e = enCanvas(q), d = Math.hypot((clickX - e.x) / rxPx, (clickY - e.y) / (rxPx * 0.6));
+          if (d < 1.2 && d < mejorD) { mejor = c; mejorD = d; }
+        }
+        if (mejor) { setActiveCorrId(mejor.id); return; }
+      }
+      guardarHistorial();
       if (activa && !activa.a) { setCorrecciones(prev => prev.map(c => c.id === activa.id ? { ...c, a: p } : c)); return; }
       if (activa && !activa.b) { setCorrecciones(prev => prev.map(c => c.id === activa.id ? { ...c, b: p } : c)); return; }
       // No hay jugador pendiente: este clic empieza al siguiente (su punto A).
@@ -1650,7 +1698,7 @@ const AnalisisTacticoPage: React.FC = () => {
       return [...prev, { id: Date.now() + Math.random(), color: TRACKING_COLORS[(n - 1) % TRACKING_COLORS.length], label: String(n), tramos: [{ desde: -Infinity, track_id: trackId }] }];
     });
   }, [currentPlayers, markedPlayers, reassignId, trackManual, manualPlayers, activeManualId, manualAdvance,
-      congelarOn, pausaT, correcciones, activeCorrId, marcandoZona, zonaCorr]);
+      congelarOn, pausaT, correcciones, activeCorrId, marcandoZona, zonaCorr, manualSize]);
 
   // Controles de reproducción dentro del tramo de la jugada.
   const trackTogglePlay = () => {
@@ -2061,7 +2109,7 @@ const AnalisisTacticoPage: React.FC = () => {
     videoRef.current?.pause();
     // Misma jugada que ya estaba abierta → se conserva lo marcado (por si dio clic en Volver).
     const misma = congelarOn && trackRange !== null && Math.abs(trackRange.start - playStart) < 0.01 && Math.abs(trackRange.end - playEnd) < 0.01;
-    if (!misma) { setPausaT(null); setCorrecciones([]); setActiveCorrId(null); setZonaCorr([]); setTextoCorr(''); setPausaDur(PAUSA_CONGELAR_DEFAULT); }
+    if (!misma) { setPausaT(null); setCorrecciones([]); setActiveCorrId(null); setZonaCorr([]); setTextoCorr(''); setPausaDur(PAUSA_CONGELAR_DEFAULT); setHistorialCorr([]); }
     setMarcandoZona(false); setCongelarMsg(null);
     freezeRef.current = { active: false, done: false, start: 0, resumeAt: 0 };
     setTrackingError(null); setPlayMsg(null); setTrackingJobId(null); setTrackingFrames([]); setCurrentPlayers([]);
@@ -2093,6 +2141,7 @@ const AnalisisTacticoPage: React.FC = () => {
     const usados = new Set(correcciones.map(c => Number(c.label)));
     let n = 1; while (usados.has(n)) n++;
     const nueva: CorreccionJugador = { id: Date.now() + Math.random(), label: String(n), a: null, b: null };
+    guardarHistorial();
     setCorrecciones(prev => [...prev, nueva]); setActiveCorrId(nueva.id); setMarcandoZona(false);
     irALaPausa();
   };
@@ -2306,7 +2355,7 @@ const AnalisisTacticoPage: React.FC = () => {
                   : activa && !activa.a ? `Jugador ${activa.label}: da clic en sus pies, donde está mal ubicado (punto A).`
                   : activa && !activa.b ? `Jugador ${activa.label}: da clic donde debió estar (punto B).`
                   : correcciones.length === 0 ? 'Da clic en los pies del jugador mal ubicado (punto A) y después donde debió estar (punto B).'
-                  : 'Listo. Para corregir a otro jugador da clic en sus pies; o da clic en ▶ para ver cómo queda.';
+                  : `Listo${activa ? ` (elegido: jugador ${activa.label})` : ''}. Para corregir a otro jugador da clic en sus pies; para elegir uno ya marcado da clic en su aro; ▶ para ver cómo queda.`;
                 return <span className={congelarMsg ? 'text-amber-300' : ''}>{congelarMsg ?? txt}</span>;
               })() : trackManual ? (
                 <span>
@@ -2335,7 +2384,7 @@ const AnalisisTacticoPage: React.FC = () => {
                   y el canvas que lo dibuja se queda en negro para siempre. Se mantiene
                   "invisible" pero sí renderizado (tamaño 1x1, opacidad 0) para que el
                   navegador lo siga reproduciendo de verdad. */}
-              <video ref={trackingVideoRefCallback} src={videoUrl ?? undefined} playsInline
+              <video ref={trackingVideoRefCallback} src={videoUrl ?? undefined} playsInline onLoadedMetadata={e => aplicarVelocidad(e.currentTarget, velocidad)}
                 style={{ position: 'absolute', width: 1, height: 1, opacity: 0, pointerEvents: 'none' }} />
               <canvas ref={trackingCanvasRef} className="w-full h-auto block"
                 style={{ cursor: trackZoom > 1 ? 'grab' : (isVideoPaused ? 'crosshair' : 'default') }}
@@ -2350,10 +2399,7 @@ const AnalisisTacticoPage: React.FC = () => {
                   <button onClick={() => trackStep(-0.1)} className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs font-mono">-0.1s</button>
                   <button onClick={() => trackStep(0.1)} className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs font-mono">+0.1s</button>
                   <button onClick={() => trackStep(1)} className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs font-mono">+1s</button>
-                  <select onChange={e => { const v = trackingVideoRef.current; if (v) v.playbackRate = parseFloat(e.target.value); }} defaultValue="1"
-                    className="bg-white/15 hover:bg-white/25 rounded text-white text-xs px-1.5 py-1">
-                    <option value="0.5">0.5x</option><option value="0.7">0.7x</option><option value="1">1x</option><option value="1.5">1.5x</option><option value="2">2x</option>
-                  </select>
+                  <SelectorVelocidad value={velocidad} onChange={setVelocidad} etiqueta={false} className="bg-white/15 hover:bg-white/25 rounded text-white text-xs px-1.5 py-1 [&>option]:text-black" />
                   <button onClick={() => trackZoomBy(-0.5)} className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs">🔍−</button>
                   <span className="text-white/70 text-xs w-10 text-center">{Math.round(trackZoom * 100)}%</span>
                   <button onClick={() => trackZoomBy(0.5)} className="px-2 py-1 bg-white/15 hover:bg-white/25 rounded text-white text-xs">🔍+</button>
@@ -2440,10 +2486,10 @@ const AnalisisTacticoPage: React.FC = () => {
                         <span className={c.b ? 'text-green-400' : 'text-gray-500'}>B {c.b ? '✓' : '—'}</span>
                       </button>
                       <button type="button" disabled={isRecording} title="Volver a marcar los puntos A y B de este jugador"
-                        onClick={() => { setCorrecciones(prev => prev.map(x => x.id === c.id ? { ...x, a: null, b: null } : x)); setActiveCorrId(c.id); setMarcandoZona(false); irALaPausa(); }}
+                        onClick={() => { guardarHistorial(); setCorrecciones(prev => prev.map(x => x.id === c.id ? { ...x, a: null, b: null } : x)); setActiveCorrId(c.id); setMarcandoZona(false); irALaPausa(); }}
                         className="px-1.5 py-0.5 rounded bg-white/10 hover:bg-white/20 disabled:opacity-40">Rehacer</button>
                       <button type="button" disabled={isRecording} title="Quitar a este jugador"
-                        onClick={() => { setCorrecciones(prev => prev.filter(x => x.id !== c.id)); if (activeCorrId === c.id) setActiveCorrId(null); }}
+                        onClick={() => { guardarHistorial(); setCorrecciones(prev => prev.filter(x => x.id !== c.id)); if (activeCorrId === c.id) setActiveCorrId(null); }}
                         className="px-1 opacity-60 hover:opacity-100 disabled:opacity-30">✕</button>
                     </div>
                   ))}
@@ -2451,7 +2497,11 @@ const AnalisisTacticoPage: React.FC = () => {
                     disabled={isRecording || pausaT === null || correcciones.length >= MAX_JUGADORES_CONGELAR || correcciones.some(c => !c.a || !c.b)}
                     title={pausaT === null ? 'Primero fija la pausa' : correcciones.some(c => !c.a || !c.b) ? 'Primero termina los puntos A y B del jugador que estás marcando' : undefined}
                     className="px-2.5 py-1 bg-violet-600 hover:bg-violet-700 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-xs font-medium transition-colors">+ Agregar jugador</button>
+                  <button type="button" onClick={deshacerCorr} disabled={isRecording || historialCorr.length === 0}
+                    title="Quita el último cambio: un punto A o B, una esquina de la zona, o un jugador que quitaste o rehiciste"
+                    className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed text-gray-200 rounded-lg text-xs font-medium transition-colors">↶ Deshacer</button>
                 </div>
+                <p className="text-[11px] text-gray-500">Al editar, cada jugador lleva su número en el video y el que eliges en la lista se ve brillante. Para elegir uno ya marcado también puedes dar clic sobre su aro. Los números no salen en el clip grabado.</p>
 
                 {/* Texto */}
                 <div>
@@ -2471,7 +2521,7 @@ const AnalisisTacticoPage: React.FC = () => {
                     </button>
                   ) : (
                     <span className="flex items-center gap-2">Zona descubierta marcada
-                      <button type="button" disabled={isRecording} onClick={() => setZonaCorr([])} className="text-gray-500 hover:text-red-400 underline disabled:opacity-40">Quitar</button>
+                      <button type="button" disabled={isRecording} onClick={() => { guardarHistorial(); setZonaCorr([]); }} className="text-gray-500 hover:text-red-400 underline disabled:opacity-40">Quitar</button>
                     </span>
                   )}
                   <label className="flex items-center gap-2">Tamaño del círculo
@@ -2665,7 +2715,8 @@ const AnalisisTacticoPage: React.FC = () => {
         ) : clipUrl ? (
           <div className="bg-gray-800 rounded-xl p-4 space-y-3">
             <div className="relative rounded-lg overflow-hidden bg-black">
-              <video ref={reviewVideoRef} src={clipUrl} className="w-full block" controls playsInline />
+              <video ref={reviewVideoRef} src={clipUrl} className="w-full block" controls playsInline onLoadedMetadata={e => aplicarVelocidad(e.currentTarget, velocidad)} />
+              <div className="flex justify-end"><SelectorVelocidad value={velocidad} onChange={setVelocidad} /></div>
             </div>
           </div>
         ) : (
@@ -2705,7 +2756,7 @@ const AnalisisTacticoPage: React.FC = () => {
                       <p className="text-xs text-gray-400 px-3 pt-2">{clip.description}</p>
                     )}
                     {url ? (
-                      <video src={url} className="w-full block" controls playsInline />
+                      <video ref={refConVelocidad} src={url} className="w-full block" controls playsInline onLoadedMetadata={e => aplicarVelocidad(e.currentTarget, velocidad)} />
                     ) : (
                       <div className="flex items-center justify-center h-16 text-gray-600 text-xs">
                         <Spinner />
@@ -2840,7 +2891,7 @@ const AnalisisTacticoPage: React.FC = () => {
             >
               <video
                 ref={videoRef} src={videoUrl} className="w-full rounded-lg" controls
-                onLoadedMetadata={e => setVideoDuration(e.currentTarget.duration || 0)}
+                onLoadedMetadata={e => { setVideoDuration(e.currentTarget.duration || 0); aplicarVelocidad(e.currentTarget, velocidad); }}
                 style={{ transform: `translate(${panX}px,${panY}px) scale(${zoom})`, transformOrigin: '0 0' }}
               />
             </div>
@@ -2863,6 +2914,7 @@ const AnalisisTacticoPage: React.FC = () => {
               <button onClick={() => stepVideo(-0.1)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">-0.1s</button>
               <button onClick={() => stepVideo(0.1)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">+0.1s</button>
               <button onClick={() => stepVideo(5)} type="button" className="px-2.5 py-1 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded text-xs font-mono transition-colors">+5s</button>
+              <span className="ml-2"><SelectorVelocidad value={velocidad} onChange={setVelocidad} /></span>
             </div>
             {modo !== 'tracking' && modo !== 'congelar' && (<>
             <div className="flex items-center gap-3 bg-gray-700/50 rounded-lg px-3 py-2">
@@ -3291,7 +3343,7 @@ const AnalisisTacticoPage: React.FC = () => {
                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="w-4 h-4"><path d="M15 18l-6-6 6-6" /></svg>
                   {selectedFolder}
                 </button>
-                <h2 className="text-lg font-bold text-white">Comparando {compareAnalyses.length} análisis</h2>
+                <div className="flex items-center gap-3 flex-wrap"><h2 className="text-lg font-bold text-white">Comparando {compareAnalyses.length} análisis</h2><div className="ml-auto"><SelectorVelocidad value={velocidad} onChange={setVelocidad} /></div></div>
                 <div className={`grid grid-cols-1 ${compareAnalyses.length > 1 ? 'lg:grid-cols-2' : ''} gap-4`}>
                   {compareAnalyses.map(analysis => {
                     const match = matches.find(m => m.id === analysis.match_id);
@@ -3308,7 +3360,7 @@ const AnalisisTacticoPage: React.FC = () => {
                         ) : loading || !url ? (
                           <div className="aspect-video bg-gray-900 rounded-lg flex items-center justify-center"><Spinner /></div>
                         ) : (
-                          <video src={url} controls className="w-full rounded-lg bg-black" />
+                          <video ref={refConVelocidad} src={url} controls className="w-full rounded-lg bg-black" onLoadedMetadata={e => aplicarVelocidad(e.currentTarget, velocidad)} />
                         )}
                         {analysis.description && <p className="text-gray-400 text-xs mt-2 line-clamp-2">{analysis.description}</p>}
                       </div>
