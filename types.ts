@@ -153,6 +153,7 @@ export type AnnotationType =
   | 'zone_ellipse'    // Elipse semitransparente — área de cobertura, radio de acción
   | 'spotlight'       // Círculo de foco — resalta un jugador oscureciendo el resto
   | 'player_circle'   // Círculo con número/letra — marca a un jugador específico
+  | 'player_light'    // Luz sobre un jugador — columna de luz y círculo a los pies, sin oscurecer el resto
   | 'text';           // Caja de texto — etiqueta táctica
 
 export interface TacticalAnnotation {
