@@ -1980,18 +1980,23 @@ const VideoTaggerPage: React.FC = () => {
 <head><meta charset="utf-8"><title>Video - GolAnalytics</title>
 <style>
   body { margin:0; padding:0; background:#000; display:flex; flex-direction:column; align-items:center; justify-content:center; width:100vw; height:100vh; font-family:sans-serif; }
-  /* Este wrapper (video + controles) es lo que se pone en pantalla completa —
-     así los botones no desaparecen al maximizar, como sí pasaba poniendo
-     pantalla completa solo al <video>. Los controles van ENCIMA del video
-     (no debajo, empujándolo) para que el video use toda la pantalla, igual
-     que con el ícono nativo de pantalla completa. */
-  #wrapper { position:relative; display:flex; align-items:center; justify-content:center; width:100%; height:100%; background:#000; }
-  /* "viewport" recorta lo que se ve; el <video> de adentro es el que se agranda
-     y se arrastra — así el zoom no rompe el layout de la página. */
-  #viewport { max-width:100%; max-height:100%; overflow:hidden; position:relative; cursor:grab; }
+  /* Este wrapper (video + controles) es lo que se pone en pantalla completa,
+     así los botones no desaparecen al maximizar. Los controles van DEBAJO del
+     video (no encima): antes tapaban la barra de avance y el play/pausa del
+     navegador, que en pantalla completa quedaban escondidos. Ahora la barra
+     propia trae play/pausa, avance con tiempo y sonido. */
+  #wrapper { display:flex; flex-direction:column; width:100%; height:100%; background:#000; }
+  #stage { flex:1; min-height:0; position:relative; }
+  /* "viewport" ocupa todo el espacio libre arriba de los controles y recorta lo
+     que se ve; el <video> de adentro es el que se agranda y se arrastra — así el
+     zoom no rompe el layout de la página. */
+  #viewport { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; overflow:hidden; cursor:grab; }
   #viewport.dragging { cursor:grabbing; }
   video { max-width:100%; max-height:100%; display:block; transform-origin: 0 0; }
-  .controls { position:absolute; left:0; right:0; bottom:0; display:flex; gap:10px; padding:10px 14px; flex-wrap:wrap; justify-content:center; align-items:center; background:rgba(0,0,0,0.65); box-sizing:border-box; }
+  .barra { display:flex; align-items:center; gap:10px; padding:6px 14px 0; background:#0b1220; color:#e5e7eb; font-size:14px; font-variant-numeric:tabular-nums; }
+  #progreso { flex:1; height:6px; accent-color:#06b6d4; cursor:pointer; }
+  .controls { display:flex; gap:10px; padding:8px 14px 10px; flex-wrap:wrap; justify-content:center; align-items:center; background:#0b1220; box-sizing:border-box; }
+  #playBtn { min-width:110px; background:#0e7490; }
   button { background:#1e293b; color:#fff; border:1px solid #475569; border-radius:8px; padding:8px 18px; font-size:15px; font-weight:bold; cursor:pointer; }
   button:hover { background:#0e7490; }
   select { background:#1e293b; color:#fff; border:1px solid #475569; border-radius:8px; padding:8px 10px; font-size:15px; font-weight:bold; cursor:pointer; }
@@ -2000,10 +2005,18 @@ const VideoTaggerPage: React.FC = () => {
 </head>
 <body>
 <div id="wrapper">
+<div id="stage">
 <div id="viewport">
-<video id="vid" src="${activeVideoUrl}" controls autoplay controlsList="nofullscreen"></video>
+<video id="vid" src="${activeVideoUrl}" autoplay></video>
+</div>
+</div>
+<div class="barra">
+  <span id="tActual">00:00</span>
+  <input id="progreso" type="range" min="0" max="0" step="0.1" value="0" />
+  <span id="tTotal">00:00</span>
 </div>
 <div class="controls">
+  <button id="playBtn" onclick="togglePlay()" title="Play / pausa (barra espaciadora)">⏸ Pausa</button>
   <button onclick="document.getElementById('vid').currentTime -= 10">⏪ -10s</button>
   <button onclick="document.getElementById('vid').currentTime += 10">+10s ⏩</button>
   <select id="speed" onchange="document.getElementById('vid').playbackRate = parseFloat(this.value)">
@@ -2018,6 +2031,7 @@ const VideoTaggerPage: React.FC = () => {
   <span id="zoomLabel">100%</span>
   <button onclick="zoomBy(0.5)" title="Acercar a la jugada">🔍+</button>
   <button onclick="resetZoom()" title="Quitar zoom">Zoom 1:1</button>
+  <button id="sonidoBtn" onclick="toggleSonido()" title="Silenciar / activar sonido">🔊</button>
 </div>
 </div>
 <script>
@@ -2025,6 +2039,41 @@ const VideoTaggerPage: React.FC = () => {
   var viewport = document.getElementById('viewport');
   var zoomLabel = document.getElementById('zoomLabel');
   var lastSent = 0;
+
+  // ── Play/pausa, barra de avance y sonido (reemplazan los controles del navegador) ──
+  var playBtn = document.getElementById('playBtn');
+  var progreso = document.getElementById('progreso');
+  var tActual = document.getElementById('tActual');
+  var tTotal = document.getElementById('tTotal');
+  var sonidoBtn = document.getElementById('sonidoBtn');
+  var arrastrandoBarra = false;
+  function fmt(t) {
+    t = Math.max(0, Math.floor(t || 0));
+    var h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), sec = t % 60;
+    var mm = (m < 10 ? '0' : '') + m, ss = (sec < 10 ? '0' : '') + sec;
+    return h > 0 ? h + ':' + mm + ':' + ss : mm + ':' + ss;
+  }
+  function togglePlay() { if (vid.paused) vid.play(); else vid.pause(); }
+  function toggleSonido() { vid.muted = !vid.muted; sonidoBtn.textContent = vid.muted ? '🔇' : '🔊'; }
+  function pintarPlay() { playBtn.textContent = vid.paused ? '▶ Play' : '⏸ Pausa'; }
+  function pintarTiempo() {
+    if (!arrastrandoBarra) progreso.value = vid.currentTime;
+    tActual.textContent = fmt(vid.currentTime);
+  }
+  vid.addEventListener('loadedmetadata', function() { progreso.max = vid.duration || 0; tTotal.textContent = fmt(vid.duration); pintarTiempo(); });
+  vid.addEventListener('durationchange', function() { progreso.max = vid.duration || 0; tTotal.textContent = fmt(vid.duration); });
+  vid.addEventListener('timeupdate', pintarTiempo);
+  vid.addEventListener('play', pintarPlay);
+  vid.addEventListener('pause', pintarPlay);
+  progreso.addEventListener('input', function() { arrastrandoBarra = true; tActual.textContent = fmt(parseFloat(progreso.value)); });
+  progreso.addEventListener('change', function() { vid.currentTime = parseFloat(progreso.value); arrastrandoBarra = false; progreso.blur(); });
+  // Teclas: espacio = play/pausa, ← / → = 5 segundos.
+  document.addEventListener('keydown', function(e) {
+    if (e.target && (e.target.tagName === 'SELECT')) return;
+    if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+    else if (e.code === 'ArrowLeft') { e.preventDefault(); vid.currentTime = Math.max(0, vid.currentTime - 5); }
+    else if (e.code === 'ArrowRight') { e.preventDefault(); vid.currentTime += 5; }
+  });
 
   // ── Zoom digital + arrastrar (zoom óptico no es posible: el video ya
   // quedó grabado con una cantidad fija de píxeles, esto solo los agranda). ──
@@ -2055,10 +2104,14 @@ const VideoTaggerPage: React.FC = () => {
     panY = startPanY + (e.clientY - startY);
     applyZoom();
   });
+  var movido = false;
   window.addEventListener('mouseup', function() {
     dragging = false;
     viewport.classList.remove('dragging');
   });
+  viewport.addEventListener('mousedown', function() { movido = false; });
+  window.addEventListener('mousemove', function() { if (dragging) movido = true; });
+  viewport.addEventListener('click', function() { if (!movido) togglePlay(); });
   vid.addEventListener('timeupdate', function() {
     var now = Date.now();
     if (now - lastSent >= 500) {
