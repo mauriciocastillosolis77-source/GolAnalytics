@@ -12,7 +12,7 @@ import { fetchVideosForMatch, createVideoForMatch, updateVideoMeta, Video as Vid
 import { secondsToMmss } from '../utils/time';
 import { fetchTeams, getOrCreateTeam, type Team } from '../services/teamsService';
 import { ACCIONES_CON_ZONA, TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona, etiquetaZona, zonaDesdeVoz } from '../utils/zonas';
-import { esJugadorFicticio } from '../utils/efectividad';
+import { esJugadorFicticio, ACCION_TIRO } from '../utils/efectividad';
 import { ACCIONES_GOL, TIPOS_GOL, TIPO_GOL_LABEL, GOLPEOS, GOLPEO_LABEL, detalleGolDe, detalleGolDesdeVoz, resumenGol, etiquetaPorteria, type DetalleGol } from '../utils/goles';
 import PorteriaEstadio from '../components/charts/PorteriaEstadio';
 import { accionDesdeVoz } from '../utils/accionDesdeVoz';
@@ -21,6 +21,31 @@ import { ACCION_CAMBIO, detalleCambioDe, resumenCambio } from '../utils/cambios'
 import { fetchEstatusPartido, guardarEstatusPartido } from '../services/asistenciaService';
 
 declare var XLSX: any;
+
+
+// ── Respaldo local de jugadas sin guardar (por partido, solo en este navegador) ──
+const claveBorradorTags = (matchId: string) => `gol_etiquetador_borrador_${matchId}`;
+
+function leerBorradorTags(matchId: string): { tags: Tag[]; guardadoEn: string } | null {
+    try {
+        const raw = localStorage.getItem(claveBorradorTags(matchId));
+        if (!raw) return null;
+        const d = JSON.parse(raw);
+        const lista = Array.isArray(d?.tags) ? (d.tags as Tag[]).filter(t => t && String(t.id).startsWith('temp-') && t.match_id === matchId) : [];
+        return { tags: lista, guardadoEn: typeof d?.guardadoEn === 'string' ? d.guardadoEn : '' };
+    } catch {
+        return null;
+    }
+}
+
+function escribirBorradorTags(matchId: string, lista: Tag[]): void {
+    try {
+        if (lista.length === 0) localStorage.removeItem(claveBorradorTags(matchId));
+        else localStorage.setItem(claveBorradorTags(matchId), JSON.stringify({ guardadoEn: new Date().toISOString(), tags: lista }));
+    } catch {
+        // Sin espacio o almacenamiento bloqueado: el etiquetado sigue funcionando sin respaldo.
+    }
+}
 
 const VideoTaggerPage: React.FC = () => {
     // Section 1: Match Management
@@ -84,6 +109,12 @@ const VideoTaggerPage: React.FC = () => {
     // Section 3: Tagging
     const [players, setPlayers] = useState<Player[]>([]);
     const [tags, setTags] = useState<Tag[]>([]);
+    // Respaldo de las jugadas sin guardar (localStorage, por partido). Si la página se recarga
+    // o se cierra antes de "Guardar", al volver a abrir el partido sale un aviso para recuperarlas.
+    // `tagsCargadosDe` evita escribir el respaldo antes de terminar de cargar el partido
+    // (si no, borraría el respaldo antes de poder ofrecerlo).
+    const [tagsCargadosDe, setTagsCargadosDe] = useState<string | null>(null);
+    const [borradorPrevio, setBorradorPrevio] = useState<{ matchId: string; tags: Tag[]; guardadoEn: string } | null>(null);
     const [selectedPlayerId, setSelectedPlayerId] = useState<string>('');
     const [selectedAction, setSelectedAction] = useState<string>(METRICS[0]);
 
@@ -166,6 +197,36 @@ const VideoTaggerPage: React.FC = () => {
             .filter(p => p.team_id === selectedMatch.team_id)
             .sort((a, b) => a.numero - b.numero);
     }, [players, selectedMatchId, matches, tags, estatusPorJugador]);
+
+    // Respaldo automático: cada cambio en las jugadas sin guardar del partido abierto se copia
+    // al navegador. Mientras el aviso de "recuperar" sigue sin contestar, se conservan también
+    // las jugadas del respaldo anterior, para no perderlas si el aviso se ignora.
+    useEffect(() => {
+        if (!selectedMatchId || tagsCargadosDe !== selectedMatchId) return;
+        const temporales = tags.filter(t => String(t.id).startsWith('temp-') && t.match_id === selectedMatchId);
+        const previas = borradorPrevio?.matchId === selectedMatchId ? borradorPrevio.tags : [];
+        const todas = [...previas, ...temporales.filter(t => !previas.some(p => p.id === t.id))];
+        escribirBorradorTags(selectedMatchId, todas);
+    }, [tags, selectedMatchId, tagsCargadosDe, borradorPrevio]);
+
+    // Aviso del navegador si intentas cerrar o recargar con jugadas sin guardar.
+    const hayJugadasSinGuardar = tags.some(t => String(t.id).startsWith('temp-'));
+    useEffect(() => {
+        if (!hayJugadasSinGuardar) return;
+        const avisar = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+        window.addEventListener('beforeunload', avisar);
+        return () => window.removeEventListener('beforeunload', avisar);
+    }, [hayJugadasSinGuardar]);
+
+    const recuperarBorrador = () => {
+        if (!borradorPrevio || borradorPrevio.matchId !== selectedMatchId) return;
+        const recuperadas = borradorPrevio.tags;
+        setTags(prev => [...prev, ...recuperadas.filter(r => !prev.some(t => t.id === r.id))].sort((a, b) => a.timestamp - b.timestamp));
+        setBorradorPrevio(null);
+        setSaveStatus({ message: `Se recuperaron ${recuperadas.length} jugadas. Recuerda presionar "Guardar".`, type: 'success' });
+    };
+
+    const descartarBorrador = () => setBorradorPrevio(null);
 
     // Filtro de la lista "Jugadas Etiquetadas". Es solo de vista: no cambia `tags` ni lo que se guarda.
     const [filtroAccion, setFiltroAccion] = useState<string>('');
@@ -266,6 +327,9 @@ const VideoTaggerPage: React.FC = () => {
             try {
                 const { data: tagsData } = await supabase.from('tags').select('*').eq('match_id', selectedMatchId).order('timestamp', { ascending: true });
                 setTags(tagsData || []);
+                const previo = leerBorradorTags(selectedMatchId);
+                setBorradorPrevio(previo && previo.tags.length > 0 ? { matchId: selectedMatchId, ...previo } : null);
+                setTagsCargadosDe(selectedMatchId);
                 const { data: playersData } = await supabase.from('players').select('*');
                 setPlayers(playersData || []);
                 
@@ -613,7 +677,7 @@ const VideoTaggerPage: React.FC = () => {
 
         // Mejora 1: si es recuperación o pérdida de un jugador real, pedir la zona en el panel de detalle.
         const jugadorDelTag = players.find(p => p.id === selectedPlayerId);
-        if ((ACCIONES_CON_ZONA.has(accion) || ACCIONES_GOL.has(accion) || ACCIONES_ABP_SET.has(accion) || accion === ACCION_CAMBIO) && !esJugadorFicticio(jugadorDelTag?.nombre)) {
+        if ((ACCIONES_CON_ZONA.has(accion) || ACCIONES_GOL.has(accion) || ACCIONES_ABP_SET.has(accion) || accion === ACCION_CAMBIO || accion === ACCION_TIRO) && !esJugadorFicticio(jugadorDelTag?.nombre)) {
             setDetallePendiente({ id: newTag.id, match_id: newTag.match_id, player_id: newTag.player_id, accion: newTag.accion, timestamp: newTag.timestamp });
         } else {
             setDetallePendiente(null);
@@ -729,6 +793,28 @@ const VideoTaggerPage: React.FC = () => {
         }
         setTags(prev => prev.map(t => (t.id === tag.id ? { ...t, detalle: nuevo } : t)));
         return `🚩 ${resumenAbp(tag.accion, detalleAbpDe({ accion: tag.accion, detalle: nuevo })) || 'Detalle guardado'}`;
+    };
+
+    // Tiros: 'logrado' = fue a portería, 'fallado' = desviado. Cambia la columna `resultado`
+    // (la misma que usan Logrado/Fallado en el resto de la plataforma). Si la jugada ya
+    // estaba guardada, se actualiza en Supabase al momento; si no, se guarda con "Guardar".
+    const aplicarResultadoTiro = async (resultado: 'logrado' | 'fallado'): Promise<string> => {
+        const pend = detallePendiente;
+        if (!pend) return '⚠ No hay tiro esperando detalle';
+        const tag = tags.find(t => t.id === pend.id)
+            || tags.find(t => t.match_id === pend.match_id && t.player_id === pend.player_id && t.accion === pend.accion && t.timestamp === pend.timestamp);
+        setDetallePendiente(null);
+        if (!tag) return '⚠ No encontré la jugada';
+        const esTemporal = String(tag.id).startsWith('temp-');
+        if (!esTemporal) {
+            const { error } = await supabase.from('tags').update({ resultado }).eq('id', tag.id);
+            if (error) {
+                console.error('Error al guardar el resultado del tiro', error);
+                return '⚠ No se pudo guardar el tiro';
+            }
+        }
+        setTags(prev => prev.map(t => (t.id === tag.id ? { ...t, resultado } : t)));
+        return resultado === 'logrado' ? '🎯 Tiro a portería' : '↗ Tiro desviado';
     };
 
     // Cambios: guarda quién sale (el que entra ya es el player_id del tag).
@@ -1498,6 +1584,23 @@ const VideoTaggerPage: React.FC = () => {
                 return;
             }
         }
+        // Tiro: "desviado" / "fuera" → desviado; "a portería" / "a puerta" / "acertado" → a portería.
+        if (detallePendiente && detallePendiente.accion === ACCION_TIRO) {
+            const t = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            if (/\blisto\b|\bsaltar\b/.test(t)) {
+                setDetallePendiente(null);
+                show('✅ Tiro sin marcar (cuenta como a portería)');
+                return;
+            }
+            if (/\bdesviad|\bfuera\b|\bafuera\b|\bse salio\b/.test(t)) {
+                aplicarResultadoTiro('fallado').then(show);
+                return;
+            }
+            if (/\bacertad|\ba porteria\b|\ba puerta\b|\bal arco\b|\bentre los tres palos\b/.test(t) && !/\btiro\b/.test(t)) {
+                aplicarResultadoTiro('logrado').then(show);
+                return;
+            }
+        }
         if (detallePendiente && ACCIONES_CON_ZONA.has(detallePendiente.accion)) {
             if (/\bsaltar\b|\bsin zona\b/.test(text)) {
                 aplicarZona(null).then(show);
@@ -2131,6 +2234,25 @@ const VideoTaggerPage: React.FC = () => {
                         )}
                     </div>
                     
+                    {/* Respaldo de jugadas sin guardar de la última vez */}
+                    {borradorPrevio && borradorPrevio.matchId === selectedMatchId && (
+                        <div className="mt-2 p-2 rounded border border-yellow-500 bg-yellow-900/40 text-yellow-100 text-sm">
+                            <p>
+                                Tienes <strong>{borradorPrevio.tags.length}</strong> {borradorPrevio.tags.length === 1 ? 'jugada' : 'jugadas'} sin guardar de la última vez
+                                {borradorPrevio.guardadoEn ? ` (${new Date(borradorPrevio.guardadoEn).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' })})` : ''}.
+                            </p>
+                            <div className="flex gap-2 mt-2">
+                                <button onClick={recuperarBorrador} className="flex-1 bg-yellow-600 hover:bg-yellow-500 text-black font-semibold px-3 py-1.5 rounded">Recuperar</button>
+                                <button onClick={descartarBorrador} className="flex-1 bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded">Descartar</button>
+                            </div>
+                        </div>
+                    )}
+                    {hayJugadasSinGuardar && !(borradorPrevio && borradorPrevio.matchId === selectedMatchId) && (
+                        <p className="mt-2 text-xs text-yellow-300 text-center">
+                            {tags.filter(t => String(t.id).startsWith('temp-')).length} jugadas sin guardar · respaldadas en este navegador
+                        </p>
+                    )}
+
                     {/* BOTÓN seguro */}
                     <button
                         onClick={() => {
@@ -2224,7 +2346,16 @@ const VideoTaggerPage: React.FC = () => {
                                         >
                                             ▶ {formatTime(tag.timestamp)}
                                         </button>
-                                        <div className="text-xs text-gray-300">{tag.accion} {tag.resultado && <span className={isSuccess ? 'text-green-300' : 'text-red-300'}>{tag.resultado}</span>}</div>
+                                        <div className="text-xs text-gray-300">{tag.accion} {tag.accion !== ACCION_TIRO && tag.resultado && <span className={isSuccess ? 'text-green-300' : 'text-red-300'}>{tag.resultado}</span>}</div>
+                                        {tag.accion === ACCION_TIRO && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (
+                                            <button
+                                                onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
+                                                className={`block text-xs mt-1 underline text-left ${isSuccess ? 'text-green-300' : isFailure ? 'text-red-300' : 'text-gray-400'}`}
+                                                title="Marcar o cambiar si fue a portería o desviado"
+                                            >
+                                                {isSuccess ? '🎯 A portería' : isFailure ? '↗ Desviado' : '+ ¿a portería o desviado?'}
+                                            </button>
+                                        )}
                                         {ACCIONES_CON_ZONA.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (
                                             <button
                                                 onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
@@ -2613,6 +2744,44 @@ const VideoTaggerPage: React.FC = () => {
                                 </div>
                             </div>
                         );
+                    })() : detallePendiente && detallePendiente.accion === ACCION_TIRO ? (() => {
+                        const jug = players.find(p => p.id === detallePendiente.player_id);
+                        const tagActual = tags.find(t => t.id === detallePendiente.id)
+                            || tags.find(t => t.match_id === detallePendiente.match_id && t.player_id === detallePendiente.player_id && t.accion === detallePendiente.accion && t.timestamp === detallePendiente.timestamp);
+                        const actual = tagActual?.resultado || '';
+                        const avisar = (msg: string) => { setVoiceStatus(msg); setTimeout(() => setVoiceStatus(''), 2500); };
+                        return (
+                            <div className="space-y-2">
+                                <p className="text-sm text-gray-200">
+                                    Tiro · {jug ? `#${jug.numero} ${jug.nombre.trim().split(/\s+/)[0]}` : 'Jugador'} · <span className="text-gray-400">¿fue a portería?</span>
+                                </p>
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={() => { aplicarResultadoTiro('logrado').then(avisar); }}
+                                        className={`flex-1 min-h-[44px] rounded text-sm font-semibold border-2 ${actual === 'logrado' ? 'bg-green-700 border-green-300 text-white' : 'bg-gray-700 border-transparent hover:bg-green-800 text-gray-100'}`}
+                                    >
+                                        🎯 A portería
+                                    </button>
+                                    <button
+                                        onClick={() => { aplicarResultadoTiro('fallado').then(avisar); }}
+                                        className={`flex-1 min-h-[44px] rounded text-sm font-semibold border-2 ${actual === 'fallado' ? 'bg-red-700 border-red-300 text-white' : 'bg-gray-700 border-transparent hover:bg-red-800 text-gray-100'}`}
+                                    >
+                                        ↗ Desviado
+                                    </button>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <p className="flex-1 text-xs bg-gray-900 rounded px-2 py-1.5 text-gray-300">
+                                        Di: <span className="text-cyan-300">"a portería"</span> o <span className="text-cyan-300">"desviado"</span>. Desviado cuenta como fallado en la efectividad. Si no marcas nada, cuenta como a portería.
+                                    </p>
+                                    <button
+                                        onClick={() => setDetallePendiente(null)}
+                                        className="px-3 py-2 rounded bg-gray-600 hover:bg-gray-500 text-sm whitespace-nowrap"
+                                    >
+                                        Saltar
+                                    </button>
+                                </div>
+                            </div>
+                        );
                     })() : detallePendiente && detallePendiente.accion === ACCION_CAMBIO ? (() => {
                         const entra = players.find(p => p.id === detallePendiente.player_id);
                         const tagActual = tags.find(t => t.id === detallePendiente.id)
@@ -2672,7 +2841,7 @@ const VideoTaggerPage: React.FC = () => {
                             </div>
                         );
                     })() : (
-                        <p className="text-sm text-gray-400">Aparece al etiquetar una recuperación o una pérdida (zona), un gol (tipo, área y portería) o un balón parado o penal.</p>
+                        <p className="text-sm text-gray-400">Aparece al etiquetar una recuperación o una pérdida (zona), un tiro (a portería o desviado), un gol (tipo, área y portería) o un balón parado o penal.</p>
                     )}
                 </div>
 
