@@ -1,0 +1,2843 @@
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { supabase } from '../services/supabaseClient';
+import type { Player, Match, Tag, AISuggestion, EstatusPartido } from '../types';
+import { METRICS } from '../constants';
+import { Spinner } from '../components/ui/Spinner';
+import { EditIcon, TrashIcon, SparklesIcon, CloudUploadIcon, CloudCheckIcon } from '../components/ui/Icons';
+import { analyzeVideoFrames } from '../services/geminiService';
+import { analyzeVideoSegment, extractFramesFromSegment, type SegmentAnalysisProgress, type TeamUniformContext } from '../services/geminiSegmentService';
+import { blobToBase64 } from '../utils/blob';
+import AISuggestionsModal from '../components/ai/AISuggestionsModal';
+import { fetchVideosForMatch, createVideoForMatch, Video as VideoMeta } from '../services/videosService';
+import { fetchTeams, getOrCreateTeam, type Team } from '../services/teamsService';
+import { ACCIONES_CON_ZONA, TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona, etiquetaZona, zonaDesdeVoz } from '../utils/zonas';
+import { esJugadorFicticio } from '../utils/efectividad';
+import { ACCIONES_GOL, TIPOS_GOL, TIPO_GOL_LABEL, GOLPEOS, GOLPEO_LABEL, detalleGolDe, detalleGolDesdeVoz, resumenGol, etiquetaPorteria, type DetalleGol } from '../utils/goles';
+import PorteriaEstadio from '../components/charts/PorteriaEstadio';
+import { accionDesdeVoz } from '../utils/accionDesdeVoz';
+import { ACCIONES_ABP, ACCIONES_ABP_SET, ACCIONES_PENAL, ACCIONES_EN_CONTRA, ENVIOS, ENVIO_LABEL, RESULTADOS_COBRO, RESULTADO_COBRO_LABEL, MARCAJES, MARCAJE_LABEL, RESULTADOS_PENAL, RESULTADO_PENAL_LABEL, detalleAbpDe, resumenAbp, accionAbpDesdeVoz, detalleAbpDesdeVoz, type DetalleAbp } from '../utils/balonParado';
+import { ACCION_CAMBIO, detalleCambioDe, resumenCambio } from '../utils/cambios';
+import { fetchEstatusPartido, guardarEstatusPartido } from '../services/asistenciaService';
+
+declare var XLSX: any;
+
+const VideoTaggerPage: React.FC = () => {
+    // Section 1: Match Management
+    const [matches, setMatches] = useState<Match[]>([]);
+    const [selectedMatchId, setSelectedMatchId] = useState<string>('');
+    const [isCreatingMatch, setIsCreatingMatch] = useState(false);
+    const [newMatchData, setNewMatchData] = useState({
+        torneo: '',
+        nombre_equipo: '',
+        categoria: '',
+        fecha: new Date().toISOString().split('T')[0],
+        rival: '',
+        jornada: 1
+    });
+    const [isSavingMatch, setIsSavingMatch] = useState(false);
+    const [matchCreationError, setMatchCreationError] = useState<string | null>(null);
+    const [teams, setTeams] = useState<Team[]>([]);
+
+    // Section 2: File Management
+    const [playerUploadStatus, setPlayerUploadStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+    const [playerUploadMessage, setPlayerUploadMessage] = useState<string>('');
+    const [videoFiles, setVideoFiles] = useState<File[]>([]);
+    const [teamUniformFile, setTeamUniformFile] = useState<File | null>(null);
+    const [opponentUniformFile, setOpponentUniformFile] = useState<File | null>(null);
+    const [activeVideoUrl, setActiveVideoUrl] = useState<string | null>(null);
+    const [currentVideoFile, setCurrentVideoFile] = useState<File | null>(null);
+
+    // Video metadata from DB
+    const [videos, setVideos] = useState<VideoMeta[]>([]);
+    const [selectedVideoId, setSelectedVideoId] = useState<string>('');
+    const [selectedVideo, setSelectedVideo] = useState<VideoMeta | null>(null);
+    const [showNewVideoModal, setShowNewVideoModal] = useState(false);
+    const [newVideoFileName, setNewVideoFileName] = useState('');
+    const [newVideoOffset, setNewVideoOffset] = useState('00:00');
+    const [isCreatingVideo, setIsCreatingVideo] = useState(false);
+
+    // Section 3: Tagging
+    const [players, setPlayers] = useState<Player[]>([]);
+    const [tags, setTags] = useState<Tag[]>([]);
+    const [selectedPlayerId, setSelectedPlayerId] = useState<string>('');
+    const [selectedAction, setSelectedAction] = useState<string>(METRICS[0]);
+
+    // Section 4: AI Analysis
+    const [isGeminiAnalyzing, setIsGeminiAnalyzing] = useState(false);
+    const [isCustomAnalyzing, setIsCustomAnalyzing] = useState(false);
+    const [aiSuggestions, setAiSuggestions] = useState<AISuggestion[]>([]);
+    const [isSuggestionsModalOpen, setIsSuggestionsModalOpen] = useState(false);
+    const [pendingAiSuggestion, setPendingAiSuggestion] = useState<AISuggestion | null>(null);
+    
+    // Batch Analysis State
+    const [isBatchAnalyzing, setIsBatchAnalyzing] = useState(false);
+    const [batchProgress, setBatchProgress] = useState({ current: 0, total: 0 });
+    const [batchSuggestions, setBatchSuggestions] = useState<any[]>([]);
+    const [showBatchResultsModal, setShowBatchResultsModal] = useState(false);
+    
+    // Segment Analysis State (Gemini Video)
+    const [showSegmentModal, setShowSegmentModal] = useState(false);
+    const [segmentStartTime, setSegmentStartTime] = useState('00:00');
+    const [segmentEndTime, setSegmentEndTime] = useState('05:00');
+    const [isSegmentAnalyzing, setIsSegmentAnalyzing] = useState(false);
+    const [segmentProgress, setSegmentProgress] = useState<SegmentAnalysisProgress | null>(null);
+
+    // UI State
+    const [isLoading, setIsLoading] = useState(true);
+    const [isSaving, setIsSaving] = useState(false);
+    const [saveStatus, setSaveStatus] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+    const [currentTime, setCurrentTime] = useState(0);
+    const [showShortcutsGuide, setShowShortcutsGuide] = useState(false);
+
+    // Estado solo visual (no cambia datos ni lógica): video encogido y paneles plegables
+    const [videoCompacto, setVideoCompacto] = useState(false);
+    const [gestionAbierta, setGestionAbierta] = useState(false);
+    const [cargaAbierta, setCargaAbierta] = useState(false);
+
+    // Alineación — se llena una vez por partido (no por jugada etiquetada).
+    // Los minutos ya no se capturan aquí: se calculan solos con la etiqueta
+    // de Cambio (ver más abajo) + la duración real de los videos.
+    type FilaEstatus = { estatus: EstatusPartido | '' };
+    const [estatusAbierta, setEstatusAbierta] = useState(false);
+    const [estatusPorJugador, setEstatusPorJugador] = useState<Record<string, FilaEstatus>>({});
+    const [cargandoEstatus, setCargandoEstatus] = useState(false);
+    const [guardandoEstatus, setGuardandoEstatus] = useState(false);
+    const [estatusMsg, setEstatusMsg] = useState<string | null>(null);
+    const [iaAbierta, setIaAbierta] = useState(false);
+
+    // Mejora 1 — zona de la jugada. Después de etiquetar una recuperación o una pérdida,
+    // el panel "Detalle de la jugada" pregunta dónde fue. No bloquea: si sigues etiquetando,
+    // la jugada queda "sin zona". Guardamos datos para ubicar la etiqueta aunque ya se haya
+    // guardado en la base (el guardado cambia su id temporal por el real).
+    const [detallePendiente, setDetallePendiente] = useState<{ id: string | number; match_id: string; player_id: string; accion: string; timestamp: number } | null>(null);
+
+    // Voice Commands State
+    const [isVoiceActive, setIsVoiceActive] = useState(false);
+    const [voiceTranscript, setVoiceTranscript] = useState('');
+    const [voiceStatus, setVoiceStatus] = useState<string>('');
+    const recognitionRef = useRef<any>(null);
+    const isVoiceActiveRef = useRef(false);
+    const processVoiceCommandRef = useRef<(t: string) => void>(() => {});
+    // Referencia a la ventana secundaria del video — se guarda al abrirla
+    const secondaryWindowRef = useRef<Window | null>(null);
+
+    // Derived state: any AI analysis is running
+    const isAnyAnalysisRunning = isGeminiAnalyzing || isCustomAnalyzing || isBatchAnalyzing || isSegmentAnalyzing;
+
+    // Filtrar jugadores por equipo del partido seleccionado
+    const filteredPlayers = useMemo(() => {
+        if (!selectedMatchId) return [...players].sort((a, b) => a.numero - b.numero);
+        const selectedMatch = matches.find(m => m.id === selectedMatchId);
+        if (!selectedMatch?.team_id) return [...players].sort((a, b) => a.numero - b.numero);
+        return players
+            .filter(p => p.team_id === selectedMatch.team_id)
+            .sort((a, b) => a.numero - b.numero);
+    }, [players, selectedMatchId, matches]);
+
+    // Keyboard shortcuts mapping: key -> action from METRICS
+    const KEYBOARD_SHORTCUTS: Record<string, string> = {
+        '1': 'Pase corto defensivo logrado',
+        '2': 'Pase corto defensivo fallado',
+        '3': 'Pase corto ofensivo logrado',
+        '4': 'Pase corto ofensivo fallado',
+        '5': 'Pase largo defensivo logrado',
+        '6': 'Pase largo defensivo fallado',
+        '7': 'Pase largo ofensivo logrado',
+        '8': 'Pase largo ofensivo fallado',
+        '9': '1 vs 1 defensivo logrado',
+        '0': '1 vs 1 defensivo fallado',
+        'q': '1 vs 1 ofensivo logrado',
+        'w': '1 vs 1 ofensivo fallado',
+        'e': 'Aéreo defensivo logrado',
+        'r': 'Aéreo defensivo fallado',
+        't': 'Aéreo ofensivo logrado',
+        'y': 'Aéreo ofensivo fallado',
+        'u': 'Transición ofensiva lograda',
+        'i': 'Transición ofensiva no lograda',
+        'a': 'Atajadas',
+        's': 'Goles a favor',
+        'd': 'Goles recibidos',
+        'f': 'Pérdida de balón',
+        'g': 'Tiros a portería',
+        'h': 'Recuperación de balón',
+    };
+
+    // Fetch matches and teams when component mounts
+    useEffect(() => {
+        const fetchData = async () => {
+            setIsLoading(true);
+            try {
+                const { data: matchesData } = await supabase.from('matches').select('*').order('fecha', { ascending: false });
+                setMatches(matchesData || []);
+                if (matchesData && matchesData.length > 0 && !selectedMatchId) {
+                    setSelectedMatchId(matchesData[0].id);
+                }
+                
+                const teamsData = await fetchTeams();
+                setTeams(teamsData);
+            } catch (err) {
+                console.error('Error fetching matches', err);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        fetchData();
+    }, []);
+
+    // When selectedMatchId changes, fetch tags, players and videos
+    useEffect(() => {
+        if (!selectedMatchId) return;
+        const fetchTagsPlayersVideos = async () => {
+            setIsLoading(true);
+            try {
+                const { data: tagsData } = await supabase.from('tags').select('*').eq('match_id', selectedMatchId).order('timestamp', { ascending: true });
+                setTags(tagsData || []);
+                const { data: playersData } = await supabase.from('players').select('*');
+                setPlayers(playersData || []);
+                
+                // Filtrar jugadores por equipo del partido y seleccionar el primero
+                const selectedMatch = matches.find(m => m.id === selectedMatchId);
+                if (playersData && playersData.length > 0) {
+                    const teamPlayers = selectedMatch?.team_id 
+                        ? playersData.filter(p => p.team_id === selectedMatch.team_id)
+                        : playersData;
+                    if (teamPlayers.length > 0) {
+                        setSelectedPlayerId(teamPlayers[0].id);
+                    }
+                }
+
+                // Fetch videos metadata for the match
+                try {
+                    const videosData = await fetchVideosForMatch(selectedMatchId);
+                    setVideos(videosData || []);
+                    if (videosData && videosData.length > 0 && !selectedVideoId) {
+                        setSelectedVideoId(videosData[0].id);
+                        setSelectedVideo(videosData[0]);
+                    } else if (!videosData || videosData.length === 0) {
+                        setSelectedVideoId('');
+                        setSelectedVideo(null);
+                    }
+                } catch (err) {
+                    console.warn('Could not fetch videos for match', err);
+                    setVideos([]);
+                    setSelectedVideo(null);
+                }
+            } catch (err) {
+                console.error('Error fetching tags/players/videos', err);
+            } finally {
+                setIsLoading(false);
+            }
+        };
+        fetchTagsPlayersVideos();
+    }, [selectedMatchId]);
+
+    // Alineación del partido seleccionado.
+    useEffect(() => {
+        let cancelado = false;
+        setEstatusMsg(null);
+        if (!selectedMatchId) { setEstatusPorJugador({}); return; }
+        setCargandoEstatus(true);
+        (async () => {
+            try {
+                const filas = await fetchEstatusPartido(selectedMatchId);
+                if (cancelado) return;
+                const inicial: Record<string, FilaEstatus> = {};
+                filas.forEach((f) => { inicial[f.player_id] = { estatus: f.estatus }; });
+                setEstatusPorJugador(inicial);
+            } catch (err) {
+                console.error('No se pudo cargar la alineación:', err);
+                if (!cancelado) setEstatusPorJugador({});
+            } finally {
+                if (!cancelado) setCargandoEstatus(false);
+            }
+        })();
+        return () => { cancelado = true; };
+    }, [selectedMatchId]);
+
+    const updateEstatusJugador = (playerId: string, patch: Partial<FilaEstatus>) => {
+        setEstatusPorJugador((prev) => ({ ...prev, [playerId]: { ...(prev[playerId] || { estatus: '' }), ...patch } }));
+    };
+
+    const handleGuardarEstatus = async () => {
+        if (!selectedMatchId) return;
+        setGuardandoEstatus(true);
+        setEstatusMsg(null);
+        try {
+            const filas = Object.entries(estatusPorJugador)
+                .filter(([, v]) => v.estatus)
+                .map(([player_id, v]) => ({ player_id, estatus: v.estatus as EstatusPartido }));
+            const n = await guardarEstatusPartido(selectedMatchId, filas);
+            setEstatusMsg(`Alineación guardada (${n} jugador${n === 1 ? '' : 'es'}).`);
+        } catch (err: any) {
+            console.error('Error guardando alineación:', err);
+            setEstatusMsg('No se pudo guardar. ' + (err?.message || ''));
+        } finally {
+            setGuardandoEstatus(false);
+        }
+    };
+
+    // Update selectedVideo object when selectedVideoId or videos change
+    useEffect(() => {
+        if (!selectedVideoId) {
+            setSelectedVideo(null);
+            return;
+        }
+        const v = videos.find(x => x.id === selectedVideoId) || null;
+        setSelectedVideo(v);
+    }, [selectedVideoId, videos]);
+
+    // Handlers for creating a match
+    const handleCreateMatch = async () => {
+        setIsSavingMatch(true);
+        setMatchCreationError(null);
+        try {
+            const normalizedTeamName = newMatchData.nombre_equipo.trim().toUpperCase();
+            const teamId = await getOrCreateTeam(normalizedTeamName);
+            
+            const matchToInsert = {
+                ...newMatchData,
+                nombre_equipo: normalizedTeamName,
+                team_id: teamId
+            };
+            
+            const { data, error } = await supabase.from('matches').insert([matchToInsert]).select();
+            if (error) throw error;
+            setMatches(prev => [data[0], ...prev]);
+            setSelectedMatchId(data[0].id);
+            setIsCreatingMatch(false);
+            setNewMatchData({
+                torneo: '',
+                nombre_equipo: '',
+                categoria: '',
+                fecha: new Date().toISOString().split('T')[0],
+                rival: '',
+                jornada: 1
+            });
+            
+            const teamsData = await fetchTeams();
+            setTeams(teamsData);
+        } catch (err: any) {
+            setMatchCreationError(err.message);
+        } finally {
+            setIsSavingMatch(false);
+        }
+    };
+
+    // Handler for uploading players via Excel file
+    const handlePlayerFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        
+        // Verificar que hay un partido seleccionado para obtener el team_id
+        const selectedMatch = matches.find(m => m.id === selectedMatchId);
+        if (!selectedMatch?.team_id) {
+            setPlayerUploadStatus('error');
+            setPlayerUploadMessage('❌ Error: Primero selecciona un partido para asociar los jugadores al equipo.');
+            return;
+        }
+        
+        setPlayerUploadStatus('loading');
+        setPlayerUploadMessage('');
+        const reader = new FileReader();
+        reader.onload = async (ev) => {
+            try {
+                const data = ev.target?.result;
+                if (!data) throw new Error("No se pudo leer el archivo.");
+
+                const workbook = XLSX.read(data, { type: 'array' });
+                const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+                const rawData: any[][] = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+                if (rawData.length < 2) throw new Error("El archivo está vacío.");
+
+                const headers = rawData[0].map(h => String(h).trim().toLowerCase());
+                const required = ['nombre', 'numero', 'posicion'];
+                if (!required.every(h => headers.includes(h))) {
+                    throw new Error(`El archivo debe contener las columnas: ${required.join(', ')}.`);
+                }
+
+                const parsedPlayers = rawData.slice(1).map(row => ({
+                    nombre: String(row[headers.indexOf('nombre')] || '').trim(),
+                    numero: Number(row[headers.indexOf('numero')]),
+                    posicion: String(row[headers.indexOf('posicion')] || '').trim(),
+                    team_id: selectedMatch.team_id
+                }));
+
+                const newPlayers = parsedPlayers.filter(p => p.nombre && !players.some(existing => existing.nombre === p.nombre && existing.numero === p.numero && existing.team_id === selectedMatch.team_id));
+                if (newPlayers.length > 0) {
+                    const { data: inserted, error } = await supabase.from('players').insert(newPlayers).select();
+                    if (error) throw error;
+                    setPlayerUploadStatus('success');
+                    setPlayerUploadMessage(`✅ ${inserted?.length || 0} nuevos jugadores cargados. ${parsedPlayers.length - newPlayers.length} ya existían.`);
+                } else {
+                    setPlayerUploadStatus('success');
+                    setPlayerUploadMessage(`No se encontraron jugadores nuevos para cargar.`);
+                }
+
+                const { data: allPlayers } = await supabase.from('players').select('*');
+                setPlayers(allPlayers || []);
+                if (allPlayers && allPlayers.length > 0 && !selectedPlayerId) {
+                    setSelectedPlayerId(allPlayers[0].id);
+                }
+            } catch (err: any) {
+                setPlayerUploadStatus('error');
+                setPlayerUploadMessage(`❌ Error: ${err.message}`);
+            }
+        };
+        reader.readAsArrayBuffer(file);
+    };
+
+    // Handler for selecting a video file (local)
+    const handleVideoSelect = (file: File) => {
+        // Solo revoca la URL anterior si hay un video diferente
+        if (activeVideoUrl && currentVideoFile && file !== currentVideoFile) {
+            URL.revokeObjectURL(activeVideoUrl);
+        }
+        setActiveVideoUrl(URL.createObjectURL(file));
+        setCurrentVideoFile(file);
+
+        // Deselect any registered DB video because user selected a local file
+        setSelectedVideoId('');
+        setSelectedVideo(null);
+    };
+
+    const formatTime = (time: number) => new Date(time * 1000).toISOString().slice(14, 19);
+
+    // Handler for adding a tag with a specific action (used by keyboard shortcuts)
+    const addTagWithAction = (actionName: string) => {
+        if (!selectedPlayerId) return;
+        if (!activeVideoUrl && !selectedVideo) return;
+
+        const actionParts = actionName.split(' ');
+
+        let resultado = '';
+        if (actionParts.includes('logrado')) resultado = 'logrado';
+        else if (actionParts.includes('fallado')) resultado = 'fallado';
+        else if (actionName === "Transición ofensiva lograda") resultado = 'logrado';
+        else if (actionName === "Transición ofensiva no lograda") resultado = 'no logrado';
+
+        let accion = actionName;
+        if (
+            actionName === "Transición ofensiva lograda" ||
+            actionName === "Transición ofensiva no lograda" ||
+            actionName === "Recuperación de balón" ||
+            actionName === "Pérdida de balón" ||
+            actionName === "Atajadas" ||
+            actionName === "Goles a favor" ||
+            actionName === "Goles recibidos" ||
+            actionName === "Tiros a portería"
+        ) {
+            accion = actionName;
+        } else {
+            accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
+        }
+
+        // Usar currentTime del estado: se actualiza desde el video principal (onTimeUpdate)
+        // O desde la ventana secundaria (postMessage). Siempre tiene el tiempo correcto.
+        const relativeTime = Math.floor(currentTime);
+        const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
+        const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
+        const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
+
+        const selectedMatchForTag = matches.find(m => m.id === selectedMatchId);
+        const newTag: Tag = {
+            id: `temp-${Date.now()}`,
+            match_id: selectedMatchId,
+            player_id: selectedPlayerId,
+            accion: accion,
+            resultado: resultado,
+            timestamp: relativeTime,
+            video_file: videoFileName ?? undefined,
+            timestamp_absolute: timestamp_absolute as any,
+            team_id: selectedMatchForTag?.team_id
+        };
+        setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
+        
+        // Visual feedback
+        setSaveStatus({ message: `Etiquetado: ${accion} ${resultado}`, type: 'success' });
+        setTimeout(() => setSaveStatus(null), 1500);
+    };
+
+    // Keyboard shortcuts effect - only pre-selects action, does NOT auto-save
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            // Ignore if typing in an input/select/textarea
+            const target = e.target as HTMLElement;
+            if (target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'TEXTAREA') {
+                return;
+            }
+            
+            // Ignore if any modal is open
+            if (isSuggestionsModalOpen || showBatchResultsModal || showSegmentModal || showNewVideoModal || isCreatingMatch) {
+                return;
+            }
+
+            const key = e.key.toLowerCase();
+            const action = KEYBOARD_SHORTCUTS[key];
+            
+            if (action && (activeVideoUrl || selectedVideo)) {
+                e.preventDefault();
+                // Only pre-select the action in the dropdown, do NOT create tag automatically
+                setSelectedAction(action);
+                setSaveStatus({ message: `Accion seleccionada: ${action}`, type: 'success' });
+                setTimeout(() => setSaveStatus(null), 1500);
+            }
+        };
+
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+    }, [activeVideoUrl, selectedVideo, isSuggestionsModalOpen, showBatchResultsModal, showSegmentModal, showNewVideoModal, isCreatingMatch]);
+
+    // Handler for adding a tag (jugada)
+    const addTag = () => {
+        if (!selectedPlayerId) return;
+        if (!activeVideoUrl && !selectedVideo) return;
+
+        const actionParts = selectedAction.split(' ');
+
+        // Lógica extendida para transición ofensiva y recuperación de balón
+        let resultado = '';
+        if (actionParts.includes('logrado')) resultado = 'logrado';
+        else if (actionParts.includes('fallado')) resultado = 'fallado';
+        else if (selectedAction === "Transición ofensiva lograda") resultado = 'logrado';
+        else if (selectedAction === "Transición ofensiva no lograda") resultado = 'no logrado';
+
+        let accion = selectedAction;
+        if (
+            selectedAction === "Transición ofensiva lograda" ||
+            selectedAction === "Transición ofensiva no lograda" ||
+            selectedAction === "Recuperación de balón" ||
+            selectedAction === "Pérdida de balón"
+        ) {
+            // Mantener exactamente el texto de la acción para estos casos concretos
+            accion = selectedAction;
+        } else {
+            accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
+        }
+
+        // Usar currentTime del estado: se actualiza desde el video principal (onTimeUpdate)
+        // O desde la ventana secundaria (postMessage). Siempre tiene el tiempo correcto.
+        const relativeTime = Math.floor(currentTime);
+        // Determine video_file and timestamp_absolute
+        const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
+        const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
+        const timestamp_absolute = (videoFileName ? (videoStartOffset + relativeTime) : undefined);
+
+        const selectedMatchForTag = matches.find(m => m.id === selectedMatchId);
+        const newTag: Tag = {
+            id: `temp-${Date.now()}`,
+            match_id: selectedMatchId,
+            player_id: selectedPlayerId,
+            accion: accion,
+            resultado: resultado,
+            timestamp: relativeTime,
+            video_file: videoFileName ?? undefined,
+            timestamp_absolute: timestamp_absolute as any,
+            team_id: selectedMatchForTag?.team_id,
+            ai_suggested: pendingAiSuggestion !== null
+        };
+        setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
+
+        // Mejora 1: si es recuperación o pérdida de un jugador real, pedir la zona en el panel de detalle.
+        const jugadorDelTag = players.find(p => p.id === selectedPlayerId);
+        if ((ACCIONES_CON_ZONA.has(accion) || ACCIONES_GOL.has(accion) || ACCIONES_ABP_SET.has(accion) || accion === ACCION_CAMBIO) && !esJugadorFicticio(jugadorDelTag?.nombre)) {
+            setDetallePendiente({ id: newTag.id, match_id: newTag.match_id, player_id: newTag.player_id, accion: newTag.accion, timestamp: newTag.timestamp });
+        } else {
+            setDetallePendiente(null);
+        }
+        
+        // Si había una sugerencia de IA pendiente, removerla
+        if (pendingAiSuggestion) {
+            setAiSuggestions(prev => prev.filter(s => s !== pendingAiSuggestion));
+            setPendingAiSuggestion(null);
+        }
+    };
+
+    // Tocar el minuto de una jugada de la lista: el video salta 3 segundos antes y queda en pausa,
+    // en el video de esta pantalla y/o en la ventana nueva. No guarda nada.
+    // Si la jugada se etiquetó con otro nombre de video, avisa (sin bloquear).
+    const [avisoVideo, setAvisoVideo] = useState<string | null>(null);
+    const saltarAJugada = (tag: Tag) => {
+        const t = Math.max(0, (tag.timestamp || 0) - 3);
+        const sw = secondaryWindowRef.current;
+        const hayVentana = !!(sw && !sw.closed);
+        if (hayVentana) sw!.postMessage({ type: 'gol_videocontrol', action: 'seekTo', time: t }, '*');
+        const v = videoRef.current;
+        if (v) { v.currentTime = t; v.pause(); }
+        if (!hayVentana && !v) { setAvisoVideo('Carga el video del partido para poder saltar a la jugada.'); return; }
+        const cargado = currentVideoFile?.name || selectedVideo?.video_file || null;
+        if (tag.video_file && cargado && tag.video_file !== cargado) {
+            setAvisoVideo(`Esta jugada se etiquetó con el video "${tag.video_file}" y tienes cargado "${cargado}". Si es el mismo video con otro nombre, ignora este aviso.`);
+        } else {
+            setAvisoVideo(null);
+        }
+    };
+
+    // Handler for deleting a tag
+    const deleteTag = async (tagToDelete: Tag) => {
+        const isSaved = !String(tagToDelete.id).startsWith('temp-');
+        if (isSaved) {
+            setSaveStatus(null);
+            setIsSaving(true);
+            const { error } = await supabase.from('tags').delete().eq('id', tagToDelete.id);
+            if (error) {
+                setSaveStatus({ message: "Error al eliminar la jugada.", type: 'error' });
+            } else {
+                setTags(prev => prev.filter(t => t.id !== tagToDelete.id));
+                setSaveStatus({ message: "Jugada eliminada correctamente.", type: 'success' });
+            }
+            setIsSaving(false);
+        } else {
+            setTags(prev => prev.filter(t => t.id !== tagToDelete.id));
+        }
+    };
+
+    // Mejora 1: pone (o quita, con null) la zona de la jugada pendiente.
+    // Si la jugada aún no se guarda, solo cambia en pantalla y se guarda con "Guardar".
+    // Si ya estaba guardada, actualiza solo la columna `zona` de esa etiqueta.
+    const aplicarZona = async (zona: string | null): Promise<string> => {
+        const pend = detallePendiente;
+        if (!pend) return '⚠ No hay jugada esperando zona';
+        const tag = tags.find(t => t.id === pend.id)
+            || tags.find(t => t.match_id === pend.match_id && t.player_id === pend.player_id && t.accion === pend.accion && t.timestamp === pend.timestamp);
+        setDetallePendiente(null);
+        if (!tag) return '⚠ No encontré la jugada';
+        if (zona === null) return 'Jugada sin zona';
+        const esTemporal = String(tag.id).startsWith('temp-');
+        if (!esTemporal) {
+            const { error } = await supabase.from('tags').update({ zona }).eq('id', tag.id);
+            if (error) {
+                console.error('Error al guardar la zona', error);
+                return '⚠ No se pudo guardar la zona';
+            }
+        }
+        setTags(prev => prev.map(t => (t.id === tag.id ? { ...t, zona } : t)));
+        return `📍 Zona: ${etiquetaZona(zona)}`;
+    };
+
+    // Mejora 6: agrega datos del gol (tipo, área, portería, golpeo) a la jugada pendiente.
+    // El panel sigue abierto para completar; se cierra con "listo", "saltar" o al etiquetar otra jugada.
+    const aplicarDetalleGol = async (parcial: DetalleGol): Promise<string> => {
+        const pend = detallePendiente;
+        if (!pend) return '⚠ No hay gol esperando detalle';
+        const tag = tags.find(t => t.id === pend.id)
+            || tags.find(t => t.match_id === pend.match_id && t.player_id === pend.player_id && t.accion === pend.accion && t.timestamp === pend.timestamp);
+        if (!tag) { setDetallePendiente(null); return '⚠ No encontré la jugada'; }
+        const nuevo = { ...(tag.detalle || {}), ...parcial };
+        const esTemporal = String(tag.id).startsWith('temp-');
+        if (!esTemporal) {
+            const { error } = await supabase.from('tags').update({ detalle: nuevo }).eq('id', tag.id);
+            if (error) {
+                console.error('Error al guardar el detalle del gol', error);
+                return '⚠ No se pudo guardar el detalle del gol';
+            }
+        }
+        setTags(prev => prev.map(t => (t.id === tag.id ? { ...t, detalle: nuevo } : t)));
+        return `⚽ ${resumenGol(detalleGolDe({ detalle: nuevo })) || 'Detalle guardado'}`;
+    };
+
+    // Mejoras 4 y 5: agrega el detalle de balón parado o penal (zona de envío, resultado,
+    // marcaje; o portería y resultado del penal). Igual que el gol: el panel sigue abierto
+    // hasta "listo", "saltar" o la siguiente jugada.
+    const aplicarDetalleAbp = async (parcial: DetalleAbp): Promise<string> => {
+        const pend = detallePendiente;
+        if (!pend) return '⚠ No hay jugada esperando detalle';
+        const tag = tags.find(t => t.id === pend.id)
+            || tags.find(t => t.match_id === pend.match_id && t.player_id === pend.player_id && t.accion === pend.accion && t.timestamp === pend.timestamp);
+        if (!tag) { setDetallePendiente(null); return '⚠ No encontré la jugada'; }
+        const nuevo = { ...(tag.detalle || {}), ...parcial };
+        const esTemporal = String(tag.id).startsWith('temp-');
+        if (!esTemporal) {
+            const { error } = await supabase.from('tags').update({ detalle: nuevo }).eq('id', tag.id);
+            if (error) {
+                console.error('Error al guardar el detalle de balón parado', error);
+                return '⚠ No se pudo guardar el detalle';
+            }
+        }
+        setTags(prev => prev.map(t => (t.id === tag.id ? { ...t, detalle: nuevo } : t)));
+        return `🚩 ${resumenAbp(tag.accion, detalleAbpDe({ accion: tag.accion, detalle: nuevo })) || 'Detalle guardado'}`;
+    };
+
+    // Cambios: guarda quién sale (el que entra ya es el player_id del tag).
+    const aplicarDetalleCambio = async (saleId: string): Promise<string> => {
+        const pend = detallePendiente;
+        if (!pend) return '⚠ No hay cambio esperando detalle';
+        const tag = tags.find(t => t.id === pend.id)
+            || tags.find(t => t.match_id === pend.match_id && t.player_id === pend.player_id && t.accion === pend.accion && t.timestamp === pend.timestamp);
+        setDetallePendiente(null);
+        if (!tag) return '⚠ No encontré la jugada';
+        const nuevo = { ...(tag.detalle || {}), sale: saleId };
+        const esTemporal = String(tag.id).startsWith('temp-');
+        if (!esTemporal) {
+            const { error } = await supabase.from('tags').update({ detalle: nuevo }).eq('id', tag.id);
+            if (error) {
+                console.error('Error al guardar el cambio', error);
+                return '⚠ No se pudo guardar el cambio';
+            }
+        }
+        setTags(prev => prev.map(t => (t.id === tag.id ? { ...t, detalle: nuevo } : t)));
+        const entraNombre = players.find(p => p.id === tag.player_id)?.nombre;
+        const saleNombre = players.find(p => p.id === saleId)?.nombre;
+        return `🔁 ${resumenCambio(entraNombre, saleNombre) || 'Cambio guardado'}`;
+    };
+
+    // Handler for saving all tags (jugadas) to DB
+    const saveTags = async () => {
+        if (tags.length === 0) return;
+        setIsSaving(true);
+        setSaveStatus(null);
+        try {
+            const tempTags = tags.filter(t => String(t.id).startsWith('temp-'));
+            if (tempTags.length === 0) {
+                setIsSaving(false);
+                return;
+            }
+
+            // Ensure payload includes video_file and timestamp_absolute if present
+            // Exclude ai_suggested since it's not in the database schema yet
+            const payload = tempTags.map(({ id, ai_suggested, created_at, ...tag }) => {
+                // normalize undefined timestamp_absolute to null if needed
+                return {
+                    ...tag,
+                    timestamp_absolute: (typeof tag.timestamp_absolute === 'number') ? tag.timestamp_absolute : null
+                };
+            });
+
+            const { error } = await supabase.from('tags').insert(payload);
+            if (error) throw error;
+            // Re-fetch tags after saving to get their real IDs
+            const { data: savedTags } = await supabase.from('tags').select('*').eq('match_id', selectedMatchId).order('timestamp', { ascending: true });
+            setTags(savedTags || []);
+            setSaveStatus({ message: "Jugadas guardadas correctamente.", type: 'success' });
+        } catch (err) {
+            console.error('Error saving tags', err);
+            setSaveStatus({ message: "Error al guardar jugadas.", type: 'error' });
+        } finally {
+            setIsSaving(false);
+        }
+    };
+
+    // Handler to create a new video metadata record
+    const handleCreateVideo = async () => {
+        if (!newVideoFileName || !selectedMatchId) {
+            alert('Ingrese nombre del archivo y seleccione un partido.');
+            return;
+        }
+        
+        const selectedMatch = matches.find(m => m.id === selectedMatchId);
+        if (!selectedMatch?.team_id) {
+            alert('El partido seleccionado no tiene un equipo asociado. Por favor, verifica los datos del partido.');
+            return;
+        }
+        
+        setIsCreatingVideo(true);
+        try {
+            const created = await createVideoForMatch(selectedMatchId, selectedMatch.team_id, newVideoFileName, newVideoOffset, null);
+            setVideos(prev => [...prev, created]);
+            setSelectedVideoId(created.id);
+            setSelectedVideo(created);
+            setShowNewVideoModal(false);
+            setNewVideoFileName('');
+            setNewVideoOffset('00:00');
+        } catch (err: any) {
+            console.error('Error creating video metadata', err);
+            alert('Error creando video: ' + (err?.message || String(err)));
+        } finally {
+            setIsCreatingVideo(false);
+        }
+    };
+
+    // Handler for AI-assisted analysis
+    const handleAIAssistedAnalysis = async () => {
+        if (!videoRef.current || !canvasRef.current) return;
+        setIsGeminiAnalyzing(true);
+        try {
+            const video = videoRef.current;
+            const canvas = canvasRef.current;
+            const context = canvas.getContext('2d');
+            if (!context) return;
+
+            const frames: { data: string; mimeType: string }[] = [];
+            const frameCount = 8, interval = 2, startTime = Math.max(0, video.currentTime - (frameCount * interval));
+            video.pause();
+
+            for (let i = 0; i < frameCount; i++) {
+                video.currentTime = startTime + i * interval;
+                await new Promise(r => setTimeout(r, 200));
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const blob: Blob | null = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.8));
+                if (blob) {
+                    const base64 = await blobToBase64(blob);
+                    if (base64) frames.push({ data: base64, mimeType: 'image/jpeg' });
+                }
+            }
+
+            if (frames.length > 0) {
+                const suggestions = await analyzeVideoFrames(frames, tags);
+                setAiSuggestions(suggestions);
+                if (suggestions.length > 0) setIsSuggestionsModalOpen(true);
+                else alert("La IA no encontró nuevas jugadas para sugerir.");
+            }
+        } catch (error) {
+            console.error("Error during AI analysis:", error);
+            alert("Ocurrió un error durante el análisis de IA.");
+        } finally {
+            setIsGeminiAnalyzing(false);
+            videoRef.current?.play();
+        }
+    };
+// Handler for AI analysis using our trained model
+    const handleCustomModelAnalysis = async () => {
+        if (!videoRef.current) return;
+        
+        setIsCustomAnalyzing(true);
+        
+        try {
+            const video = videoRef.current;
+            const canvas = canvasRef.current;
+            const context = canvas?.getContext('2d');
+            
+            if (!context) {
+                setIsCustomAnalyzing(false);
+                return;
+            }
+            
+            // Capture current frame
+            video.pause();
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            context.drawImage(video, 0, 0, canvas.width, canvas.height);
+            
+            // Convert to base64
+            const blob: Blob | null = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.9));
+            if (!blob) {
+                alert("No se pudo capturar el frame");
+                setIsCustomAnalyzing(false);
+                return;
+            }
+            
+            const base64 = await blobToBase64(blob);
+            if (!base64) {
+                alert("Error al procesar la imagen");
+                setIsCustomAnalyzing(false);
+                return;
+            }
+            
+            // Call our API
+           const response = await fetch('https://peaceful-art-production.up.railway.app/predict', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    image: base64,
+                    timestamp: formatTime(video.currentTime)
+                })
+            });
+            
+            const result = await response.json();
+            
+            if (!response.ok || !result.success) {
+                console.error('Railway API error - Status:', response.status, 'Response:', result);
+                const errorMsg = result.error && result.error !== "0" 
+                    ? result.error 
+                    : result.message 
+                    || `Error en el modelo de Railway (Status: ${response.status}). El modelo v1.0 tiene baja precisión (56%) y puede fallar. Se espera v2.0 con mejor entrenamiento.`;
+                throw new Error(errorMsg);
+            }
+            
+            if (result.predictions && result.predictions.length > 0) {
+                // Convert predictions to suggestions format
+                const suggestions: AISuggestion[] = result.predictions.map((pred: any) => ({
+                    timestamp: formatTime(video.currentTime),
+                    action: pred.action,
+                    confidence: Math.round(pred.probability * 100)
+                }));
+                
+                setAiSuggestions(suggestions);
+                setIsSuggestionsModalOpen(true);
+            } else {
+                alert("El modelo no detectó acciones con suficiente confianza en este frame. Prueba con otro momento del video o usa el botón Gemini.");
+            }
+            
+        } catch (error) {
+            console.error("Error during custom model analysis:", error);
+            alert("Ocurrió un error durante el análisis con el modelo personalizado.");
+        } finally {
+            setIsCustomAnalyzing(false);
+        }
+    };
+    // Handler for Batch Analysis (analyze entire video)
+    const handleBatchAnalysis = async () => {
+        if (!videoRef.current || !canvasRef.current) {
+            alert("No hay video cargado");
+            return;
+        }
+        
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        const context = canvas.getContext('2d');
+        if (!context) return;
+        
+        const videoDuration = video.duration;
+        if (!videoDuration || videoDuration === 0) {
+            alert("No se pudo obtener la duración del video");
+            return;
+        }
+        
+        setIsBatchAnalyzing(true);
+        setBatchSuggestions([]);
+        
+        try {
+            // Extract frames every 2 seconds
+            const frameInterval = 2;
+            const totalFrames = Math.floor(videoDuration / frameInterval);
+            setBatchProgress({ current: 0, total: totalFrames });
+            
+            const frames: any[] = [];
+            video.pause();
+            
+            // Extract all frames
+            for (let i = 0; i < totalFrames; i++) {
+                const timestamp = i * frameInterval;
+                video.currentTime = timestamp;
+                await new Promise(r => setTimeout(r, 300));
+                
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                context.drawImage(video, 0, 0, canvas.width, canvas.height);
+                
+                const blob: Blob | null = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.8));
+                if (blob) {
+                    const base64 = await blobToBase64(blob);
+                    if (base64) {
+                        frames.push({
+                            image: base64,
+                            timestamp: timestamp
+                        });
+                    }
+                }
+                
+                setBatchProgress({ current: i + 1, total: totalFrames });
+            }
+            
+            // Process frames in batches of 10
+            const batchSize = 10;
+            const allResults: any[] = [];
+            
+            for (let i = 0; i < frames.length; i += batchSize) {
+                const batch = frames.slice(i, i + batchSize);
+                
+                try {
+                    const response = await fetch('https://peaceful-art-production.up.railway.app/analyze-batch', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            frames: batch
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        console.error('Error en batch', i / batchSize + 1);
+                        continue;
+                    }
+                    
+                    const result = await response.json();
+                    
+                    if (result.success && result.results) {
+                        allResults.push(...result.results);
+                    }
+                } catch (error) {
+                    console.error(`Error processing batch ${i / batchSize + 1}:`, error);
+                }
+                
+                setBatchProgress({ current: i + batch.length, total: totalFrames });
+            }
+            
+            // Filter for high-confidence predictions
+            const suggestions = allResults
+                .filter(r => r.predictions && r.predictions.length > 0 && r.predictions[0].probability > 0.20)
+                .map(r => ({
+                    timestamp: r.timestamp,
+                    action: r.predictions[0].action,
+                    confidence: Math.round(r.predictions[0].probability * 100),
+                    predictions: r.predictions,
+                    accepted: false
+                }));
+            
+            setBatchSuggestions(suggestions);
+            setShowBatchResultsModal(true);
+            
+            if (suggestions.length === 0) {
+                alert("No se encontraron jugadas con suficiente confianza");
+            }
+            
+        } catch (error) {
+            console.error("Error during batch analysis:", error);
+            alert("Ocurrió un error durante el análisis en batch");
+        } finally {
+            setIsBatchAnalyzing(false);
+            setBatchProgress({ current: 0, total: 0 });
+        }
+    };
+
+    // Handler for Segment Analysis (Gemini Video)
+    const handleSegmentAnalysis = async () => {
+        if (!videoRef.current || !canvasRef.current) {
+            alert("No hay video cargado");
+            return;
+        }
+
+        const parseTime = (timeStr: string): number => {
+            const parts = timeStr.split(':').map(Number);
+            if (parts.length === 2) return parts[0] * 60 + parts[1];
+            if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+            return 0;
+        };
+
+        const startSeconds = parseTime(segmentStartTime);
+        const endSeconds = parseTime(segmentEndTime);
+        
+        if (endSeconds <= startSeconds) {
+            alert("El tiempo final debe ser mayor que el tiempo inicial");
+            return;
+        }
+        
+        const duration = endSeconds - startSeconds;
+        if (duration > 600) {
+            alert("El segmento no puede ser mayor a 10 minutos. Por favor, selecciona un rango más pequeño.");
+            return;
+        }
+
+        setIsSegmentAnalyzing(true);
+        setSegmentProgress({ phase: 'extracting', framesExtracted: 0, totalFrames: duration, message: 'Iniciando...' });
+        
+        try {
+            const frames = await extractFramesFromSegment(
+                videoRef.current,
+                canvasRef.current,
+                startSeconds,
+                endSeconds,
+                3,
+                setSegmentProgress
+            );
+            
+            if (frames.length === 0) {
+                alert("No se pudieron extraer frames del segmento");
+                return;
+            }
+            
+            let teamUniformContext: TeamUniformContext | undefined;
+            
+            if (teamUniformFile) {
+                try {
+                    const uniformBase64 = await blobToBase64(teamUniformFile);
+                    const base64Data = uniformBase64.split(',')[1];
+                    const selectedMatch = matches.find(m => m.id === selectedMatchId);
+                    teamUniformContext = {
+                        uniformBase64: base64Data,
+                        uniformMimeType: teamUniformFile.type || 'image/jpeg',
+                        teamName: selectedMatch?.nombre_equipo
+                    };
+                } catch (err) {
+                    console.warn('No se pudo procesar la imagen del uniforme:', err);
+                }
+            }
+            
+            const suggestions = await analyzeVideoSegment(
+                frames,
+                startSeconds,
+                endSeconds,
+                tags,
+                setSegmentProgress,
+                teamUniformContext
+            );
+            
+            if (suggestions.length > 0) {
+                // Guardar sugerencias en ai_suggestions para entrenamiento futuro
+                try {
+                    const { data: { user } } = await supabase.auth.getUser();
+                    if (user && selectedMatchId) {
+                        const records = suggestions.map(s => ({
+                            match_id: selectedMatchId,
+                            user_id: user.id,
+                            metric_name: s.action,
+                            timestamp: s.timestamp,
+                            reasoning: s.description,
+                            status: 'pending'
+                        }));
+                        await supabase.from('ai_suggestions').insert(records);
+                    }
+                } catch (err) {
+                    console.warn('No se pudieron guardar sugerencias para entrenamiento:', err);
+                }
+                
+                setAiSuggestions(suggestions);
+                setIsSuggestionsModalOpen(true);
+                setShowSegmentModal(false);
+            } else {
+                alert("Gemini no encontró jugadas significativas en este segmento. Intenta con otro rango de tiempo.");
+            }
+        } catch (error) {
+            console.error("Error durante análisis de segmento:", error);
+            alert(`Error: ${error instanceof Error ? error.message : String(error)}`);
+        } finally {
+            setIsSegmentAnalyzing(false);
+            setSegmentProgress(null);
+        }
+    };
+    
+    const handleAcceptSuggestion = async (suggestion: AISuggestion) => {
+        // Convertir formato: "1_vs_1_ofensivo" → "1 vs 1 ofensivo"
+        let accionNormalizada = suggestion.action.replace(/_/g, ' ');
+        
+        // Verificar si la acción existe exactamente en METRICS
+        const accionExacta = METRICS.find(m => m.toLowerCase() === accionNormalizada.toLowerCase());
+        
+        if (!accionExacta) {
+            // La acción no coincide exactamente - buscar coincidencia parcial
+            const coincidenciaParcial = METRICS.find(m => 
+                m.toLowerCase().startsWith(accionNormalizada.toLowerCase()) ||
+                accionNormalizada.toLowerCase().includes(m.toLowerCase().split(' ')[0])
+            );
+            
+            if (coincidenciaParcial) {
+                setSelectedAction(coincidenciaParcial);
+            }
+            
+            // Mover video al timestamp
+            if (videoRef.current) {
+                const timeParts = suggestion.timestamp.split(':').map(Number);
+                const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
+                videoRef.current.currentTime = timestamp;
+            }
+            
+            // Al aceptar, cerramos el modal para permitir la selección de jugador
+            setIsSuggestionsModalOpen(false);
+            
+            setSaveStatus({ 
+                message: `Acción pre-llenada. Selecciona el jugador y haz clic en "Etiquetar Jugada".`, 
+                type: 'success' 
+            });
+            setTimeout(() => setSaveStatus(null), 4000);
+            return;
+        }
+        
+        // La acción existe exactamente
+        setSelectedAction(accionExacta);
+        
+        if (videoRef.current) {
+            const timeParts = suggestion.timestamp.split(':').map(Number);
+            const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
+            videoRef.current.currentTime = timestamp;
+        }
+        
+        // Remover de la lista y cerrar modal para que el usuario pueda etiquetar
+        setAiSuggestions(prev => prev.filter(s => s !== suggestion));
+        setPendingAiSuggestion(suggestion);
+        setIsSuggestionsModalOpen(false);
+        
+        setSaveStatus({ message: 'Acción pre-llenada. Selecciona jugador y haz clic en Etiquetar', type: 'success' });
+        setTimeout(() => setSaveStatus(null), 4000);
+        // NO hacer return aquí - permitir que el usuario siga viendo el modal
+        return;
+        
+        // CÓDIGO DESACTIVADO: Auto-asignación de jugador (causaba errores en métricas individuales)
+        // El código siguiente ya no se ejecuta pero se mantiene para referencia
+        
+        // Verificar que hay un partido seleccionado
+        if (!selectedMatchId) {
+            setSaveStatus({ message: 'Selecciona un partido primero', type: 'error' });
+            setTimeout(() => setSaveStatus(null), 2000);
+            return;
+        }
+        
+        // Tenemos acción válida y jugador - crear tag usando la misma lógica de addTagWithAction
+        const timeParts = suggestion.timestamp.split(':').map(Number);
+        const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
+        
+        // Usar la misma lógica de parsing que addTagWithAction
+        const actionParts = accionExacta.split(' ');
+        let resultado = '';
+        if (actionParts.includes('logrado')) resultado = 'logrado';
+        else if (actionParts.includes('fallado')) resultado = 'fallado';
+        else if (accionExacta === "Transición ofensiva lograda") resultado = 'logrado';
+        else if (accionExacta === "Transición ofensiva no lograda") resultado = 'no logrado';
+        
+        let accion = accionExacta;
+        if (
+            accionExacta === "Transición ofensiva lograda" ||
+            accionExacta === "Transición ofensiva no lograda" ||
+            accionExacta === "Recuperación de balón" ||
+            accionExacta === "Pérdida de balón" ||
+            accionExacta === "Atajadas" ||
+            accionExacta === "Goles a favor" ||
+            accionExacta === "Goles recibidos" ||
+            accionExacta === "Tiros a portería"
+        ) {
+            accion = accionExacta;
+        } else {
+            accion = actionParts.filter(p => p !== 'logrado' && p !== 'fallado').join(' ');
+        }
+        
+        const videoFileName = selectedVideo?.video_file ?? currentVideoFile?.name ?? null;
+        const videoStartOffset = Number(selectedVideo?.start_offset_seconds || 0);
+        const timestamp_absolute = (videoFileName ? (videoStartOffset + timestamp) : undefined);
+        
+        const selectedMatchForTag = matches.find(m => m.id === selectedMatchId);
+        const newTag: Tag = {
+            id: `temp-${Date.now()}`,
+            match_id: selectedMatchId,
+            player_id: selectedPlayerId,
+            accion: accion,
+            resultado: resultado,
+            timestamp: timestamp,
+            video_file: videoFileName ?? undefined,
+            timestamp_absolute: timestamp_absolute as any,
+            team_id: selectedMatchForTag?.team_id,
+            ai_suggested: true
+        };
+        
+        setTags(prev => [...prev, newTag].sort((a, b) => a.timestamp - b.timestamp));
+        
+        // Guardar feedback de aceptación para entrenamiento
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user && selectedMatchId) {
+                const { data: existingSuggestion } = await supabase
+                    .from('ai_suggestions')
+                    .select('id')
+                    .eq('match_id', selectedMatchId)
+                    .eq('metric_name', suggestion.action)
+                    .eq('timestamp', suggestion.timestamp)
+                    .eq('status', 'pending')
+                    .single();
+                
+                if (existingSuggestion) {
+                    await supabase
+                        .from('ai_suggestions')
+                        .update({ status: 'accepted', feedback_at: new Date().toISOString() })
+                        .eq('id', existingSuggestion.id);
+                    
+                    await supabase.from('ai_feedback').insert({
+                        suggestion_id: existingSuggestion.id,
+                        user_id: user.id,
+                        accepted: true,
+                        correct_metric: accionExacta
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn('No se pudo guardar feedback de aceptación:', err);
+        }
+        
+        // Ahora SÍ remover sugerencia porque se procesó completamente
+        setAiSuggestions(prev => prev.filter(s => s !== suggestion));
+        
+        // Feedback visual
+        setSaveStatus({ message: `✓ IA: ${accionExacta}`, type: 'success' });
+        setTimeout(() => setSaveStatus(null), 1500);
+        
+        // Mover video al timestamp
+        if (videoRef.current) {
+            videoRef.current.currentTime = timestamp;
+        }
+    };
+
+    const handleRejectSuggestion = async (suggestion: AISuggestion) => {
+        // Guardar feedback de rechazo para entrenamiento
+        try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user && selectedMatchId) {
+                // Buscar la sugerencia en ai_suggestions y actualizar status
+                const { data: existingSuggestion } = await supabase
+                    .from('ai_suggestions')
+                    .select('id')
+                    .eq('match_id', selectedMatchId)
+                    .eq('metric_name', suggestion.action)
+                    .eq('timestamp', suggestion.timestamp)
+                    .eq('status', 'pending')
+                    .single();
+                
+                if (existingSuggestion) {
+                    // Actualizar status a rejected
+                    await supabase
+                        .from('ai_suggestions')
+                        .update({ status: 'rejected', feedback_at: new Date().toISOString() })
+                        .eq('id', existingSuggestion.id);
+                    
+                    // Guardar feedback
+                    await supabase.from('ai_feedback').insert({
+                        suggestion_id: existingSuggestion.id,
+                        user_id: user.id,
+                        accepted: false
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn('No se pudo guardar feedback de rechazo:', err);
+        }
+        
+        setAiSuggestions(prev => prev.filter(s => s !== suggestion));
+    };
+
+    const handlePreviewSuggestion = (suggestion: AISuggestion) => {
+        if (videoRef.current) {
+            const timeParts = suggestion.timestamp.split(':').map(Number);
+            const timestamp = timeParts.length === 2 ? timeParts[0] * 60 + timeParts[1] : 0;
+            videoRef.current.currentTime = timestamp;
+            videoRef.current.play();
+        }
+    };
+
+    // ── VOICE COMMANDS ────────────────────────────────────────────────────────
+    // Map Spanish number words to digits (covers jersey numbers 0-99)
+    const SPANISH_NUMBERS: Record<string, number> = {
+        'cero': 0,
+        'uno': 1, 'dos': 2, 'tres': 3, 'cuatro': 4, 'cinco': 5,
+        'seis': 6, 'siete': 7, 'ocho': 8, 'nueve': 9, 'diez': 10,
+        'once': 11, 'doce': 12, 'trece': 13, 'catorce': 14, 'quince': 15,
+        'dieciséis': 16, 'dieciseis': 16, 'diecisiete': 17, 'dieciocho': 18,
+        'diecinueve': 19, 'veinte': 20, 'veintiuno': 21, 'veintidós': 22,
+        'veintidos': 22, 'veintitrés': 23, 'veintitres': 23,
+        'veinticuatro': 24, 'veinticinco': 25, 'veintiséis': 26, 'veintiseis': 26,
+        'veintisiete': 27, 'veintiocho': 28, 'veintinueve': 29,
+        'treinta': 30, 'treinta y uno': 31, 'treinta y dos': 32, 'treinta y tres': 33,
+        'treinta y cuatro': 34, 'treinta y cinco': 35, 'treinta y seis': 36,
+        'treinta y siete': 37, 'treinta y ocho': 38, 'treinta y nueve': 39,
+        'cuarenta': 40, 'cuarenta y uno': 41, 'cuarenta y dos': 42, 'cuarenta y tres': 43,
+        'cuarenta y cuatro': 44, 'cuarenta y cinco': 45, 'cuarenta y seis': 46,
+        'cuarenta y siete': 47, 'cuarenta y ocho': 48, 'cuarenta y nueve': 49,
+        'cincuenta': 50, 'cincuenta y uno': 51, 'cincuenta y dos': 52, 'cincuenta y tres': 53,
+        'cincuenta y cuatro': 54, 'cincuenta y cinco': 55, 'cincuenta y seis': 56,
+        'cincuenta y siete': 57, 'cincuenta y ocho': 58, 'cincuenta y nueve': 59,
+        'sesenta': 60, 'sesenta y uno': 61, 'sesenta y dos': 62, 'sesenta y tres': 63,
+        'sesenta y cuatro': 64, 'sesenta y cinco': 65, 'sesenta y seis': 66,
+        'sesenta y siete': 67, 'sesenta y ocho': 68, 'sesenta y nueve': 69,
+        'setenta': 70, 'setenta y uno': 71, 'setenta y dos': 72, 'setenta y tres': 73,
+        'setenta y cuatro': 74, 'setenta y cinco': 75, 'setenta y seis': 76,
+        'setenta y siete': 77, 'setenta y ocho': 78, 'setenta y nueve': 79,
+        'ochenta': 80, 'ochenta y uno': 81, 'ochenta y dos': 82, 'ochenta y tres': 83,
+        'ochenta y cuatro': 84, 'ochenta y cinco': 85, 'ochenta y seis': 86,
+        'ochenta y siete': 87, 'ochenta y ocho': 88, 'ochenta y nueve': 89,
+        'noventa': 90, 'noventa y uno': 91, 'noventa y dos': 92, 'noventa y tres': 93,
+        'noventa y cuatro': 94, 'noventa y cinco': 95, 'noventa y seis': 96,
+        'noventa y siete': 97, 'noventa y ocho': 98, 'noventa y nueve': 99,
+    };
+
+    // Keep the processVoiceCommand ref updated on every render so it
+    // always closes over the latest state (avoids stale-closure bugs).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    processVoiceCommandRef.current = (transcript: string) => {
+        // Chrome puede insertar comas y puntos en la transcripción
+        // ("Pase corto, ofensivo, fallado."). Los eliminamos antes de comparar.
+        const text = transcript.toLowerCase().trim().replace(/[.,;:!?¿¡]/g, '');
+        const show = (msg: string) => {
+            setVoiceStatus(msg);
+            setTimeout(() => setVoiceStatus(''), 2500);
+        };
+
+        // ── Video controls ────────────────────────────────────────────────
+        // Si hay ventana secundaria abierta, los comandos de video se envían
+        // a esa ventana via postMessage. Si no, controlan el video principal.
+        const sendToSecondary = (action: string) => {
+            const sw = secondaryWindowRef.current;
+            if (sw && !sw.closed) {
+                sw.postMessage({ type: 'gol_videocontrol', action }, '*');
+                return true;
+            }
+            return false;
+        };
+
+        if (/pausar|pausa|para\b|detener/.test(text)) {
+            if (!sendToSecondary('pause')) videoRef.current?.pause();
+            show('⏸ Video pausado');
+            return;
+        }
+        if (/reproducir|play|continuar|reanudar/.test(text)) {
+            if (!sendToSecondary('play')) videoRef.current?.play();
+            show('▶ Video reproduciendo');
+            return;
+        }
+        if (/atrás|atras|regresar|retroceder/.test(text)) {
+            if (!sendToSecondary('back')) {
+                if (videoRef.current) videoRef.current.currentTime -= 5;
+            }
+            show('⏪ -5 segundos');
+            return;
+        }
+        if (/adelante|avanzar|adelantar/.test(text)) {
+            if (!sendToSecondary('forward')) {
+                if (videoRef.current) videoRef.current.currentTime += 5;
+            }
+            show('⏩ +5 segundos');
+            return;
+        }
+
+        // ── Mejora 1: zona de la jugada ("creación centro", "zona inicio izquierda") y "saltar" ──
+        // Solo actúa si hay una recuperación o pérdida esperando zona; si no, sigue con los demás comandos.
+        // Mejora 6: detalle del gol ("contraataque dentro del área abajo izquierda", "cabeza", "listo")
+        // Mejoras 4 y 5: decir una acción de balón parado la selecciona ("córner a favor",
+        // "tiro libre en contra", "penal a favor"). Va antes del detalle para no confundirla con él.
+        // Autocorrector de acciones (utils/accionDesdeVoz.ts): se calcula una vez y se usa más abajo.
+        const accionPorVoz = accionDesdeVoz(text);
+        const accionAbpDicha = accionAbpDesdeVoz(text);
+        if (accionAbpDicha) {
+            setSelectedAction(accionAbpDicha);
+            show(`🎯 Acción: ${accionAbpDicha}`);
+            return;
+        }
+        // Detalle de balón parado o penal: "primer palo remate en zona", "abajo izquierda gol", "listo".
+        // No se lee como detalle si la frase es otra acción, un jugador, "etiquetar" o "guardar".
+        if (detallePendiente && ACCIONES_ABP_SET.has(detallePendiente.accion)) {
+            if (/\blisto\b|\bsaltar\b|\bterminar\b/.test(text)) {
+                setDetallePendiente(null);
+                show('✅ Detalle cerrado');
+                return;
+            }
+            const esOtroComando = /\bjugador\b|\betiquetar\b|\betiqueta\b|\bguardar\b|\btecla\b|\bletra\b/.test(text)
+                || METRICS.some(m => text.includes(m.toLowerCase()))
+                // También si el autocorrector reconoce una acción ("pase corto ofensivo fayado", "tiro a portería").
+                // "Atajadas" se deja fuera: "atajado" aquí es el resultado del penal.
+                || (accionPorVoz.accion !== null && accionPorVoz.accion !== 'Atajadas');
+            if (!esOtroComando) {
+                const dicho = detalleAbpDesdeVoz(detallePendiente.accion, text);
+                if (Object.keys(dicho).length > 0) {
+                    aplicarDetalleAbp(dicho).then(show);
+                    return;
+                }
+            }
+        }
+        if (detallePendiente && ACCIONES_GOL.has(detallePendiente.accion)) {
+            if (/\blisto\b|\bsaltar\b|\bterminar\b/.test(text)) {
+                setDetallePendiente(null);
+                show('✅ Detalle del gol cerrado');
+                return;
+            }
+            const dicho = detalleGolDesdeVoz(text);
+            if (Object.keys(dicho).length > 0) {
+                aplicarDetalleGol(dicho).then(show);
+                return;
+            }
+        }
+        if (detallePendiente && ACCIONES_CON_ZONA.has(detallePendiente.accion)) {
+            if (/\bsaltar\b|\bsin zona\b/.test(text)) {
+                aplicarZona(null).then(show);
+                return;
+            }
+            const zonaDicha = zonaDesdeVoz(text);
+            if (zonaDicha) {
+                aplicarZona(zonaDicha).then(show);
+                return;
+            }
+        }
+
+        // ── Player selection ──────────────────────────────────────────────
+        // Acepta: "jugador 11", "jugador once", "jugador noventa y cinco"
+        // También acepta: "jugador Jesus", "jugador Diego"
+        const playerPattern = /jugador\s+(?:número\s+|numero\s+)?(.+)/;
+        const playerMatch = text.match(playerPattern);
+        if (playerMatch) {
+            const raw = playerMatch[1].trim();
+
+            // Intentar por número primero
+            const parsed = parseInt(raw);
+            let numero: number | null = !isNaN(parsed) ? parsed : null;
+
+            // Si no es número directo, buscar en el mapa (incluyendo compuestos)
+            if (numero === null) {
+                // Buscar frases compuestas primero (ej: "treinta y uno")
+                const sortedKeys = Object.keys(SPANISH_NUMBERS).sort((a, b) => b.length - a.length);
+                for (const key of sortedKeys) {
+                    if (raw === key || raw.startsWith(key + ' ')) {
+                        numero = SPANISH_NUMBERS[key];
+                        break;
+                    }
+                }
+            }
+
+            if (numero !== null) {
+                const found = filteredPlayers.find(p => p.numero === numero);
+                if (found) {
+                    setSelectedPlayerId(found.id);
+                    const parts = found.nombre.trim().split(/\s+/);
+                    show(`✅ Jugador #${found.numero} ${parts[0]}`);
+                } else {
+                    show(`⚠ No encontré jugador #${numero}`);
+                }
+                return;
+            }
+
+            // Si no es número, buscar por nombre (primer nombre o apellido)
+            const nameQuery = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            const foundByName = filteredPlayers.find(p => {
+                const nombre = p.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+                return nombre.split(/\s+/).some(part => part.startsWith(nameQuery));
+            });
+            if (foundByName) {
+                setSelectedPlayerId(foundByName.id);
+                const parts = foundByName.nombre.trim().split(/\s+/);
+                show(`✅ Jugador #${foundByName.numero} ${parts[0]}`);
+            } else {
+                show(`⚠ No encontré jugador: "${raw}"`);
+            }
+            return;
+        }
+
+        // ── VÍA 1: Atajo por nombre de tecla ────────────────────────────
+        // Di "tecla 3", "número 3", "letra Q", "letra efe", etc.
+        const LETTER_MAP: Record<string, string> = {
+            'cu': 'q', 'q': 'q',
+            'doble v': 'w', 'doble u': 'w', 'uve doble': 'w', 'w': 'w',
+            'e': 'e',
+            'erre': 'r', 'r': 'r',
+            'te': 't', 't': 't',
+            'i griega': 'y', 'ye': 'y', 'y': 'y',
+            'u': 'u',
+            'i': 'i',
+            'a': 'a',
+            'ese': 's', 's': 's',
+            'de': 'd', 'd': 'd',
+            'efe': 'f', 'f': 'f',
+            'ge': 'g', 'g': 'g',
+            'hache': 'h', 'h': 'h',
+            'uno': '1', '1': '1',
+            'dos': '2', '2': '2',
+            'tres': '3', '3': '3',
+            'cuatro': '4', '4': '4',
+            'cinco': '5', '5': '5',
+            'seis': '6', '6': '6',
+            'siete': '7', '7': '7',
+            'ocho': '8', '8': '8',
+            'nueve': '9', '9': '9',
+            'cero': '0', '0': '0',
+        };
+        // "número" ahora es SOLO para atajos (ya no es ambiguo con jugadores)
+        const shortcutPattern = /(?:tecla|letra|key|número|numero)\s+(.+)/;
+        const shortcutMatch = text.match(shortcutPattern);
+        if (shortcutMatch) {
+            const spokenKey = shortcutMatch[1].trim();
+            const mappedKey = LETTER_MAP[spokenKey];
+            if (mappedKey && KEYBOARD_SHORTCUTS[mappedKey]) {
+                const action = KEYBOARD_SHORTCUTS[mappedKey];
+                setSelectedAction(action);
+                show(`🎯 Tecla ${spokenKey.toUpperCase()}: ${action}`);
+            } else {
+                show(`⚠ Tecla no reconocida: "${spokenKey}"`);
+            }
+            return;
+        }
+
+        // ── VÍA 2: Nombre completo de la acción con sinónimos ────────────
+        // Normaliza variaciones comunes del reconocedor de voz
+        const normalize = (s: string) => s
+            .replace(/\bcontra\b/g, 'vs')
+            .replace(/\b1 vs 1\b|\buno vs uno\b|\buno contra uno\b/g, '1 vs 1')
+            .replace(/\báreo\b|\bhereo\b|\baereo\b/g, 'aéreo')
+            .replace(/\bperdida\b/g, 'pérdida')
+            .replace(/\btransicion\b/g, 'transición')
+            .replace(/\bdefensiva\b/g, 'defensivo')
+            .replace(/\bofensiva\b(?! lograda| no lograda)/g, 'ofensivo')
+            // Chrome con acento latinoamericano transcribe "ll" como "y" (yeísmo)
+            // → "fallado" puede llegar como "fayado" o "falado"
+            .replace(/\bfayado\b/g, 'fallado')
+            .replace(/\bfalado\b/g, 'fallado')
+            .replace(/\bfallada\b/g, 'fallado')
+            .replace(/\blograda\b(?! no)/g, 'logrado')
+            .replace(/\bno lograda\b/g, 'no lograda');
+
+        const normalizedText = normalize(text);
+        const matchedMetric = METRICS.find(m =>
+            normalizedText.includes(normalize(m.toLowerCase()))
+        );
+        if (matchedMetric) {
+            setSelectedAction(matchedMetric);
+            show(`🎯 Acción: ${matchedMetric}`);
+            return;
+        }
+        // Autocorrector: si la frase no coincidió tal cual ("pase al cuarto ofensivo logrado",
+        // "hero defensivo fallado", "recuperación de valor"), se arma la acción por sus palabras clave.
+        // Si no queda claro corto/largo, ofensivo/defensivo o logrado/fallado, no elige nada.
+        if (accionPorVoz.accion) {
+            setSelectedAction(accionPorVoz.accion);
+            show(`🎯 Acción: ${accionPorVoz.accion} (corregido)`);
+            return;
+        }
+
+        // ── Tag & Save ────────────────────────────────────────────────────
+        if (/etiquetar|etiqueta\b|agregar jugada/.test(text)) {
+            if (!selectedPlayerId) { show('⚠ Primero selecciona un jugador'); return; }
+            if (!activeVideoUrl && !selectedVideo) { show('⚠ No hay video cargado'); return; }
+            addTag();
+            show('✅ Jugada etiquetada');
+            return;
+        }
+        if (/guardar/.test(text)) {
+            saveTags();
+            show('💾 Guardando jugadas...');
+            return;
+        }
+
+        show(accionPorVoz.duda ? `❓ ${accionPorVoz.duda} — "${transcript}"` : `❓ No entendí: "${transcript}"`);
+    };
+
+    const startVoice = async () => {
+        // ── Deepgram WebSocket — conexión única y estable, sin sesiones que expiran ──
+        // A diferencia de Web Speech API, Deepgram mantiene la conexión abierta
+        // indefinidamente sin importar los períodos de silencio.
+
+        const DEEPGRAM_API_KEY = import.meta.env.VITE_DEEPGRAM_API_KEY as string;
+        if (!DEEPGRAM_API_KEY) {
+            alert('Falta la API key de Deepgram. Verifica la variable VITE_DEEPGRAM_API_KEY en Vercel.');
+            return;
+        }
+
+        // Solicitar acceso al micrófono
+        let stream: MediaStream;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (err) {
+            alert('Sin acceso al micrófono. Revisa los permisos en Edge.');
+            return;
+        }
+
+        isVoiceActiveRef.current = true;
+        setIsVoiceActive(true);
+        setVoiceTranscript('');
+
+        // Conectar al WebSocket de Deepgram
+        // - model=nova-2: mejor precisión en español
+        // - language=es: español
+        // - punctuate=false: evita puntuación que interfiere con los comandos
+        // - interim_results=false: solo resultados finales
+        const url = `wss://api.deepgram.com/v1/listen?model=nova-2&language=es&punctuate=false&interim_results=false`;
+        const socket = new WebSocket(url, ['token', DEEPGRAM_API_KEY]);
+
+        socket.onopen = () => {
+            if (!isVoiceActiveRef.current) {
+                socket.close();
+                return;
+            }
+
+            // MediaRecorder captura audio del micrófono y lo envía al WebSocket
+            // en chunks de 250ms — Deepgram transcribe en tiempo real
+            const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
+
+            mediaRecorder.ondataavailable = (e) => {
+                if (socket.readyState === WebSocket.OPEN && e.data.size > 0) {
+                    socket.send(e.data);
+                }
+            };
+
+            mediaRecorder.start(250); // chunk cada 250ms
+            // Guardamos mediaRecorder en recognitionRef para poder detenerlo en stopVoice
+            recognitionRef.current = mediaRecorder;
+        };
+
+        socket.onmessage = (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                // Solo procesar resultados finales con contenido
+                const transcript = data?.channel?.alternatives?.[0]?.transcript;
+                if (transcript && transcript.trim().length > 0 && data?.is_final) {
+                    setVoiceTranscript(transcript);
+                    processVoiceCommandRef.current(transcript);
+                }
+            } catch (_) {
+                // ignorar mensajes malformados
+            }
+        };
+
+        socket.onerror = () => {
+            if (!isVoiceActiveRef.current) return;
+            setVoiceStatus('⚠ Error de conexión con Deepgram. Verifica tu conexión a internet.');
+            setTimeout(() => setVoiceStatus(''), 5000);
+        };
+
+        socket.onclose = () => {
+            // Limpiar el stream del micrófono al cerrar
+            stream.getTracks().forEach(track => track.stop());
+            if (recognitionRef.current) {
+                try { (recognitionRef.current as MediaRecorder).stop(); } catch (_) {}
+                recognitionRef.current = null;
+            }
+            // Si la voz sigue activa (cierre inesperado), actualizar UI
+            if (isVoiceActiveRef.current) {
+                isVoiceActiveRef.current = false;
+                setIsVoiceActive(false);
+                setVoiceStatus('⚠ Conexión cerrada. Vuelve a activar la voz.');
+                setTimeout(() => setVoiceStatus(''), 4000);
+            }
+        };
+
+        // Guardar socket en un ref separado para cerrarlo en stopVoice
+        (recognitionRef as any).socket = socket;
+    };
+
+    const stopVoice = () => {
+        isVoiceActiveRef.current = false;
+
+        // Detener MediaRecorder
+        if (recognitionRef.current) {
+            try { (recognitionRef.current as MediaRecorder).stop(); } catch (_) {}
+            recognitionRef.current = null;
+        }
+
+        // Cerrar WebSocket
+        const socket = (recognitionRef as any).socket as WebSocket | undefined;
+        if (socket && socket.readyState === WebSocket.OPEN) {
+            socket.close();
+        }
+        (recognitionRef as any).socket = null;
+
+        setIsVoiceActive(false);
+        setVoiceTranscript('');
+        setVoiceStatus('');
+    };
+
+    // Cleanup on unmount
+    useEffect(() => () => { stopVoice(); }, []);
+    // ── END VOICE COMMANDS ────────────────────────────────────────────────────
+
+    // Sincronizar tiempo desde la ventana secundaria (nueva ventana de video)
+    // La ventana secundaria envía postMessage con el currentTime cada 500ms
+    useEffect(() => {
+        const handler = (e: MessageEvent) => {
+            if (e.data?.type === 'gol_timeupdate' && typeof e.data.time === 'number') {
+                setCurrentTime(e.data.time);
+            }
+        };
+        window.addEventListener('message', handler);
+        return () => window.removeEventListener('message', handler);
+    }, []);
+
+    if (isLoading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
+
+    return (
+        <div className="flex h-full gap-4 p-4">
+            <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
+            {isSuggestionsModalOpen && (
+                <AISuggestionsModal
+                    suggestions={aiSuggestions}
+                    onAccept={handleAcceptSuggestion}
+                    onReject={handleRejectSuggestion}
+                    onPreview={handlePreviewSuggestion}
+                    onClose={() => setIsSuggestionsModalOpen(false)}
+                />
+            )}
+
+            {/* Left Column: Video and Tagged Plays */}
+            <div className="flex-1 flex flex-col gap-4 overflow-y-auto">
+                <div className="bg-gray-800 rounded-lg p-4 flex flex-col">
+                    {/* VIDEO, altura fija */}
+                    {videoCompacto && (
+                        <div className="flex items-center gap-3 bg-black border border-dashed border-gray-600 rounded-md px-3 py-2 text-sm">
+                            <span className="text-gray-300 truncate">
+                                Video: <strong className="text-white">{currentVideoFile?.name || selectedVideo?.video_file || 'sin video'}</strong>
+                                <span className="text-gray-400"> · se reproduce en otra ventana</span>
+                            </span>
+                            <button
+                                onClick={() => setVideoCompacto(false)}
+                                className="ml-auto whitespace-nowrap text-xs text-cyan-400 hover:text-cyan-300 underline"
+                            >
+                                Mostrar video aquí
+                            </button>
+                        </div>
+                    )}
+                    {/* El video sigue montado aunque esté encogido (la voz, la IA y la sincronía lo necesitan) */}
+                    <div className={videoCompacto ? "h-0 min-h-0 overflow-hidden relative" : "min-h-[300px] max-h-[450px] flex items-center justify-center bg-black rounded-md relative group"}>
+                        {activeVideoUrl ? (
+                            <>
+                                <video
+                                    ref={videoRef}
+                                    src={activeVideoUrl}
+                                    controls
+                                    className="max-h-full w-full"
+                                    onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
+                                ></video>
+                                {/* Barra superior: botones de salto + pantalla completa, visible al hacer hover */}
+                                <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <button
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            if (videoRef.current) videoRef.current.currentTime -= 5;
+                                        }}
+                                        className="bg-black/70 hover:bg-black/90 text-white px-2 py-1 rounded text-xs font-bold border border-white/20 shadow"
+                                        title="Retroceder 5 segundos"
+                                    >
+                                        ⏪ -5s
+                                    </button>
+                                    <button
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            if (videoRef.current) videoRef.current.currentTime += 5;
+                                        }}
+                                        className="bg-black/70 hover:bg-black/90 text-white px-2 py-1 rounded text-xs font-bold border border-white/20 shadow"
+                                        title="Adelantar 5 segundos"
+                                    >
+                                        +5s ⏩
+                                    </button>
+                                    <select
+                                        defaultValue="1"
+                                        onChange={(e) => { if (videoRef.current) videoRef.current.playbackRate = parseFloat(e.target.value); }}
+                                        className="bg-black/70 hover:bg-black/90 text-white px-1.5 py-1 rounded text-xs font-bold border border-white/20 shadow"
+                                        title="Velocidad de reproducción"
+                                    >
+                                        <option value="0.5">0.5x</option>
+                                        <option value="0.7">0.7x</option>
+                                        <option value="1">1x</option>
+                                        <option value="1.5">1.5x</option>
+                                        <option value="2">2x</option>
+                                    </select>
+                                    <button
+                                        onClick={(e) => {
+                                            e.preventDefault();
+                                            if (!activeVideoUrl) return;
+                                            // Abre el video en una ventana nueva para usarla en segunda pantalla
+                                            const html = `<!DOCTYPE html>
+<html style="margin:0;padding:0;background:#000;width:100%;height:100%;">
+<head><meta charset="utf-8"><title>Video - GolAnalytics</title>
+<style>
+  body { margin:0; padding:0; background:#000; display:flex; flex-direction:column; align-items:center; justify-content:center; width:100vw; height:100vh; font-family:sans-serif; }
+  /* Este wrapper (video + controles) es lo que se pone en pantalla completa —
+     así los botones no desaparecen al maximizar, como sí pasaba poniendo
+     pantalla completa solo al <video>. Los controles van ENCIMA del video
+     (no debajo, empujándolo) para que el video use toda la pantalla, igual
+     que con el ícono nativo de pantalla completa. */
+  #wrapper { position:relative; display:flex; align-items:center; justify-content:center; width:100%; height:100%; background:#000; }
+  /* "viewport" recorta lo que se ve; el <video> de adentro es el que se agranda
+     y se arrastra — así el zoom no rompe el layout de la página. */
+  #viewport { max-width:100%; max-height:100%; overflow:hidden; position:relative; cursor:grab; }
+  #viewport.dragging { cursor:grabbing; }
+  video { max-width:100%; max-height:100%; display:block; transform-origin: 0 0; }
+  .controls { position:absolute; left:0; right:0; bottom:0; display:flex; gap:10px; padding:10px 14px; flex-wrap:wrap; justify-content:center; align-items:center; background:rgba(0,0,0,0.65); box-sizing:border-box; }
+  button { background:#1e293b; color:#fff; border:1px solid #475569; border-radius:8px; padding:8px 18px; font-size:15px; font-weight:bold; cursor:pointer; }
+  button:hover { background:#0e7490; }
+  select { background:#1e293b; color:#fff; border:1px solid #475569; border-radius:8px; padding:8px 10px; font-size:15px; font-weight:bold; cursor:pointer; }
+  #zoomLabel { color:#9ca3af; font-size:13px; min-width:42px; text-align:center; }
+</style>
+</head>
+<body>
+<div id="wrapper">
+<div id="viewport">
+<video id="vid" src="${activeVideoUrl}" controls autoplay controlsList="nofullscreen"></video>
+</div>
+<div class="controls">
+  <button onclick="document.getElementById('vid').currentTime -= 10">⏪ -10s</button>
+  <button onclick="document.getElementById('vid').currentTime += 10">+10s ⏩</button>
+  <select id="speed" onchange="document.getElementById('vid').playbackRate = parseFloat(this.value)">
+    <option value="0.5">0.5x</option>
+    <option value="0.7">0.7x</option>
+    <option value="1" selected>1x</option>
+    <option value="1.5">1.5x</option>
+    <option value="2">2x</option>
+  </select>
+  <button onclick="(document.getElementById('wrapper').requestFullscreen ? document.getElementById('wrapper').requestFullscreen() : null)">⛶ Pantalla completa</button>
+  <button onclick="zoomBy(-0.5)" title="Alejar">🔍−</button>
+  <span id="zoomLabel">100%</span>
+  <button onclick="zoomBy(0.5)" title="Acercar a la jugada">🔍+</button>
+  <button onclick="resetZoom()" title="Quitar zoom">Zoom 1:1</button>
+</div>
+</div>
+<script>
+  var vid = document.getElementById('vid');
+  var viewport = document.getElementById('viewport');
+  var zoomLabel = document.getElementById('zoomLabel');
+  var lastSent = 0;
+
+  // ── Zoom digital + arrastrar (zoom óptico no es posible: el video ya
+  // quedó grabado con una cantidad fija de píxeles, esto solo los agranda). ──
+  var zoom = 1, panX = 0, panY = 0;
+  function applyZoom() {
+    vid.style.transform = 'translate(' + panX + 'px,' + panY + 'px) scale(' + zoom + ')';
+    zoomLabel.textContent = Math.round(zoom * 100) + '%';
+  }
+  function zoomBy(delta) {
+    zoom = Math.min(4, Math.max(1, zoom + delta));
+    if (zoom === 1) { panX = 0; panY = 0; }
+    applyZoom();
+  }
+  function resetZoom() { zoom = 1; panX = 0; panY = 0; applyZoom(); }
+
+  var dragging = false, startX = 0, startY = 0, startPanX = 0, startPanY = 0;
+  viewport.addEventListener('mousedown', function(e) {
+    if (zoom <= 1) return;
+    dragging = true;
+    viewport.classList.add('dragging');
+    startX = e.clientX; startY = e.clientY;
+    startPanX = panX; startPanY = panY;
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', function(e) {
+    if (!dragging) return;
+    panX = startPanX + (e.clientX - startX);
+    panY = startPanY + (e.clientY - startY);
+    applyZoom();
+  });
+  window.addEventListener('mouseup', function() {
+    dragging = false;
+    viewport.classList.remove('dragging');
+  });
+  vid.addEventListener('timeupdate', function() {
+    var now = Date.now();
+    if (now - lastSent >= 500) {
+      lastSent = now;
+      if (window.opener) window.opener.postMessage({type:'gol_timeupdate', time: vid.currentTime}, '*');
+    }
+  });
+  vid.addEventListener('pause', function() {
+    if (window.opener) window.opener.postMessage({type:'gol_timeupdate', time: vid.currentTime}, '*');
+  });
+  vid.addEventListener('seeked', function() {
+    if (window.opener) window.opener.postMessage({type:'gol_timeupdate', time: vid.currentTime}, '*');
+  });
+  // Recibe comandos de control desde la ventana principal (voz)
+  window.addEventListener('message', function(e) {
+    if (!e.data || e.data.type !== 'gol_videocontrol') return;
+    if (e.data.action === 'pause') vid.pause();
+    else if (e.data.action === 'play') vid.play();
+    else if (e.data.action === 'back') vid.currentTime = Math.max(0, vid.currentTime - 5);
+    else if (e.data.action === 'forward') vid.currentTime += 5;
+    else if (e.data.action === 'seekTo') { vid.currentTime = Math.max(0, e.data.time || 0); vid.pause(); }
+  });
+</script>
+</body></html>`;
+                                            const blob = new Blob([html], { type: 'text/html' });
+                                            const url = URL.createObjectURL(blob);
+                                            const sw = window.open(url, '_blank', 'width=1280,height=720');
+                                            secondaryWindowRef.current = sw;
+                                            setVideoCompacto(true);
+                                        }}
+                                        className="bg-cyan-700/80 hover:bg-cyan-600 text-white px-2 py-1 rounded text-xs font-bold border border-cyan-400/40 shadow"
+                                        title="Abrir video en nueva ventana (segunda pantalla)"
+                                    >
+                                        ↗ Nueva ventana
+                                    </button>
+                                </div>
+                            </>
+                        ) : selectedVideo ? (
+                            // Note: registered video metadata does not contain the actual file blob.
+                            // We still allow tagging based on metadata (video_file + start_offset_seconds).
+                            <div className="text-center text-gray-300">
+                                <div className="mb-2">Video seleccionado: <strong className="text-white">{selectedVideo.video_file}</strong></div>
+                                <div className="text-sm">Offset inicio: {selectedVideo.start_offset_seconds}s</div>
+                                <p className="mt-4">Para reproducir el archivo completo, carga el archivo localmente en "Videos del Partido".</p>
+                            </div>
+                        ) : (
+                            <p className="text-gray-400">Seleccione un partido y cargue videos para empezar</p>
+                        )}
+                    </div>
+                    {!videoCompacto && (activeVideoUrl || selectedVideo) && (
+                        <button
+                            onClick={() => setVideoCompacto(true)}
+                            className="self-end mt-1 text-xs text-gray-400 hover:text-cyan-300 underline"
+                            title="Encoge el cuadro del video cuando lo ves en otra pantalla"
+                        >
+                            Encoger video
+                        </button>
+                    )}
+                    
+                    {/* PANEL DE ETIQUETADO RAPIDO - Siempre visible debajo del video */}
+                    <div className="mt-3 bg-gradient-to-r from-gray-700 to-gray-800 rounded-lg p-3 border border-cyan-600/30">
+                        {/* Botón de Comandos de Voz */}
+                        <div className="flex items-center gap-2 mb-2">
+                            <button
+                                onClick={isVoiceActive ? stopVoice : startVoice}
+                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all border-2 ${
+                                    isVoiceActive
+                                        ? 'bg-red-600 border-red-400 text-white animate-pulse'
+                                        : 'bg-gray-600 border-gray-500 text-gray-200 hover:bg-gray-500'
+                                }`}
+                                title={isVoiceActive ? 'Desactivar voz' : 'Activar comandos de voz'}
+                            >
+                                🎤 {isVoiceActive ? 'Voz activa' : 'Activar voz'}
+                            </button>
+                            {isVoiceActive && voiceTranscript && (
+                                <span className="text-xs text-gray-300 italic truncate max-w-[180px]">
+                                    "{voiceTranscript}"
+                                </span>
+                            )}
+                        </div>
+                        {voiceStatus && (
+                            <div className="mb-2 px-2 py-1 bg-gray-900/70 rounded text-xs text-cyan-300 font-semibold">
+                                {voiceStatus}
+                            </div>
+                        )}
+                        {/* Grilla de Jugadores */}
+                        {filteredPlayers.length > 0 ? (
+                            <>
+                                <p className="text-xs text-cyan-400 mb-1 font-semibold">
+                                    {(() => {
+                                        const p = filteredPlayers.find(pl => pl.id === selectedPlayerId);
+                                        if (!p) return 'Selecciona un jugador';
+                                        const parts = p.nombre.trim().split(/\s+/);
+                                        const firstName = parts[0] || '';
+                                        const lastName = parts.length > 1 ? parts[parts.length - 1] : '';
+                                        return `Etiquetando: #${p.numero} ${firstName} ${lastName}`;
+                                    })()}
+                                </p>
+                                <div className="grid grid-cols-3 gap-1 mb-2">
+                                    {filteredPlayers.map(p => {
+                                        const parts = p.nombre.trim().split(/\s+/);
+                                        const firstName = parts[0] || '';
+                                        const lastName = parts.length > 1 ? parts[parts.length - 1] : '';
+                                        const label = `#${p.numero} ${firstName} ${lastName ? lastName[0] + '.' : ''}`;
+                                        const isActive = p.id === selectedPlayerId;
+                                        return (
+                                            <button
+                                                key={p.id}
+                                                onClick={() => setSelectedPlayerId(p.id)}
+                                                className={`px-1 py-1.5 rounded text-xs font-semibold border-2 transition-all truncate ${
+                                                    isActive
+                                                        ? 'bg-cyan-600 border-cyan-300 text-white scale-105'
+                                                        : 'bg-gray-600 hover:bg-gray-500 border-transparent text-gray-200'
+                                                }`}
+                                                title={p.nombre}
+                                            >
+                                                {label}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </>
+                        ) : (
+                            <p className="text-xs text-gray-400 mb-2">Sin jugadores cargados para este partido.</p>
+                        )}
+                        {/* Fila de acción: select + Etiquetar + Guardar */}
+                        <div className="flex items-center gap-2 flex-wrap">
+                            <select 
+                                value={selectedAction} 
+                                onChange={e => setSelectedAction(e.target.value)} 
+                                className="flex-1 min-w-[150px] bg-gray-600 p-2 rounded text-sm"
+                            >
+                                {METRICS.map(m => <option key={m} value={m}>{m}</option>)}
+                                <optgroup label="Balón parado y penales (solo se cuentan)">
+                                    {ACCIONES_ABP.map(m => <option key={m} value={m}>{m}</option>)}
+                                </optgroup>
+                                <optgroup label="Cambios">
+                                    <option value={ACCION_CAMBIO}>{ACCION_CAMBIO}</option>
+                                </optgroup>
+                            </select>
+                            <button 
+                                onClick={addTag} 
+                                disabled={!selectedPlayerId || !selectedAction || (!activeVideoUrl && !selectedVideo)} 
+                                className="bg-green-600 hover:bg-green-500 px-4 py-2 rounded font-semibold text-sm disabled:bg-gray-600 disabled:cursor-not-allowed whitespace-nowrap"
+                            >
+                                Etiquetar
+                            </button>
+                            <button 
+                                onClick={saveTags} 
+                                disabled={isSaving || tags.filter(t => String(t.id).startsWith('temp-')).length === 0} 
+                                className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded font-semibold text-sm disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center gap-1 whitespace-nowrap"
+                            >
+                                Guardar
+                                {isSaving && <Spinner size="h-3 w-3" />}
+                            </button>
+                        </div>
+                        
+                        {/* Los atajos de teclado se muestran una sola vez, en el panel de la derecha */}
+                        
+                        {/* Indicador de accion seleccionada */}
+                        {selectedAction && (
+                            <div className="mt-2 text-center">
+                                <span className="text-xs text-gray-400">Accion seleccionada: </span>
+                                <span className="text-sm font-semibold text-cyan-400">{selectedAction}</span>
+                            </div>
+                        )}
+                        
+                        {/* Status de guardado */}
+                        {saveStatus && (
+                            <div className={`mt-2 p-1.5 rounded text-center text-xs ${saveStatus.type === 'success' ? 'bg-green-800/50 text-green-200' : 'bg-red-800/50 text-red-200'}`}>
+                                {saveStatus.message}
+                            </div>
+                        )}
+                    </div>
+                    
+                    {/* BOTÓN seguro */}
+                    <button
+                        onClick={() => {
+                            if (!activeVideoUrl) return;
+                            window.open(activeVideoUrl, '_blank');
+                        }}
+                        disabled={!activeVideoUrl}
+                        className="mt-2 w-full bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded text-sm"
+                    >
+                        Abrir video en ventana nueva
+                    </button>
+                    {/* LISTA DE JUGADAS debajo, scroll propio */}
+                    <div className="h-[200px] overflow-y-auto mt-4 bg-gray-900 rounded p-2">
+                        <h3 className="text-lg font-semibold mb-2 text-white">Jugadas Etiquetadas</h3>
+                        {avisoVideo && (
+                            <div className="mb-2 p-2 rounded bg-yellow-900/60 border border-yellow-600 text-xs text-yellow-200 flex justify-between gap-2">
+                                <span>{avisoVideo}</span>
+                                <button type="button" onClick={() => setAvisoVideo(null)} className="text-yellow-300 hover:text-white" aria-label="Cerrar aviso">✕</button>
+                            </div>
+                        )}
+                        {tags.length > 0 ? tags.map(tag => {
+                            const isSuccess = tag.resultado === 'logrado';
+                            const isFailure = tag.resultado === 'fallado';
+                            const isSaved = !String(tag.id).startsWith('temp-');
+                            const borderColor = isSuccess ? 'border-green-500' : isFailure ? 'border-red-500' : 'border-gray-500';
+                            return (
+                                <div
+                                    key={tag.id}
+                                    className={`flex items-center justify-between mb-2 p-2 border-l-4 ${borderColor} bg-gray-700 rounded`}
+                                >
+                                    <div className="flex-1">
+                                        <span className="font-semibold">{players.find(p => p.id === tag.player_id)?.nombre || "Jugador"}</span>
+                                        <button
+                                            type="button"
+                                            onClick={() => saltarAJugada(tag)}
+                                            className="ml-2 px-1.5 py-0.5 rounded bg-cyan-900/60 border border-cyan-500 text-xs text-white hover:bg-cyan-700"
+                                            title="Ir a esta jugada en el video (3 segundos antes)"
+                                        >
+                                            ▶ {formatTime(tag.timestamp)}
+                                        </button>
+                                        <div className="text-xs text-gray-300">{tag.accion} {tag.resultado && <span className={isSuccess ? 'text-green-300' : 'text-red-300'}>{tag.resultado}</span>}</div>
+                                        {ACCIONES_CON_ZONA.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (
+                                            <button
+                                                onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
+                                                className={`text-xs mt-1 underline ${tag.zona ? 'text-cyan-300' : 'text-gray-400'}`}
+                                                title="Marcar o cambiar la zona de esta jugada"
+                                            >
+                                                {tag.zona ? `Zona: ${etiquetaZona(tag.zona)}` : '+ zona'}
+                                            </button>
+                                        )}
+                                        {ACCIONES_GOL.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (() => {
+                                            const resumen = resumenGol(detalleGolDe(tag));
+                                            return (
+                                                <button
+                                                    onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
+                                                    className={`block text-xs mt-1 underline text-left ${resumen ? 'text-cyan-300' : 'text-gray-400'}`}
+                                                    title="Marcar o cambiar el detalle de este gol"
+                                                >
+                                                    {resumen ? `Gol: ${resumen}` : '+ detalle del gol'}
+                                                </button>
+                                            );
+                                        })()}
+                                        {ACCIONES_ABP_SET.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (() => {
+                                            const resumen = resumenAbp(tag.accion, detalleAbpDe(tag));
+                                            return (
+                                                <button
+                                                    onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
+                                                    className={`block text-xs mt-1 underline text-left ${resumen ? 'text-cyan-300' : 'text-gray-400'}`}
+                                                    title="Marcar o cambiar el detalle de esta jugada"
+                                                >
+                                                    {resumen ? `Detalle: ${resumen}` : '+ detalle'}
+                                                </button>
+                                            );
+                                        })()}
+                                        {tag.accion === ACCION_CAMBIO && (() => {
+                                            const d = detalleCambioDe(tag);
+                                            const entraNombre = players.find(p => p.id === tag.player_id)?.nombre;
+                                            const saleNombre = d.sale ? players.find(p => p.id === d.sale)?.nombre : undefined;
+                                            const resumen = resumenCambio(entraNombre, saleNombre);
+                                            return (
+                                                <button
+                                                    onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
+                                                    className={`block text-xs mt-1 underline text-left ${d.sale ? 'text-cyan-300' : 'text-gray-400'}`}
+                                                    title="Marcar o cambiar quién sale"
+                                                >
+                                                    {resumen ? resumen : '+ ¿quién sale?'}
+                                                </button>
+                                            );
+                                        })()}
+                                        {tag.video_file && <div className="text-xs text-gray-400 mt-1">Video: {tag.video_file} — ts_abs: {tag.timestamp_absolute ?? 'N/A'}</div>}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={() => deleteTag(tag)}
+                                            disabled={isSaving}
+                                            className="p-1 text-red-300 hover:text-red-500"
+                                            title="Eliminar"
+                                        >
+                                            <TrashIcon />
+                                        </button>
+                                    </div>
+                                </div>
+                            );
+                        }) : (
+                            <p className="text-gray-400 text-center mt-4">Aún no se han etiquetado jugadas para este partido.</p>
+                        )}
+                    </div>
+                </div>
+            </div>
+
+            {/* Right Column: Management Panels */}
+            <div className="w-1/3 flex flex-col gap-4 overflow-y-auto pr-2">
+                {/* 1. Gestión del Partido */}
+                <div className="bg-gray-800 rounded-lg p-4">
+                    {(() => {
+                        const abierta = gestionAbierta || !selectedMatchId || isCreatingMatch;
+                        const m = matches.find(mm => mm.id === selectedMatchId);
+                        return (
+                            <button
+                                onClick={() => setGestionAbierta(!abierta)}
+                                className="w-full flex items-center justify-between text-left gap-2"
+                                title={abierta ? 'Encoger' : 'Abrir'}
+                            >
+                                <span className="min-w-0">
+                                    <span className="block text-lg font-semibold text-white">1. Gestión del Partido</span>
+                                    {!abierta && m && (
+                                        <span className="block text-sm text-gray-300 truncate">{m.nombre_equipo} vs {m.rival} · J{m.jornada} · {m.torneo}</span>
+                                    )}
+                                </span>
+                                <span className="text-cyan-400 flex-shrink-0">{abierta ? '▼' : '▶'}</span>
+                            </button>
+                        );
+                    })()}
+                    <div className={(gestionAbierta || !selectedMatchId || isCreatingMatch) ? 'mt-2' : 'hidden'}>
+                    <select value={selectedMatchId} onChange={e => setSelectedMatchId(e.target.value)} className="w-full bg-gray-700 p-2 rounded mb-2">
+                        {matches.length === 0 && <option>Cree un partido para empezar</option>}
+                        {matches.map(m => (
+                            <option key={m.id} value={m.id}>{m.torneo} - {m.nombre_equipo} vs {m.rival} ({m.fecha})</option>
+                        ))}
+                    </select>
+                    <button
+                        onClick={() => setIsCreatingMatch(v => !v)}
+                        className="w-full mt-2 bg-blue-600 hover:bg-blue-500 p-2 rounded font-semibold flex items-center justify-center gap-2"
+                    >
+                        <CloudUploadIcon />
+                        {isCreatingMatch ? "Cancelar" : "Crear Nuevo Partido"}
+                    </button>
+                    {isCreatingMatch && (
+                        <div className="mt-2 space-y-2">
+                            <input type="text" placeholder="Torneo" value={newMatchData.torneo} onChange={e => setNewMatchData({ ...newMatchData, torneo: e.target.value })} className="w-full bg-gray-700 p-2 rounded" />
+                            <div>
+                                <input 
+                                    type="text" 
+                                    placeholder="Mi Equipo" 
+                                    value={newMatchData.nombre_equipo} 
+                                    onChange={e => setNewMatchData({ ...newMatchData, nombre_equipo: e.target.value })} 
+                                    className="w-full bg-gray-700 p-2 rounded" 
+                                    list="teams-list"
+                                />
+                                <datalist id="teams-list">
+                                    {teams.map(team => (
+                                        <option key={team.id} value={team.nombre} />
+                                    ))}
+                                </datalist>
+                                <p className="text-xs text-gray-400 mt-1">Selecciona un equipo existente o escribe uno nuevo</p>
+                            </div>
+                            <input type="text" placeholder="Categoría" value={newMatchData.categoria} onChange={e => setNewMatchData({ ...newMatchData, categoria: e.target.value })} className="w-full bg-gray-700 p-2 rounded" />
+                            <input type="date" value={newMatchData.fecha} onChange={e => setNewMatchData({ ...newMatchData, fecha: e.target.value })} className="w-full bg-gray-700 p-2 rounded" />
+                            <input type="text" placeholder="Rival" value={newMatchData.rival} onChange={e => setNewMatchData({ ...newMatchData, rival: e.target.value })} className="w-full bg-gray-700 p-2 rounded" />
+                            <input type="number" placeholder="Jornada" value={newMatchData.jornada} onChange={e => setNewMatchData({ ...newMatchData, jornada: parseInt(e.target.value) || 1 })} className="w-full bg-gray-700 p-2 rounded" />
+                            <button onClick={handleCreateMatch} className="w-full bg-green-600 hover:bg-green-500 p-2 rounded font-semibold text-white flex items-center justify-center gap-2" disabled={isSavingMatch}>
+                                <CloudCheckIcon />
+                                Guardar Partido
+                                {isSavingMatch && <Spinner size="h-4 w-4" />}
+                            </button>
+                            {matchCreationError && <div className="text-red-400 text-xs">{matchCreationError}</div>}
+                        </div>
+                    )}
+                    </div>
+                </div>
+
+                {/* 2. Carga de Archivos */}
+                <div className="bg-gray-800 rounded-lg p-4">
+                    {(() => {
+                        const falta = filteredPlayers.length === 0 || (!activeVideoUrl && !selectedVideo);
+                        const abierta = cargaAbierta || falta;
+                        const videoNombre = currentVideoFile?.name || selectedVideo?.video_file || 'sin video';
+                        return (
+                            <button
+                                onClick={() => setCargaAbierta(!abierta)}
+                                className="w-full flex items-center justify-between text-left gap-2"
+                                title={abierta ? 'Encoger' : 'Abrir'}
+                            >
+                                <span className="min-w-0">
+                                    <span className="block text-lg font-semibold text-white">2. Carga de Archivos</span>
+                                    {!abierta && (
+                                        <span className="block text-sm text-gray-300 truncate">{filteredPlayers.length} jugadores · video: {videoNombre}</span>
+                                    )}
+                                </span>
+                                <span className="text-cyan-400 flex-shrink-0">{abierta ? '▼' : '▶'}</span>
+                            </button>
+                        );
+                    })()}
+                    <div className={(cargaAbierta || filteredPlayers.length === 0 || (!activeVideoUrl && !selectedVideo)) ? 'mt-2' : 'hidden'}>
+                    <label className="block text-sm text-gray-400 mb-1">Jugadores (Excel)</label>
+                    <div className="flex items-center gap-2">
+                        <input type="file" accept=".xlsx,.xls" onChange={handlePlayerFileChange} className="w-full text-sm text-gray-400 file:mr-4 file:py-1 file:px-2 file:rounded-full file:border-0 file:font-semibold file:bg-gray-600 file:text-white hover:file:bg-gray-500 disabled:opacity-50" disabled={playerUploadStatus === 'loading'} />
+                        {playerUploadStatus === 'loading' && <Spinner size="h-4 w-4" />}
+                    </div>
+                    {playerUploadMessage && <p className={`text-xs pt-1 ${playerUploadStatus === 'success' ? 'text-green-400' : playerUploadStatus === 'error' ? 'text-red-400' : 'text-gray-400'}`}>{playerUploadMessage}</p>}
+                    <label className="block text-sm text-gray-400 mt-4 mb-1">Videos del Partido (local)</label>
+                    <input type="file" multiple accept="video/*" onChange={e => setVideoFiles(Array.from(e.target.files || []))} className="w-full text-sm file:mr-4 file:py-1 file:px-2 file:rounded-full file:border-0 file:font-semibold file:bg-gray-600 file:text-white hover:file:bg-gray-500" />
+                    <div className="mt-2 max-h-24 overflow-y-auto">
+                        {videoFiles.map(f => (
+                            <button key={f.name} onClick={() => handleVideoSelect(f)} className="text-left text-xs text-cyan-400 hover:underline w-full truncate p-1 rounded hover:bg-gray-700">{f.name}</button>
+                        ))}
+                    </div>
+
+                    <label className="block text-sm text-gray-400 mt-4 mb-1">Videos registrados (metadatos)</label>
+                    <div className="flex gap-2 items-center">
+                        <select value={selectedVideoId} onChange={e => setSelectedVideoId(e.target.value)} className="flex-1 bg-gray-700 p-2 rounded">
+                            <option value="">-- Seleccione video registrado --</option>
+                            {videos.map(v => (
+                                <option key={v.id} value={v.id}>{v.video_file} (offset: {v.start_offset_seconds}s)</option>
+                            ))}
+                        </select>
+                        <button onClick={() => setShowNewVideoModal(true)} className="ml-2 bg-indigo-600 hover:bg-indigo-500 p-2 rounded text-white text-sm">Registrar nuevo</button>
+                    </div>
+
+                    <label className="block text-sm text-gray-400 mt-4 mb-1">Mi equipo (uniforme)</label>
+                    <input type="file" accept="image/*" onChange={e => setTeamUniformFile(e.target.files?.[0] || null)} className="w-full text-sm file:mr-4 file:py-1 file:px-2 file:rounded-full file:border-0 file:font-semibold file:bg-gray-600 file:text-white hover:file:bg-gray-500" />
+                    <label className="block text-sm text-gray-400 mt-4 mb-1">Equipo Rival (uniforme)</label>
+                    <input type="file" accept="image/*" onChange={e => setOpponentUniformFile(e.target.files?.[0] || null)} className="w-full text-sm file:mr-4 file:py-1 file:px-2 file:rounded-full file:border-0 file:font-semibold file:bg-gray-600 file:text-white hover:file:bg-gray-500" />
+                    </div>
+                </div>
+
+                {/* 3. Alineación y Minutos */}
+                <div className="bg-gray-800 rounded-lg p-4">
+                    <button
+                        onClick={() => setEstatusAbierta(!estatusAbierta)}
+                        className="w-full flex items-center justify-between text-left gap-2"
+                        title={estatusAbierta ? 'Encoger' : 'Abrir'}
+                    >
+                        <span className="min-w-0">
+                            <span className="block text-lg font-semibold text-white">3. Alineación y Minutos</span>
+                            {!estatusAbierta && (
+                                <span className="block text-sm text-gray-300 truncate">
+                                    {Object.values(estatusPorJugador).filter(v => v.estatus).length} de {filteredPlayers.filter(p => !esJugadorFicticio(p.nombre)).length} jugadores marcados
+                                </span>
+                            )}
+                        </span>
+                        <span className="text-cyan-400 flex-shrink-0">{estatusAbierta ? '▼' : '▶'}</span>
+                    </button>
+                    {estatusAbierta && (
+                        <div className="mt-2">
+                            <p className="text-xs text-gray-500 mb-2">Se llena una vez por partido — no por jugada. Deja "Sin marcar" al que no revises.</p>
+                            {cargandoEstatus ? (
+                                <p className="text-xs text-gray-400">Cargando…</p>
+                            ) : (
+                                <div className="space-y-1 max-h-96 overflow-y-auto pr-1">
+                                    {filteredPlayers.filter(p => !esJugadorFicticio(p.nombre)).map(p => {
+                                        const row = estatusPorJugador[p.id] || { estatus: '' as EstatusPartido | '' };
+                                        return (
+                                            <div key={p.id} className="flex items-center gap-2 bg-gray-700/50 p-2 rounded">
+                                                <span className="flex-1 text-sm text-white truncate">{p.nombre}</span>
+                                                <select
+                                                    value={row.estatus}
+                                                    onChange={e => updateEstatusJugador(p.id, { estatus: e.target.value as EstatusPartido | '' })}
+                                                    className="bg-gray-700 text-white text-xs p-1.5 rounded border border-gray-600"
+                                                >
+                                                    <option value="">Sin marcar</option>
+                                                    <option value="titular">Titular</option>
+                                                    <option value="suplente">Suplente</option>
+                                                    <option value="no_convocado">No convocado</option>
+                                                    <option value="lesionado">Lesionado</option>
+                                                    <option value="falta">Falta</option>
+                                                </select>
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            )}
+                            <p className="text-xs text-gray-500 mt-2">Los minutos se calculan solos con la etiqueta "Cambio" al etiquetar el video — aquí solo marcas quién arrancó y quién no asistió.</p>
+                            <button
+                                onClick={handleGuardarEstatus}
+                                disabled={guardandoEstatus || filteredPlayers.length === 0}
+                                className="mt-3 bg-cyan-600 hover:bg-cyan-500 disabled:opacity-50 text-sm px-3 py-1.5 rounded text-white"
+                            >
+                                {guardandoEstatus ? 'Guardando…' : 'Guardar alineación'}
+                            </button>
+                            {estatusMsg && <p className="text-xs mt-1 text-green-400">{estatusMsg}</p>}
+                        </div>
+                    )}
+                </div>
+
+                {/* "3. Etiquetar Jugada" se quitó en la entrega 2: repetía lo que ya está en el panel central. */}
+                {/* Detalle de la jugada (mejora 1: zona de recuperaciones y pérdidas) */}
+                <div className={`bg-gray-800 rounded-lg p-4 ${detallePendiente ? 'border-2 border-cyan-500' : ''}`}>
+                    <h3 className="text-lg font-semibold mb-2 text-white">Detalle de la jugada</h3>
+                    {detallePendiente && ACCIONES_ABP_SET.has(detallePendiente.accion) ? (() => {
+                        const jug = players.find(p => p.id === detallePendiente.player_id);
+                        const tagActual = tags.find(t => t.id === detallePendiente.id)
+                            || tags.find(t => t.match_id === detallePendiente.match_id && t.player_id === detallePendiente.player_id && t.accion === detallePendiente.accion && t.timestamp === detallePendiente.timestamp);
+                        const d = tagActual ? detalleAbpDe(tagActual) : {} as DetalleAbp;
+                        const aplicar = (parcial: DetalleAbp) => { aplicarDetalleAbp(parcial).then(msg => { setVoiceStatus(msg); setTimeout(() => setVoiceStatus(''), 2500); }); };
+                        const chip = (activo: boolean) => `px-2.5 py-1.5 rounded text-sm ${activo ? 'bg-cyan-700 border-2 border-cyan-300 text-white font-semibold' : 'bg-gray-700 hover:bg-gray-600 text-gray-200 border-2 border-transparent'}`;
+                        const esPenal = ACCIONES_PENAL.has(detallePendiente.accion);
+                        const enContra = ACCIONES_EN_CONTRA.has(detallePendiente.accion);
+                        const rol = esPenal ? (enContra ? 'portero' : 'tirador') : (enContra ? 'marcaba o despejó' : 'lanzador');
+                        return (
+                            <div className="space-y-2">
+                                <p className="text-sm text-gray-200">
+                                    {detallePendiente.accion} · {jug ? `#${jug.numero} ${jug.nombre.trim().split(/\s+/)[0]}` : 'Jugador'} <span className="text-gray-400">({rol})</span>
+                                </p>
+                                {esPenal ? (
+                                    <>
+                                        <p className="text-xs text-gray-400">¿A dónde tiró? (portería vista de frente)</p>
+                                        <PorteriaEstadio rgb={enContra ? '251,146,60' : '34,211,238'} seleccion={d.porteria || null} onSelect={k => aplicar({ porteria: k })} />
+                                        {d.porteria && <p className="text-xs text-cyan-300">Tiró: {(etiquetaPorteria(d.porteria) || '').toLowerCase()}</p>}
+                                        <p className="text-xs text-gray-400">Resultado</p>
+                                        <div className="grid grid-cols-4 gap-1">
+                                            {RESULTADOS_PENAL.map(r => <button key={r} onClick={() => aplicar({ resultado: r })} className={chip(d.resultado === r)}>{RESULTADO_PENAL_LABEL[r]}</button>)}
+                                        </div>
+                                    </>
+                                ) : (
+                                    <>
+                                        <p className="text-xs text-gray-400">Zona de envío</p>
+                                        <div className="flex flex-wrap gap-1">
+                                            {ENVIOS.map(e => <button key={e} onClick={() => aplicar({ envio: e })} className={chip(d.envio === e)}>{ENVIO_LABEL[e]}</button>)}
+                                        </div>
+                                        <p className="text-xs text-gray-400">Resultado</p>
+                                        <div className="flex gap-1">
+                                            {RESULTADOS_COBRO.map(r => <button key={r} onClick={() => aplicar({ resultado: r })} className={`flex-1 ${chip(d.resultado === r)}`}>{RESULTADO_COBRO_LABEL[r]}</button>)}
+                                        </div>
+                                        {(
+                                            <>
+                                                <p className="text-xs text-gray-400">{enContra ? 'Tipo de marcaje' : 'Marcaje del rival (opcional)'}</p>
+                                                <div className="flex gap-1">
+                                                    {MARCAJES.map(m => <button key={m} onClick={() => aplicar({ marcaje: m })} className={`flex-1 ${chip(d.marcaje === m)}`}>{MARCAJE_LABEL[m]}</button>)}
+                                                </div>
+                                            </>
+                                        )}
+                                    </>
+                                )}
+                                <div className="flex items-center gap-2">
+                                    <p className="flex-1 text-sm bg-gray-900 rounded px-2 py-1.5 text-gray-200">
+                                        Di: <span className="text-cyan-300">{esPenal ? '"abajo izquierda gol"' : enContra ? '"segundo palo remate en zona"' : '"primer palo remate en zona"'}</span> · <span className="text-cyan-300">"listo"</span> para cerrar
+                                    </p>
+                                    <button
+                                        onClick={() => setDetallePendiente(null)}
+                                        className="px-3 py-2 rounded bg-gray-600 hover:bg-gray-500 text-sm whitespace-nowrap"
+                                    >
+                                        Listo
+                                    </button>
+                                </div>
+                            </div>
+                        );
+                    })() : detallePendiente && ACCIONES_GOL.has(detallePendiente.accion) ? (() => {
+                        const jug = players.find(p => p.id === detallePendiente.player_id);
+                        const tagActual = tags.find(t => t.id === detallePendiente.id)
+                            || tags.find(t => t.match_id === detallePendiente.match_id && t.player_id === detallePendiente.player_id && t.accion === detallePendiente.accion && t.timestamp === detallePendiente.timestamp);
+                        const d = tagActual ? detalleGolDe(tagActual) : {};
+                        const aplicar = (parcial: DetalleGol) => { aplicarDetalleGol(parcial).then(msg => { setVoiceStatus(msg); setTimeout(() => setVoiceStatus(''), 2500); }); };
+                        const chip = (activo: boolean) => `px-2.5 py-1.5 rounded text-sm ${activo ? 'bg-cyan-700 border-2 border-cyan-300 text-white font-semibold' : 'bg-gray-700 hover:bg-gray-600 text-gray-200 border-2 border-transparent'}`;
+                        return (
+                            <div className="space-y-2">
+                                <p className="text-sm text-gray-200">
+                                    {detallePendiente.accion} · {jug ? `#${jug.numero} ${jug.nombre.trim().split(/\s+/)[0]}` : 'Jugador'} · <span className="text-gray-400">¿cómo fue?</span>
+                                </p>
+                                <p className="text-xs text-gray-400">Tipo</p>
+                                <div className="flex flex-wrap gap-1">
+                                    {TIPOS_GOL.map(tg => <button key={tg} onClick={() => aplicar({ tipo_gol: tg })} className={chip(d.tipo_gol === tg)}>{TIPO_GOL_LABEL[tg]}</button>)}
+                                </div>
+                                <p className="text-xs text-gray-400">Disparo</p>
+                                <div className="flex gap-1">
+                                    <button onClick={() => aplicar({ area: 'dentro' })} className={`flex-1 ${chip(d.area === 'dentro')}`}>Dentro del área</button>
+                                    <button onClick={() => aplicar({ area: 'fuera' })} className={`flex-1 ${chip(d.area === 'fuera')}`}>Fuera del área</button>
+                                </div>
+                                <p className="text-xs text-gray-400">¿Dónde entró? (portería vista de frente)</p>
+                                <PorteriaEstadio rgb="34,211,238" seleccion={d.porteria || null} onSelect={k => aplicar({ porteria: k })} />
+                                {d.porteria && <p className="text-xs text-cyan-300">Entró: {(etiquetaPorteria(d.porteria) || '').toLowerCase()}</p>}
+                                <p className="text-xs text-gray-400">Golpeo (opcional)</p>
+                                <div className="flex gap-1">
+                                    {GOLPEOS.map(g => <button key={g} onClick={() => aplicar({ golpeo: g })} className={`flex-1 ${chip(d.golpeo === g)}`}>{GOLPEO_LABEL[g]}</button>)}
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <p className="flex-1 text-sm bg-gray-900 rounded px-2 py-1.5 text-gray-200">
+                                        Di: <span className="text-cyan-300">"contraataque dentro del área abajo izquierda"</span> · <span className="text-cyan-300">"listo"</span> para cerrar
+                                    </p>
+                                    <button
+                                        onClick={() => setDetallePendiente(null)}
+                                        className="px-3 py-2 rounded bg-gray-600 hover:bg-gray-500 text-sm whitespace-nowrap"
+                                    >
+                                        Listo
+                                    </button>
+                                </div>
+                            </div>
+                        );
+                    })() : detallePendiente && detallePendiente.accion === ACCION_CAMBIO ? (() => {
+                        const entra = players.find(p => p.id === detallePendiente.player_id);
+                        const tagActual = tags.find(t => t.id === detallePendiente.id)
+                            || tags.find(t => t.match_id === detallePendiente.match_id && t.player_id === detallePendiente.player_id && t.accion === detallePendiente.accion && t.timestamp === detallePendiente.timestamp);
+                        const d = tagActual ? detalleCambioDe(tagActual) : {};
+                        const candidatos = filteredPlayers.filter(p => p.id !== detallePendiente.player_id && !esJugadorFicticio(p.nombre));
+                        return (
+                            <div className="space-y-2">
+                                <p className="text-sm text-gray-200">
+                                    Cambio · Entra {entra ? `#${entra.numero} ${entra.nombre.trim().split(/\s+/)[0]}` : 'Jugador'} · <span className="text-gray-400">¿quién sale?</span>
+                                </p>
+                                <select
+                                    value={d.sale || ''}
+                                    onChange={e => { aplicarDetalleCambio(e.target.value).then(msg => { setVoiceStatus(msg); setTimeout(() => setVoiceStatus(''), 2500); }); }}
+                                    className="w-full bg-gray-700 p-2 rounded text-sm"
+                                >
+                                    <option value="">Selecciona quién sale…</option>
+                                    {candidatos.map(p => <option key={p.id} value={p.id}>#{p.numero} {p.nombre}</option>)}
+                                </select>
+                                <p className="text-xs text-gray-500">Se guarda al elegir — no hace falta botón de "Listo".</p>
+                            </div>
+                        );
+                    })() : detallePendiente ? (() => {
+                        const jug = players.find(p => p.id === detallePendiente.player_id);
+                        return (
+                            <div className="space-y-2">
+                                <p className="text-sm text-gray-200">
+                                    {detallePendiente.accion} · {jug ? `#${jug.numero} ${jug.nombre.trim().split(/\s+/)[0]}` : 'Jugador'} · <span className="text-gray-400">¿dónde fue?</span>
+                                </p>
+                                <div className="grid grid-cols-3 gap-1 text-xs text-gray-400 text-center">
+                                    {TERCIOS.map(t => <span key={t}>{TERCIO_LABEL[t]}</span>)}
+                                </div>
+                                <div className="grid grid-cols-3 gap-1 border-2 border-gray-600 rounded p-1">
+                                    {CARRILES.map(c => TERCIOS.map(t => (
+                                        <button
+                                            key={`${t}-${c}`}
+                                            onClick={() => { aplicarZona(codigoZona(t, c)).then(msg => { setVoiceStatus(msg); setTimeout(() => setVoiceStatus(''), 2500); }); }}
+                                            className="min-h-[44px] rounded bg-gray-700 hover:bg-cyan-700 text-sm text-gray-100 font-semibold"
+                                            title={`${TERCIO_LABEL[t]} · ${CARRIL_LABEL[c].toLowerCase()}`}
+                                        >
+                                            {CARRIL_LABEL[c] === 'Izquierda' ? 'Izq' : CARRIL_LABEL[c] === 'Derecha' ? 'Der' : 'Centro'}
+                                        </button>
+                                    )))}
+                                </div>
+                                <p className="text-xs text-gray-400">Tu equipo ataca hacia la derecha →</p>
+                                <div className="flex items-center gap-2">
+                                    <p className="flex-1 text-sm bg-gray-900 rounded px-2 py-1.5 text-gray-200">
+                                        Di: <span className="text-cyan-300">"creación centro"</span> · o toca la zona · <span className="text-cyan-300">"saltar"</span> la deja sin zona
+                                    </p>
+                                    <button
+                                        onClick={() => { aplicarZona(null).then(msg => { setVoiceStatus(msg); setTimeout(() => setVoiceStatus(''), 2500); }); }}
+                                        className="px-3 py-2 rounded bg-gray-600 hover:bg-gray-500 text-sm whitespace-nowrap"
+                                    >
+                                        Saltar
+                                    </button>
+                                </div>
+                            </div>
+                        );
+                    })() : (
+                        <p className="text-sm text-gray-400">Aparece al etiquetar una recuperación o una pérdida (zona), un gol (tipo, área y portería) o un balón parado o penal.</p>
+                    )}
+                </div>
+
+                {/* 4. Analisis Asistido por IA */}
+                <div className="bg-gray-800 rounded-lg p-4">
+                    <button
+                        onClick={() => setIaAbierta(!(iaAbierta || isAnyAnalysisRunning))}
+                        className="w-full flex items-center justify-between text-lg font-semibold text-white"
+                    >
+                        <span>Análisis Asistido por IA (Beta)</span>
+                        <span className="text-cyan-400">{(iaAbierta || isAnyAnalysisRunning) ? '▼' : '▶'}</span>
+                    </button>
+                    <div className={(iaAbierta || isAnyAnalysisRunning) ? 'mt-2' : 'hidden'}>
+                    <p className="text-xs text-gray-400 mb-4">La IA puede sugerir jugadas. Puedes aceptar o rechazar las sugerencias.</p>
+                    
+                    {/* Segment Analysis Button (Gemini) - RECOMMENDED */}
+                    <button 
+                        onClick={() => setShowSegmentModal(true)} 
+                        disabled={(!activeVideoUrl && !selectedVideo) || isAnyAnalysisRunning || !selectedMatchId} 
+                        className="w-full bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 p-3 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed mb-3"
+                    >
+                        <SparklesIcon />Analizar Segmento (Gemini) ⚡
+                    </button>
+                    <p className="text-xs text-emerald-400 mb-4 text-center">Recomendado: Selecciona un rango de 5-10 min para análisis preciso</p>
+                    
+                    {/* Batch Analysis Button */}
+                    <button 
+                        onClick={handleBatchAnalysis} 
+                        disabled={!activeVideoUrl || isAnyAnalysisRunning || !selectedMatchId} 
+                        className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 p-3 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed mb-3"
+                    >
+                        {isBatchAnalyzing ? <><Spinner /> Analizando partido...</> : <><SparklesIcon />Analizar Partido Completo 🚀</>}
+                    </button>
+                    
+                    {/* Progress Bar */}
+                    {isBatchAnalyzing && batchProgress.total > 0 && (
+                        <div className="mb-3">
+                            <div className="flex justify-between text-xs text-gray-400 mb-1">
+                                <span>Progreso: {batchProgress.current} / {batchProgress.total} frames</span>
+                                <span>{Math.round((batchProgress.current / batchProgress.total) * 100)}%</span>
+                            </div>
+                            <div className="w-full bg-gray-700 rounded-full h-2">
+                                <div 
+                                    className="bg-gradient-to-r from-purple-600 to-pink-600 h-2 rounded-full transition-all duration-300"
+                                    style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
+                                ></div>
+                            </div>
+                        </div>
+                    )}
+                    
+                    <button onClick={handleAIAssistedAnalysis} disabled={(!activeVideoUrl && !selectedVideo) || isAnyAnalysisRunning || !selectedMatchId} className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
+                        {isGeminiAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Sugerir Acciones</>}
+                    </button>
+                    <button 
+                        onClick={handleCustomModelAnalysis} 
+                        disabled={(!activeVideoUrl && !selectedVideo) || isAnyAnalysisRunning || !selectedMatchId} 
+                        className="w-full mt-2 bg-indigo-600 hover:bg-indigo-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed"
+                    >
+                        {isCustomAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Modelo Personalizado (74% Top-3)</>}
+                    </button>
+                    </div>
+                </div>
+
+                {/* 5. Atajos de Teclado */}
+                <div className="bg-gray-800 rounded-lg p-4">
+                    <button 
+                        onClick={() => setShowShortcutsGuide(!showShortcutsGuide)}
+                        className="w-full flex items-center justify-between text-lg font-semibold text-white"
+                    >
+                        <span>Atajos de Teclado</span>
+                        <span className="text-cyan-400">{showShortcutsGuide ? '▼' : '▶'}</span>
+                    </button>
+                    {showShortcutsGuide && (
+                        <div className="mt-3 space-y-2 text-sm">
+                            <p className="text-gray-400 mb-2">Presiona una tecla para pre-seleccionar la accion (requiere video cargado). Luego selecciona el jugador y guarda:</p>
+                            <div className="grid grid-cols-2 gap-1 text-xs">
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">1</span> Pase corto def. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">2</span> Pase corto def. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">3</span> Pase corto of. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">4</span> Pase corto of. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">5</span> Pase largo def. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">6</span> Pase largo def. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">7</span> Pase largo of. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">8</span> Pase largo of. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">9</span> 1vs1 def. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">0</span> 1vs1 def. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">Q</span> 1vs1 of. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">W</span> 1vs1 of. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">E</span> Aereo def. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">R</span> Aereo def. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">T</span> Aereo of. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">Y</span> Aereo of. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">U</span> Trans. of. lograda</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">I</span> Trans. of. no lograda</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">A</span> Atajadas</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">S</span> Goles a favor</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">D</span> Goles recibidos</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">F</span> Perdida de balon</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">G</span> Tiros a porteria</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">H</span> Recuperacion de balon</div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            </div>
+
+            {/* Batch Results Modal */}
+            {showBatchResultsModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+                    <div className="bg-gray-800 rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col">
+                        <div className="flex justify-between items-center mb-4">
+                            <h3 className="text-xl font-semibold text-white">
+                                ✨ Sugerencias del Análisis Completo ({batchSuggestions.length} jugadas)
+                            </h3>
+                            <button onClick={() => setShowBatchResultsModal(false)} className="text-gray-400 hover:text-white text-2xl">&times;</button>
+                        </div>
+                        
+                        <div className="overflow-y-auto flex-1">
+                            <table className="w-full text-sm">
+                                <thead className="bg-gray-700 sticky top-0">
+                                    <tr>
+                                        <th className="p-2 text-left">Tiempo</th>
+                                        <th className="p-2 text-left">Acción</th>
+                                        <th className="p-2 text-left">Confianza</th>
+                                        <th className="p-2 text-left">Alt 2</th>
+                                        <th className="p-2 text-left">Alt 3</th>
+                                        <th className="p-2 text-center">Acciones</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {batchSuggestions.map((sugg, idx) => (
+                                        <tr key={idx} className={`border-b border-gray-700 ${sugg.accepted ? 'bg-green-900 bg-opacity-20' : ''}`}>
+                                            <td className="p-2">{Math.floor(sugg.timestamp / 60)}:{String(sugg.timestamp % 60).padStart(2, '0')}</td>
+                                            <td className="p-2 font-semibold">{sugg.action.replace(/_/g, ' ')}</td>
+                                            <td className="p-2">
+                                                <span className={`px-2 py-1 rounded text-xs ${sugg.confidence >= 70 ? 'bg-green-600' : sugg.confidence >= 50 ? 'bg-yellow-600' : 'bg-orange-600'}`}>
+                                                    {sugg.confidence}%
+                                                </span>
+                                            </td>
+                                            <td className="p-2 text-xs text-gray-400">
+                                                {sugg.predictions[1] && `${sugg.predictions[1].action.replace(/_/g, ' ')} (${Math.round(sugg.predictions[1].probability * 100)}%)`}
+                                            </td>
+                                            <td className="p-2 text-xs text-gray-400">
+                                                {sugg.predictions[2] && `${sugg.predictions[2].action.replace(/_/g, ' ')} (${Math.round(sugg.predictions[2].probability * 100)}%)`}
+                                            </td>
+                                            <td className="p-2 text-center flex items-center justify-center gap-1">
+                                                <button 
+                                                    onClick={() => {
+                                                        if (videoRef.current) {
+                                                            videoRef.current.currentTime = sugg.timestamp;
+                                                            videoRef.current.play();
+                                                        }
+                                                    }}
+                                                    className="p-1.5 bg-blue-600 hover:bg-blue-500 rounded text-xs"
+                                                    title="Ver jugada"
+                                                >
+                                                    Ver
+                                                </button>
+                                                <button 
+                                                    onClick={() => {
+                                                        if (videoRef.current) {
+                                                            videoRef.current.currentTime = sugg.timestamp;
+                                                        }
+                                                        const actionName = sugg.action.replace(/_/g, ' ');
+                                                        const matchingMetric = METRICS.find(m => m.toLowerCase().includes(actionName.toLowerCase()));
+                                                        if (matchingMetric) {
+                                                            setSelectedAction(matchingMetric);
+                                                        }
+                                                        setBatchSuggestions(prev => prev.map((s, i) => i === idx ? {...s, accepted: true} : s));
+                                                    }}
+                                                    disabled={sugg.accepted}
+                                                    className="px-2 py-1 bg-green-600 hover:bg-green-500 rounded text-xs disabled:bg-gray-600 disabled:cursor-not-allowed"
+                                                >
+                                                    {sugg.accepted ? '✓' : 'Aceptar'}
+                                                </button>
+                                                <button 
+                                                    onClick={() => {
+                                                        setBatchSuggestions(prev => prev.filter((_, i) => i !== idx));
+                                                    }}
+                                                    className="px-2 py-1 bg-red-600 hover:bg-red-500 rounded text-xs"
+                                                >
+                                                    ✗
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                            
+                            {batchSuggestions.length === 0 && (
+                                <p className="text-center text-gray-400 py-8">No hay sugerencias para mostrar</p>
+                            )}
+                        </div>
+                        
+                        <div className="mt-4 flex gap-2 justify-end">
+                            <button onClick={() => setShowBatchResultsModal(false)} className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded">
+                                Cerrar
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            
+            {/* Segment Analysis Modal */}
+            {showSegmentModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
+                    <div className="bg-gray-800 rounded-lg p-6 w-[450px]">
+                        <h3 className="text-xl font-semibold mb-4 text-white flex items-center gap-2">
+                            <SparklesIcon /> Analizar Segmento con Gemini
+                        </h3>
+                        
+                        <p className="text-sm text-gray-400 mb-4">
+                            Selecciona el rango de tiempo del video que quieres analizar. 
+                            Gemini extraerá 3 frames por segundo y detectará las jugadas.
+                        </p>
+                        
+                        <div className="grid grid-cols-2 gap-4 mb-4">
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-1">Tiempo Inicio (MM:SS)</label>
+                                <input 
+                                    type="text" 
+                                    value={segmentStartTime} 
+                                    onChange={e => setSegmentStartTime(e.target.value)}
+                                    placeholder="00:00"
+                                    className="w-full bg-gray-700 p-2 rounded text-white"
+                                />
+                            </div>
+                            <div>
+                                <label className="block text-sm text-gray-400 mb-1">Tiempo Fin (MM:SS)</label>
+                                <input 
+                                    type="text" 
+                                    value={segmentEndTime} 
+                                    onChange={e => setSegmentEndTime(e.target.value)}
+                                    placeholder="05:00"
+                                    className="w-full bg-gray-700 p-2 rounded text-white"
+                                />
+                            </div>
+                        </div>
+                        
+                        <div className="bg-gray-700 p-3 rounded mb-4">
+                            <p className="text-xs text-gray-300">
+                                <strong>Recomendaciones:</strong>
+                            </p>
+                            <ul className="text-xs text-gray-400 mt-1 list-disc list-inside">
+                                <li>Segmentos de 5 minutos: ~300 frames, alta precisión</li>
+                                <li>Segmentos de 10 minutos: ~600 frames, muy buena precisión</li>
+                                <li>Máximo permitido: 10 minutos por análisis</li>
+                            </ul>
+                        </div>
+                        
+                        {isSegmentAnalyzing && segmentProgress && (
+                            <div className="mb-4">
+                                <div className="flex justify-between text-xs text-gray-400 mb-1">
+                                    <span>{segmentProgress.message}</span>
+                                    <span>{segmentProgress.framesExtracted}/{segmentProgress.totalFrames}</span>
+                                </div>
+                                <div className="w-full bg-gray-700 rounded-full h-2">
+                                    <div 
+                                        className="bg-gradient-to-r from-emerald-600 to-cyan-600 h-2 rounded-full transition-all duration-300"
+                                        style={{ width: `${(segmentProgress.framesExtracted / segmentProgress.totalFrames) * 100}%` }}
+                                    ></div>
+                                </div>
+                            </div>
+                        )}
+                        
+                        <div className="flex gap-2 justify-end">
+                            <button 
+                                onClick={() => setShowSegmentModal(false)} 
+                                disabled={isSegmentAnalyzing}
+                                className="px-4 py-2 bg-gray-600 hover:bg-gray-500 rounded disabled:opacity-50"
+                            >
+                                Cancelar
+                            </button>
+                            <button 
+                                onClick={handleSegmentAnalysis}
+                                disabled={isSegmentAnalyzing}
+                                className="px-4 py-2 bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 rounded text-white font-semibold flex items-center gap-2 disabled:opacity-50"
+                            >
+                                {isSegmentAnalyzing ? <><Spinner size="h-4 w-4" /> Analizando...</> : 'Iniciar Análisis'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+            
+            {/* New Video modal */}
+            {showNewVideoModal && (
+                <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50">
+                    <div className="bg-gray-800 rounded p-6 w-[420px]">
+                        <h3 className="text-lg font-semibold mb-3">Registrar nuevo video</h3>
+                        <input placeholder="Nombre del archivo (ej. VID_20251021_1.mp4)" className="w-full bg-gray-700 p-2 rounded mb-2" value={newVideoFileName} onChange={e => setNewVideoFileName(e.target.value)} />
+                        <input placeholder="Inicio del video (MM:SS)" className="w-full bg-gray-700 p-2 rounded mb-4" value={newVideoOffset} onChange={e => setNewVideoOffset(e.target.value)} />
+                        <div className="flex gap-2 justify-end">
+                            <button onClick={() => setShowNewVideoModal(false)} className="px-3 py-2 bg-gray-600 rounded">Cancelar</button>
+                            <button onClick={handleCreateVideo} disabled={isCreatingVideo || !newVideoFileName} className="px-3 py-2 bg-green-600 rounded text-white">{isCreatingVideo ? <Spinner /> : 'Crear'}</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+};
+
+export default VideoTaggerPage;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
