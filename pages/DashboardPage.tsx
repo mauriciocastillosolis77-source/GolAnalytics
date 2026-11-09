@@ -9,7 +9,7 @@ import { exportTeamAnalysisToPDF } from '../services/pdfExportService';
 import { SelectorIdioma, AvisoExportIngles, useExportConIdioma } from '../components/ui/IdiomaExport';
 import { traducirObjeto } from '../services/traduccionService';
 import { useAuth } from '../contexts/AuthContext';
-import { cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios, esTagDeJugadorFicticio, calcularPorcentajeAtajadas } from '../utils/efectividad';
+import { cuentaEnEfectividad, esAccionLograda, obtenerIdsJugadoresFicticios, esTagDeJugadorFicticio, calcularPorcentajeAtajadas, esTiroDesviado } from '../utils/efectividad';
 import MapaZonas from '../components/charts/MapaZonas';
 import GolesPorTipo from '../components/charts/GolesPorTipo';
 import BalonParadoCard from '../components/charts/BalonParadoCard';
@@ -500,9 +500,10 @@ const DashboardPage: React.FC = () => {
 
     const rendimientoOfensivoPorteria = useMemo(() => {
         const tirosAPorteria = filteredTags.filter(t => t.accion === 'Tiros a portería').length;
+        const tirosDesviados = filteredTags.filter(esTiroDesviado).length;
         const golesAFavor = filteredTags.filter(t => t.accion === 'Goles a favor').length;
         const tasaConversion = tirosAPorteria > 0 ? (golesAFavor / tirosAPorteria) * 100 : 0;
-        return { tirosAPorteria, golesAFavor, tasaConversion };
+        return { tirosAPorteria, tirosDesviados, golesAFavor, tasaConversion };
     }, [filteredTags]);
 
     // Suma a todos los porteros del equipo dentro de los filtros activos.
@@ -931,6 +932,11 @@ const DashboardPage: React.FC = () => {
                                 <div className="relative">
                                     <p className="text-5xl font-bold text-white">{rendimientoOfensivoPorteria.tirosAPorteria}</p>
                                     <p className="text-gray-400 mt-2">Tiros a Portería</p>
+                                    {rendimientoOfensivoPorteria.tirosDesviados > 0 && (
+                                        <p className="text-xs text-gray-500 mt-1">
+                                            {rendimientoOfensivoPorteria.tirosAPorteria - rendimientoOfensivoPorteria.tirosDesviados} a portería · {rendimientoOfensivoPorteria.tirosDesviados} desviados
+                                        </p>
+                                    )}
                                 </div>
                                 <div className="relative border-l border-r border-gray-700 h-1/2 flex flex-col justify-center">
                                     <p className="text-5xl font-bold text-white">{rendimientoOfensivoPorteria.golesAFavor}</p>

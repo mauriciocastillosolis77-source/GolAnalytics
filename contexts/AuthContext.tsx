@@ -1,4 +1,4 @@
-import React, { createContext, useState, useEffect, useContext, ReactNode } from 'react';
+import React, { createContext, useState, useEffect, useContext, useRef, ReactNode } from 'react';
 import { supabase } from '../services/supabaseClient';
 import type { Session, User, AuthError } from '@supabase/supabase-js';
 import type { Profile, AuthContextType } from '../types';
@@ -10,6 +10,11 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
   const [session, setSession] = useState<Session | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
+  // Id del usuario que ya tiene la sesión cargada. Supabase vuelve a avisar "SIGNED_IN"
+  // cada vez que la pestaña regresa a primer plano (abrir otra ventana, un mensaje, etc.).
+  // Antes eso mostraba la rueda de carga y desmontaba la página abierta: en el Etiquetador
+  // se perdían las jugadas sin guardar. Si es el mismo usuario, ahora solo se actualiza la sesión.
+  const userIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const initializeAuth = async () => {
@@ -25,6 +30,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setSession(session);
       const currentUser = session?.user ?? null;
       setUser(currentUser);
+      userIdRef.current = currentUser?.id ?? null;
 
       // 2. If user exists, get their profile
       if (currentUser) {
@@ -59,6 +65,12 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       console.log('[AuthContext] Auth event:', event, 'Session exists:', !!newSession);
       
       // Only process significant auth events, ignore token refreshes
+      const mismoUsuario = event === 'SIGNED_IN' && !!newSession?.user?.id && newSession.user.id === userIdRef.current;
+      if (mismoUsuario) {
+        // La pestaña volvió a primer plano con el mismo usuario: no es un inicio de sesión nuevo.
+        setSession(newSession);
+        return;
+      }
       const shouldProcessEvent = event === 'SIGNED_IN' || event === 'SIGNED_OUT';
       
       if (!shouldProcessEvent) {
@@ -75,6 +87,7 @@ export const AuthProvider: React.FC<{ children: ReactNode }> = ({ children }) =>
       setSession(newSession);
       const newCurrentUser = newSession?.user ?? null;
       setUser(newCurrentUser);
+      userIdRef.current = newCurrentUser?.id ?? null;
 
       if (newCurrentUser) {
         try {

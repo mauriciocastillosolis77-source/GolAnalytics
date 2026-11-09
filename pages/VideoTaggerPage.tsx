@@ -12,7 +12,7 @@ import { fetchVideosForMatch, createVideoForMatch, updateVideoMeta, Video as Vid
 import { secondsToMmss } from '../utils/time';
 import { fetchTeams, getOrCreateTeam, type Team } from '../services/teamsService';
 import { ACCIONES_CON_ZONA, TERCIOS, CARRILES, TERCIO_LABEL, CARRIL_LABEL, codigoZona, etiquetaZona, zonaDesdeVoz } from '../utils/zonas';
-import { esJugadorFicticio } from '../utils/efectividad';
+import { esJugadorFicticio, ACCION_TIRO } from '../utils/efectividad';
 import { ACCIONES_GOL, TIPOS_GOL, TIPO_GOL_LABEL, GOLPEOS, GOLPEO_LABEL, detalleGolDe, detalleGolDesdeVoz, resumenGol, etiquetaPorteria, type DetalleGol } from '../utils/goles';
 import PorteriaEstadio from '../components/charts/PorteriaEstadio';
 import { accionDesdeVoz } from '../utils/accionDesdeVoz';
@@ -21,6 +21,31 @@ import { ACCION_CAMBIO, detalleCambioDe, resumenCambio } from '../utils/cambios'
 import { fetchEstatusPartido, guardarEstatusPartido } from '../services/asistenciaService';
 
 declare var XLSX: any;
+
+
+// ── Respaldo local de jugadas sin guardar (por partido, solo en este navegador) ──
+const claveBorradorTags = (matchId: string) => `gol_etiquetador_borrador_${matchId}`;
+
+function leerBorradorTags(matchId: string): { tags: Tag[]; guardadoEn: string } | null {
+    try {
+        const raw = localStorage.getItem(claveBorradorTags(matchId));
+        if (!raw) return null;
+        const d = JSON.parse(raw);
+        const lista = Array.isArray(d?.tags) ? (d.tags as Tag[]).filter(t => t && String(t.id).startsWith('temp-') && t.match_id === matchId) : [];
+        return { tags: lista, guardadoEn: typeof d?.guardadoEn === 'string' ? d.guardadoEn : '' };
+    } catch {
+        return null;
+    }
+}
+
+function escribirBorradorTags(matchId: string, lista: Tag[]): void {
+    try {
+        if (lista.length === 0) localStorage.removeItem(claveBorradorTags(matchId));
+        else localStorage.setItem(claveBorradorTags(matchId), JSON.stringify({ guardadoEn: new Date().toISOString(), tags: lista }));
+    } catch {
+        // Sin espacio o almacenamiento bloqueado: el etiquetado sigue funcionando sin respaldo.
+    }
+}
 
 const VideoTaggerPage: React.FC = () => {
     // Section 1: Match Management
@@ -84,6 +109,12 @@ const VideoTaggerPage: React.FC = () => {
     // Section 3: Tagging
     const [players, setPlayers] = useState<Player[]>([]);
     const [tags, setTags] = useState<Tag[]>([]);
+    // Respaldo de las jugadas sin guardar (localStorage, por partido). Si la página se recarga
+    // o se cierra antes de "Guardar", al volver a abrir el partido sale un aviso para recuperarlas.
+    // `tagsCargadosDe` evita escribir el respaldo antes de terminar de cargar el partido
+    // (si no, borraría el respaldo antes de poder ofrecerlo).
+    const [tagsCargadosDe, setTagsCargadosDe] = useState<string | null>(null);
+    const [borradorPrevio, setBorradorPrevio] = useState<{ matchId: string; tags: Tag[]; guardadoEn: string } | null>(null);
     const [selectedPlayerId, setSelectedPlayerId] = useState<string>('');
     const [selectedAction, setSelectedAction] = useState<string>(METRICS[0]);
 
@@ -166,6 +197,36 @@ const VideoTaggerPage: React.FC = () => {
             .filter(p => p.team_id === selectedMatch.team_id)
             .sort((a, b) => a.numero - b.numero);
     }, [players, selectedMatchId, matches, tags, estatusPorJugador]);
+
+    // Respaldo automático: cada cambio en las jugadas sin guardar del partido abierto se copia
+    // al navegador. Mientras el aviso de "recuperar" sigue sin contestar, se conservan también
+    // las jugadas del respaldo anterior, para no perderlas si el aviso se ignora.
+    useEffect(() => {
+        if (!selectedMatchId || tagsCargadosDe !== selectedMatchId) return;
+        const temporales = tags.filter(t => String(t.id).startsWith('temp-') && t.match_id === selectedMatchId);
+        const previas = borradorPrevio?.matchId === selectedMatchId ? borradorPrevio.tags : [];
+        const todas = [...previas, ...temporales.filter(t => !previas.some(p => p.id === t.id))];
+        escribirBorradorTags(selectedMatchId, todas);
+    }, [tags, selectedMatchId, tagsCargadosDe, borradorPrevio]);
+
+    // Aviso del navegador si intentas cerrar o recargar con jugadas sin guardar.
+    const hayJugadasSinGuardar = tags.some(t => String(t.id).startsWith('temp-'));
+    useEffect(() => {
+        if (!hayJugadasSinGuardar) return;
+        const avisar = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+        window.addEventListener('beforeunload', avisar);
+        return () => window.removeEventListener('beforeunload', avisar);
+    }, [hayJugadasSinGuardar]);
+
+    const recuperarBorrador = () => {
+        if (!borradorPrevio || borradorPrevio.matchId !== selectedMatchId) return;
+        const recuperadas = borradorPrevio.tags;
+        setTags(prev => [...prev, ...recuperadas.filter(r => !prev.some(t => t.id === r.id))].sort((a, b) => a.timestamp - b.timestamp));
+        setBorradorPrevio(null);
+        setSaveStatus({ message: `Se recuperaron ${recuperadas.length} jugadas. Recuerda presionar "Guardar".`, type: 'success' });
+    };
+
+    const descartarBorrador = () => setBorradorPrevio(null);
 
     // Filtro de la lista "Jugadas Etiquetadas". Es solo de vista: no cambia `tags` ni lo que se guarda.
     const [filtroAccion, setFiltroAccion] = useState<string>('');
@@ -266,6 +327,9 @@ const VideoTaggerPage: React.FC = () => {
             try {
                 const { data: tagsData } = await supabase.from('tags').select('*').eq('match_id', selectedMatchId).order('timestamp', { ascending: true });
                 setTags(tagsData || []);
+                const previo = leerBorradorTags(selectedMatchId);
+                setBorradorPrevio(previo && previo.tags.length > 0 ? { matchId: selectedMatchId, ...previo } : null);
+                setTagsCargadosDe(selectedMatchId);
                 const { data: playersData } = await supabase.from('players').select('*');
                 setPlayers(playersData || []);
                 
@@ -613,7 +677,7 @@ const VideoTaggerPage: React.FC = () => {
 
         // Mejora 1: si es recuperación o pérdida de un jugador real, pedir la zona en el panel de detalle.
         const jugadorDelTag = players.find(p => p.id === selectedPlayerId);
-        if ((ACCIONES_CON_ZONA.has(accion) || ACCIONES_GOL.has(accion) || ACCIONES_ABP_SET.has(accion) || accion === ACCION_CAMBIO) && !esJugadorFicticio(jugadorDelTag?.nombre)) {
+        if ((ACCIONES_CON_ZONA.has(accion) || ACCIONES_GOL.has(accion) || ACCIONES_ABP_SET.has(accion) || accion === ACCION_CAMBIO || accion === ACCION_TIRO) && !esJugadorFicticio(jugadorDelTag?.nombre)) {
             setDetallePendiente({ id: newTag.id, match_id: newTag.match_id, player_id: newTag.player_id, accion: newTag.accion, timestamp: newTag.timestamp });
         } else {
             setDetallePendiente(null);
@@ -729,6 +793,28 @@ const VideoTaggerPage: React.FC = () => {
         }
         setTags(prev => prev.map(t => (t.id === tag.id ? { ...t, detalle: nuevo } : t)));
         return `🚩 ${resumenAbp(tag.accion, detalleAbpDe({ accion: tag.accion, detalle: nuevo })) || 'Detalle guardado'}`;
+    };
+
+    // Tiros: 'logrado' = fue a portería, 'fallado' = desviado. Cambia la columna `resultado`
+    // (la misma que usan Logrado/Fallado en el resto de la plataforma). Si la jugada ya
+    // estaba guardada, se actualiza en Supabase al momento; si no, se guarda con "Guardar".
+    const aplicarResultadoTiro = async (resultado: 'logrado' | 'fallado'): Promise<string> => {
+        const pend = detallePendiente;
+        if (!pend) return '⚠ No hay tiro esperando detalle';
+        const tag = tags.find(t => t.id === pend.id)
+            || tags.find(t => t.match_id === pend.match_id && t.player_id === pend.player_id && t.accion === pend.accion && t.timestamp === pend.timestamp);
+        setDetallePendiente(null);
+        if (!tag) return '⚠ No encontré la jugada';
+        const esTemporal = String(tag.id).startsWith('temp-');
+        if (!esTemporal) {
+            const { error } = await supabase.from('tags').update({ resultado }).eq('id', tag.id);
+            if (error) {
+                console.error('Error al guardar el resultado del tiro', error);
+                return '⚠ No se pudo guardar el tiro';
+            }
+        }
+        setTags(prev => prev.map(t => (t.id === tag.id ? { ...t, resultado } : t)));
+        return resultado === 'logrado' ? '🎯 Tiro a portería' : '↗ Tiro desviado';
     };
 
     // Cambios: guarda quién sale (el que entra ya es el player_id del tag).
@@ -1498,6 +1584,23 @@ const VideoTaggerPage: React.FC = () => {
                 return;
             }
         }
+        // Tiro: "desviado" / "fuera" → desviado; "a portería" / "a puerta" / "acertado" → a portería.
+        if (detallePendiente && detallePendiente.accion === ACCION_TIRO) {
+            const t = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+            if (/\blisto\b|\bsaltar\b/.test(t)) {
+                setDetallePendiente(null);
+                show('✅ Tiro sin marcar (cuenta como a portería)');
+                return;
+            }
+            if (/\bdesviad|\bfuera\b|\bafuera\b|\bse salio\b/.test(t)) {
+                aplicarResultadoTiro('fallado').then(show);
+                return;
+            }
+            if (/\bacertad|\ba porteria\b|\ba puerta\b|\bal arco\b|\bentre los tres palos\b/.test(t) && !/\btiro\b/.test(t)) {
+                aplicarResultadoTiro('logrado').then(show);
+                return;
+            }
+        }
         if (detallePendiente && ACCIONES_CON_ZONA.has(detallePendiente.accion)) {
             if (/\bsaltar\b|\bsin zona\b/.test(text)) {
                 aplicarZona(null).then(show);
@@ -1877,18 +1980,23 @@ const VideoTaggerPage: React.FC = () => {
 <head><meta charset="utf-8"><title>Video - GolAnalytics</title>
 <style>
   body { margin:0; padding:0; background:#000; display:flex; flex-direction:column; align-items:center; justify-content:center; width:100vw; height:100vh; font-family:sans-serif; }
-  /* Este wrapper (video + controles) es lo que se pone en pantalla completa —
-     así los botones no desaparecen al maximizar, como sí pasaba poniendo
-     pantalla completa solo al <video>. Los controles van ENCIMA del video
-     (no debajo, empujándolo) para que el video use toda la pantalla, igual
-     que con el ícono nativo de pantalla completa. */
-  #wrapper { position:relative; display:flex; align-items:center; justify-content:center; width:100%; height:100%; background:#000; }
-  /* "viewport" recorta lo que se ve; el <video> de adentro es el que se agranda
-     y se arrastra — así el zoom no rompe el layout de la página. */
-  #viewport { max-width:100%; max-height:100%; overflow:hidden; position:relative; cursor:grab; }
+  /* Este wrapper (video + controles) es lo que se pone en pantalla completa,
+     así los botones no desaparecen al maximizar. Los controles van DEBAJO del
+     video (no encima): antes tapaban la barra de avance y el play/pausa del
+     navegador, que en pantalla completa quedaban escondidos. Ahora la barra
+     propia trae play/pausa, avance con tiempo y sonido. */
+  #wrapper { display:flex; flex-direction:column; width:100%; height:100%; background:#000; }
+  #stage { flex:1; min-height:0; position:relative; }
+  /* "viewport" ocupa todo el espacio libre arriba de los controles y recorta lo
+     que se ve; el <video> de adentro es el que se agranda y se arrastra — así el
+     zoom no rompe el layout de la página. */
+  #viewport { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; overflow:hidden; cursor:grab; }
   #viewport.dragging { cursor:grabbing; }
   video { max-width:100%; max-height:100%; display:block; transform-origin: 0 0; }
-  .controls { position:absolute; left:0; right:0; bottom:0; display:flex; gap:10px; padding:10px 14px; flex-wrap:wrap; justify-content:center; align-items:center; background:rgba(0,0,0,0.65); box-sizing:border-box; }
+  .barra { display:flex; align-items:center; gap:10px; padding:6px 14px 0; background:#0b1220; color:#e5e7eb; font-size:14px; font-variant-numeric:tabular-nums; }
+  #progreso { flex:1; height:6px; accent-color:#06b6d4; cursor:pointer; }
+  .controls { display:flex; gap:10px; padding:8px 14px 10px; flex-wrap:wrap; justify-content:center; align-items:center; background:#0b1220; box-sizing:border-box; }
+  #playBtn { min-width:110px; background:#0e7490; }
   button { background:#1e293b; color:#fff; border:1px solid #475569; border-radius:8px; padding:8px 18px; font-size:15px; font-weight:bold; cursor:pointer; }
   button:hover { background:#0e7490; }
   select { background:#1e293b; color:#fff; border:1px solid #475569; border-radius:8px; padding:8px 10px; font-size:15px; font-weight:bold; cursor:pointer; }
@@ -1897,10 +2005,18 @@ const VideoTaggerPage: React.FC = () => {
 </head>
 <body>
 <div id="wrapper">
+<div id="stage">
 <div id="viewport">
-<video id="vid" src="${activeVideoUrl}" controls autoplay controlsList="nofullscreen"></video>
+<video id="vid" src="${activeVideoUrl}" autoplay></video>
+</div>
+</div>
+<div class="barra">
+  <span id="tActual">00:00</span>
+  <input id="progreso" type="range" min="0" max="0" step="0.1" value="0" />
+  <span id="tTotal">00:00</span>
 </div>
 <div class="controls">
+  <button id="playBtn" onclick="togglePlay()" title="Play / pausa (barra espaciadora)">⏸ Pausa</button>
   <button onclick="document.getElementById('vid').currentTime -= 10">⏪ -10s</button>
   <button onclick="document.getElementById('vid').currentTime += 10">+10s ⏩</button>
   <select id="speed" onchange="document.getElementById('vid').playbackRate = parseFloat(this.value)">
@@ -1915,6 +2031,7 @@ const VideoTaggerPage: React.FC = () => {
   <span id="zoomLabel">100%</span>
   <button onclick="zoomBy(0.5)" title="Acercar a la jugada">🔍+</button>
   <button onclick="resetZoom()" title="Quitar zoom">Zoom 1:1</button>
+  <button id="sonidoBtn" onclick="toggleSonido()" title="Silenciar / activar sonido">🔊</button>
 </div>
 </div>
 <script>
@@ -1922,6 +2039,41 @@ const VideoTaggerPage: React.FC = () => {
   var viewport = document.getElementById('viewport');
   var zoomLabel = document.getElementById('zoomLabel');
   var lastSent = 0;
+
+  // ── Play/pausa, barra de avance y sonido (reemplazan los controles del navegador) ──
+  var playBtn = document.getElementById('playBtn');
+  var progreso = document.getElementById('progreso');
+  var tActual = document.getElementById('tActual');
+  var tTotal = document.getElementById('tTotal');
+  var sonidoBtn = document.getElementById('sonidoBtn');
+  var arrastrandoBarra = false;
+  function fmt(t) {
+    t = Math.max(0, Math.floor(t || 0));
+    var h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), sec = t % 60;
+    var mm = (m < 10 ? '0' : '') + m, ss = (sec < 10 ? '0' : '') + sec;
+    return h > 0 ? h + ':' + mm + ':' + ss : mm + ':' + ss;
+  }
+  function togglePlay() { if (vid.paused) vid.play(); else vid.pause(); }
+  function toggleSonido() { vid.muted = !vid.muted; sonidoBtn.textContent = vid.muted ? '🔇' : '🔊'; }
+  function pintarPlay() { playBtn.textContent = vid.paused ? '▶ Play' : '⏸ Pausa'; }
+  function pintarTiempo() {
+    if (!arrastrandoBarra) progreso.value = vid.currentTime;
+    tActual.textContent = fmt(vid.currentTime);
+  }
+  vid.addEventListener('loadedmetadata', function() { progreso.max = vid.duration || 0; tTotal.textContent = fmt(vid.duration); pintarTiempo(); });
+  vid.addEventListener('durationchange', function() { progreso.max = vid.duration || 0; tTotal.textContent = fmt(vid.duration); });
+  vid.addEventListener('timeupdate', pintarTiempo);
+  vid.addEventListener('play', pintarPlay);
+  vid.addEventListener('pause', pintarPlay);
+  progreso.addEventListener('input', function() { arrastrandoBarra = true; tActual.textContent = fmt(parseFloat(progreso.value)); });
+  progreso.addEventListener('change', function() { vid.currentTime = parseFloat(progreso.value); arrastrandoBarra = false; progreso.blur(); });
+  // Teclas: espacio = play/pausa, ← / → = 5 segundos.
+  document.addEventListener('keydown', function(e) {
+    if (e.target && (e.target.tagName === 'SELECT')) return;
+    if (e.code === 'Space') { e.preventDefault(); togglePlay(); }
+    else if (e.code === 'ArrowLeft') { e.preventDefault(); vid.currentTime = Math.max(0, vid.currentTime - 5); }
+    else if (e.code === 'ArrowRight') { e.preventDefault(); vid.currentTime += 5; }
+  });
 
   // ── Zoom digital + arrastrar (zoom óptico no es posible: el video ya
   // quedó grabado con una cantidad fija de píxeles, esto solo los agranda). ──
@@ -1952,10 +2104,14 @@ const VideoTaggerPage: React.FC = () => {
     panY = startPanY + (e.clientY - startY);
     applyZoom();
   });
+  var movido = false;
   window.addEventListener('mouseup', function() {
     dragging = false;
     viewport.classList.remove('dragging');
   });
+  viewport.addEventListener('mousedown', function() { movido = false; });
+  window.addEventListener('mousemove', function() { if (dragging) movido = true; });
+  viewport.addEventListener('click', function() { if (!movido) togglePlay(); });
   vid.addEventListener('timeupdate', function() {
     var now = Date.now();
     if (now - lastSent >= 500) {
@@ -2131,6 +2287,25 @@ const VideoTaggerPage: React.FC = () => {
                         )}
                     </div>
                     
+                    {/* Respaldo de jugadas sin guardar de la última vez */}
+                    {borradorPrevio && borradorPrevio.matchId === selectedMatchId && (
+                        <div className="mt-2 p-2 rounded border border-yellow-500 bg-yellow-900/40 text-yellow-100 text-sm">
+                            <p>
+                                Tienes <strong>{borradorPrevio.tags.length}</strong> {borradorPrevio.tags.length === 1 ? 'jugada' : 'jugadas'} sin guardar de la última vez
+                                {borradorPrevio.guardadoEn ? ` (${new Date(borradorPrevio.guardadoEn).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' })})` : ''}.
+                            </p>
+                            <div className="flex gap-2 mt-2">
+                                <button onClick={recuperarBorrador} className="flex-1 bg-yellow-600 hover:bg-yellow-500 text-black font-semibold px-3 py-1.5 rounded">Recuperar</button>
+                                <button onClick={descartarBorrador} className="flex-1 bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded">Descartar</button>
+                            </div>
+                        </div>
+                    )}
+                    {hayJugadasSinGuardar && !(borradorPrevio && borradorPrevio.matchId === selectedMatchId) && (
+                        <p className="mt-2 text-xs text-yellow-300 text-center">
+                            {tags.filter(t => String(t.id).startsWith('temp-')).length} jugadas sin guardar · respaldadas en este navegador
+                        </p>
+                    )}
+
                     {/* BOTÓN seguro */}
                     <button
                         onClick={() => {
@@ -2224,7 +2399,16 @@ const VideoTaggerPage: React.FC = () => {
                                         >
                                             ▶ {formatTime(tag.timestamp)}
                                         </button>
-                                        <div className="text-xs text-gray-300">{tag.accion} {tag.resultado && <span className={isSuccess ? 'text-green-300' : 'text-red-300'}>{tag.resultado}</span>}</div>
+                                        <div className="text-xs text-gray-300">{tag.accion} {tag.accion !== ACCION_TIRO && tag.resultado && <span className={isSuccess ? 'text-green-300' : 'text-red-300'}>{tag.resultado}</span>}</div>
+                                        {tag.accion === ACCION_TIRO && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (
+                                            <button
+                                                onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
+                                                className={`block text-xs mt-1 underline text-left ${isSuccess ? 'text-green-300' : isFailure ? 'text-red-300' : 'text-gray-400'}`}
+                                                title="Marcar o cambiar si fue a portería o desviado"
+                                            >
+                                                {isSuccess ? '🎯 A portería' : isFailure ? '↗ Desviado' : '+ ¿a portería o desviado?'}
+                                            </button>
+                                        )}
                                         {ACCIONES_CON_ZONA.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (
                                             <button
                                                 onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
@@ -2613,6 +2797,44 @@ const VideoTaggerPage: React.FC = () => {
                                 </div>
                             </div>
                         );
+                    })() : detallePendiente && detallePendiente.accion === ACCION_TIRO ? (() => {
+                        const jug = players.find(p => p.id === detallePendiente.player_id);
+                        const tagActual = tags.find(t => t.id === detallePendiente.id)
+                            || tags.find(t => t.match_id === detallePendiente.match_id && t.player_id === detallePendiente.player_id && t.accion === detallePendiente.accion && t.timestamp === detallePendiente.timestamp);
+                        const actual = tagActual?.resultado || '';
+                        const avisar = (msg: string) => { setVoiceStatus(msg); setTimeout(() => setVoiceStatus(''), 2500); };
+                        return (
+                            <div className="space-y-2">
+                                <p className="text-sm text-gray-200">
+                                    Tiro · {jug ? `#${jug.numero} ${jug.nombre.trim().split(/\s+/)[0]}` : 'Jugador'} · <span className="text-gray-400">¿fue a portería?</span>
+                                </p>
+                                <div className="flex gap-2">
+                                    <button
+                                        onClick={() => { aplicarResultadoTiro('logrado').then(avisar); }}
+                                        className={`flex-1 min-h-[44px] rounded text-sm font-semibold border-2 ${actual === 'logrado' ? 'bg-green-700 border-green-300 text-white' : 'bg-gray-700 border-transparent hover:bg-green-800 text-gray-100'}`}
+                                    >
+                                        🎯 A portería
+                                    </button>
+                                    <button
+                                        onClick={() => { aplicarResultadoTiro('fallado').then(avisar); }}
+                                        className={`flex-1 min-h-[44px] rounded text-sm font-semibold border-2 ${actual === 'fallado' ? 'bg-red-700 border-red-300 text-white' : 'bg-gray-700 border-transparent hover:bg-red-800 text-gray-100'}`}
+                                    >
+                                        ↗ Desviado
+                                    </button>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <p className="flex-1 text-xs bg-gray-900 rounded px-2 py-1.5 text-gray-300">
+                                        Di: <span className="text-cyan-300">"a portería"</span> o <span className="text-cyan-300">"desviado"</span>. Desviado cuenta como fallado en la efectividad. Si no marcas nada, cuenta como a portería.
+                                    </p>
+                                    <button
+                                        onClick={() => setDetallePendiente(null)}
+                                        className="px-3 py-2 rounded bg-gray-600 hover:bg-gray-500 text-sm whitespace-nowrap"
+                                    >
+                                        Saltar
+                                    </button>
+                                </div>
+                            </div>
+                        );
                     })() : detallePendiente && detallePendiente.accion === ACCION_CAMBIO ? (() => {
                         const entra = players.find(p => p.id === detallePendiente.player_id);
                         const tagActual = tags.find(t => t.id === detallePendiente.id)
@@ -2672,7 +2894,7 @@ const VideoTaggerPage: React.FC = () => {
                             </div>
                         );
                     })() : (
-                        <p className="text-sm text-gray-400">Aparece al etiquetar una recuperación o una pérdida (zona), un gol (tipo, área y portería) o un balón parado o penal.</p>
+                        <p className="text-sm text-gray-400">Aparece al etiquetar una recuperación o una pérdida (zona), un tiro (a portería o desviado), un gol (tipo, área y portería) o un balón parado o penal.</p>
                     )}
                 </div>
 

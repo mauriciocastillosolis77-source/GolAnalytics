@@ -8,9 +8,11 @@ import { ACCIONES_ABP } from './balonParado';
 // Efectividad = acciones verdes / (acciones verdes + acciones rojas) × 100
 //
 // VERDE: toda acción con resultado 'logrado', Transición ofensiva lograda,
-//        Recuperación de balón, Tiros a portería, Goles a favor, Atajadas.
+//        Recuperación de balón, Goles a favor, Atajadas.
+//        Tiros a portería: verde si fue a portería ('logrado') o si no se marcó
+//        (los tiros viejos, de antes de existir "desviado", siguen contando verde).
 // ROJO:  toda acción con resultado 'fallado', Transición ofensiva no lograda,
-//        Pérdida de balón (de un jugador real).
+//        Pérdida de balón (de un jugador real), Tiro a portería desviado ('fallado').
 // NO CUENTAN en efectividad:
 //   - Goles recibidos (se muestran solo como número).
 //   - Balón parado y penales (Córner / Tiro libre / Penal, a favor y en contra):
@@ -24,7 +26,6 @@ import { ACCIONES_ABP } from './balonParado';
 export const ACCIONES_SIEMPRE_LOGRADA = new Set<string>([
     'Transición ofensiva lograda',
     'Recuperación de balón',
-    'Tiros a portería',
     'Goles a favor',
     'Atajadas',
 ]);
@@ -64,9 +65,16 @@ export const cuentaEnEfectividad = (tag: Tag, idsFicticios: Set<string>): boolea
     return true;
 };
 
+export const ACCION_TIRO = 'Tiros a portería';
+
+// Tiro a portería: 'logrado' = fue a portería, 'fallado' = desviado, '' = sin marcar.
+export const esTiroDesviado = (tag: Pick<Tag, 'accion' | 'resultado'>): boolean =>
+    tag.accion === ACCION_TIRO && tag.resultado === 'fallado';
+
 // ¿La acción cuenta como verde? (usar solo sobre acciones que cuentan en efectividad)
 export const esAccionLograda = (tag: Tag): boolean => {
     if (ACCIONES_SIEMPRE_LOGRADA.has(tag.accion)) return true;
+    if (tag.accion === ACCION_TIRO) return tag.resultado !== 'fallado';
     if (ACCIONES_SIEMPRE_FALLADA.has(tag.accion)) return false;
     return tag.resultado === 'logrado';
 };
