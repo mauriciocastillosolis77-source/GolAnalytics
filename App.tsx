@@ -58,7 +58,7 @@ const App: React.FC = () => {
               path="/tagger" 
               element={
                 <ProtectedRoute allowedRoles={[ROLES.ADMIN]}>
-                  <Layout><VideoTaggerPage /></Layout>
+                  <Layout compacto><VideoTaggerPage /></Layout>
                 </ProtectedRoute>
               } 
             />
