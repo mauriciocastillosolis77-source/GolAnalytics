@@ -13,7 +13,9 @@ const ScoutingIcon: React.FC = () => (
 
 const _forceTailwindClasses = ["translate-x-0", "-translate-x-64"];
 
-const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) => void }> = ({ sidebarOpen, setSidebarOpen }) => {
+// compacto: en pantallas grandes el menú se muestra solo con íconos (lo usa el Etiquetador para dejar
+// más espacio al video). onCambiarCompacto muestra el botón » / « para abrirlo o cerrarlo.
+const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) => void; compacto?: boolean; onCambiarCompacto?: () => void }> = ({ sidebarOpen, setSidebarOpen, compacto = false, onCambiarCompacto }) => {
   const { profile } = useAuth();
   const trigger = useRef<HTMLButtonElement>(null);
   const sidebar = useRef<HTMLDivElement>(null);
@@ -48,6 +50,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
         ref={sidebar}
         className={`
           fixed z-50 left-0 top-0 h-screen w-64 bg-gray-800 p-4 flex flex-col transition-transform duration-200 ease-in-out
+          ${compacto ? 'lg:w-16 lg:p-2 lg:[&_span]:hidden lg:[&_.mt-auto]:hidden' : ''}
           ${sidebarOpen ? 'translate-x-0' : '-translate-x-64'}
           lg:static lg:translate-x-0 lg:z-auto
         `}
@@ -62,13 +65,24 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
           </svg>
         </button>
 
-        <div className="flex items-center mb-8">
+        <div className={`flex items-center ${onCambiarCompacto ? 'mb-3' : 'mb-8'}`}>
           <Logo className="h-10 w-10 text-cyan-400" />
           <span className="ml-3 text-2xl font-bold text-white">GolAnalytics</span>
         </div>
+        {onCambiarCompacto && (
+          <button
+            type="button"
+            onClick={onCambiarCompacto}
+            className="hidden lg:flex items-center justify-center mb-4 h-8 w-full rounded-lg border border-gray-600 bg-gray-700 text-gray-200 hover:bg-gray-600 text-sm"
+            title={compacto ? 'Mostrar el menú completo' : 'Dejar solo los íconos'}
+            aria-label={compacto ? 'Mostrar el menú completo' : 'Dejar solo los íconos'}
+          >
+            {compacto ? '»' : '«'}
+          </button>
+        )}
 
         <nav className="space-y-2">
-          <NavLink
+          <NavLink title="Tablero"
             to="/dashboard"
             className={({ isActive }) =>
               `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
@@ -79,7 +93,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
             <span className="ml-3">Tablero</span>
           </NavLink>
 
-          <NavLink
+          <NavLink title="Rendimiento"
             to="/rendimiento"
             className={({ isActive }) =>
               `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
@@ -90,7 +104,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
             <span className="ml-3">Rendimiento</span>
           </NavLink>
 
-          <NavLink
+          <NavLink title="Análisis Táctico"
             to="/analisis-tactico"
             className={({ isActive }) =>
               `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
@@ -101,7 +115,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
             <span className="ml-3">Análisis Táctico</span>
           </NavLink>
 
-          <NavLink
+          <NavLink title="Análisis del Rival"
             to="/analisis-rival"
             className={({ isActive }) =>
               `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
@@ -112,7 +126,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
             <span className="ml-3">Análisis del Rival</span>
           </NavLink>
 
-          <NavLink
+          <NavLink title="Modelo de juego"
             to="/modelo-juego"
             className={({ isActive }) =>
               `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
@@ -123,7 +137,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
             <span className="ml-3">Modelo de juego</span>
           </NavLink>
 
-          <NavLink
+          <NavLink title="Análisis Post Partido DT"
             to="/analisis-post-partido-dt"
             className={({ isActive }) =>
               `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
@@ -134,7 +148,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
             <span className="ml-3">Análisis Post Partido DT</span>
           </NavLink>
 
-          <NavLink
+          <NavLink title="Scouting DT"
             to="/scouting-dt"
             className={({ isActive }) =>
               `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
@@ -147,7 +161,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
 
           {profile?.rol === ROLES.ADMIN && (
             <>
-              <NavLink
+              <NavLink title="Etiquetador"
                 to="/tagger"
                 className={({ isActive }) =>
                   `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
@@ -157,7 +171,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
                 <TaggerIcon />
                 <span className="ml-3">Etiquetador</span>
               </NavLink>
-              <NavLink
+              <NavLink title="Usuarios"
                 to="/admin/users"
                 className={({ isActive }) =>
                   `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
@@ -167,7 +181,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
                 <UsersIcon />
                 <span className="ml-3">Usuarios</span>
               </NavLink>
-              <NavLink
+              <NavLink title="Análisis Ejecutivo Post Partido"
                 to="/generar-reportes"
                 className={({ isActive }) =>
                   `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`
@@ -177,7 +191,7 @@ const Sidebar: React.FC<{ sidebarOpen: boolean; setSidebarOpen: (open: boolean) 
                 <ReportIcon />
                 <span className="ml-3">Análisis Ejecutivo Post Partido</span>
               </NavLink>
-              <NavLink
+              <NavLink title="Scouting"
                 to="/scouting"
                 className={({ isActive }) =>
                   `flex items-center p-2 rounded-lg text-gray-300 hover:bg-gray-700 hover:text-white ${isActive ? 'bg-cyan-600 text-white' : ''}`

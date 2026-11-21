@@ -169,12 +169,36 @@ const VideoTaggerPage: React.FC = () => {
     // guardado en la base (el guardado cambia su id temporal por el real).
     const [detallePendiente, setDetallePendiente] = useState<{ id: string | number; match_id: string; player_id: string; accion: string; timestamp: number } | null>(null);
 
+    // Panel de atajos de teclado oculto (se etiqueta por voz); los atajos siguen activos.
+    const MOSTRAR_ATAJOS = false;
+
     // Voice Commands State
     const [isVoiceActive, setIsVoiceActive] = useState(false);
     const [voiceTranscript, setVoiceTranscript] = useState('');
     const [voiceStatus, setVoiceStatus] = useState<string>('');
     const recognitionRef = useRef<any>(null);
     const isVoiceActiveRef = useRef(false);
+    // Deepgram puede partir una frase en varios pedazos finales ("pase corto" + "ofensivo logrado").
+    // Se juntan aquí y se procesan cuando termina la frase (speech_final o una pausa corta).
+    const bufferVozRef = useRef('');
+    const timerVozRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    // Frase completa por voz (acción + jugador en una sola frase).
+    // vozParcial: palabras de una acción a la que le falta una parte ("aéreo ofensivo" sin logrado/fallado).
+    // dudaJugador: el nombre dicho corresponde a más de un jugador; no se elige ninguno hasta que diga el número.
+    // Mientras haya parcial o duda, "Etiquetar" no guarda (para no etiquetar con la acción o el jugador anterior).
+    const [vozParcial, setVozParcial] = useState('');
+    const [vozParcialDuda, setVozParcialDuda] = useState('');
+    const [dudaJugador, setDudaJugador] = useState('');
+    const [registroVoz, setRegistroVoz] = useState<{ hora: string; oido: string; entendido: string; ok: boolean }[]>([]);
+    const [registroAbierto, setRegistroAbierto] = useState(false);
+    // Diseño: paneles de preparación (partido, archivos, alineación, IA) en un panel flotante;
+    // lista de jugadas minimizable y botonera de jugadores ocultable (se recuerdan en este navegador).
+    const [configAbierto, setConfigAbierto] = useState(true);
+    const leerPref = (clave: string, def: boolean) => { try { const v = localStorage.getItem(clave); return v === null ? def : v === '1'; } catch { return def; } };
+    const [listaMinimizada, setListaMinimizada] = useState(() => leerPref('gol_etiquetador_lista_min', false));
+    const [jugadoresVisibles, setJugadoresVisibles] = useState(() => leerPref('gol_etiquetador_jugadores', false));
+    useEffect(() => { try { localStorage.setItem('gol_etiquetador_lista_min', listaMinimizada ? '1' : '0'); } catch { /* sin almacenamiento */ } }, [listaMinimizada]);
+    useEffect(() => { try { localStorage.setItem('gol_etiquetador_jugadores', jugadoresVisibles ? '1' : '0'); } catch { /* sin almacenamiento */ } }, [jugadoresVisibles]);
     const processVoiceCommandRef = useRef<(t: string) => void>(() => {});
     // Referencia a la ventana secundaria del video — se guarda al abrirla
     const secondaryWindowRef = useRef<Window | null>(null);
@@ -629,6 +653,12 @@ const VideoTaggerPage: React.FC = () => {
     const addTag = () => {
         if (!selectedPlayerId) return;
         if (!activeVideoUrl && !selectedVideo) return;
+        // Frase por voz incompleta: no se etiqueta con la acción o el jugador que quedaron de antes.
+        if (vozParcial || dudaJugador) {
+            setSaveStatus({ message: vozParcial ? `No se etiquetó: falta completar la acción (${vozParcialDuda || 'di lo que falta'})` : `No se etiquetó: ${dudaJugador}`, type: 'error' });
+            setTimeout(() => setSaveStatus(null), 3000);
+            return;
+        }
 
         const actionParts = selectedAction.split(' ');
 
@@ -1489,6 +1519,94 @@ const VideoTaggerPage: React.FC = () => {
         'noventa y siete': 97, 'noventa y ocho': 98, 'noventa y nueve': 99,
     };
 
+    // ── Frase completa por voz: ayudantes ─────────────────────────────────
+    const sinAcentoVoz = (s: string) => s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    const NUMEROS_VOZ: Record<string, number> = Object.fromEntries(
+        Object.entries(SPANISH_NUMBERS).map(([k, v]) => [sinAcentoVoz(k), v])
+    );
+    const etiquetaJugador = (p: Player) => `#${p.numero} ${p.nombre.trim().split(/\s+/)[0]}`;
+    // Busca al jugador dentro de la frase: "jugador X" en cualquier parte, o un número / nombre al final.
+    // Devuelve el resto de la frase (sin el jugador) para leer ahí la acción.
+    // Nunca adivina: si el nombre lo tienen dos jugadores, devuelve `duda` y no elige a ninguno.
+    const jugadorDesdeFrase = (texto: string): { jugador?: Player; duda?: string; noEncontrado?: string; resto: string } => {
+        const tokens = sinAcentoVoz(texto).replace(/[^a-z0-9ñ ]/g, ' ').split(/\s+/).filter(Boolean);
+        const numeroDe = (toks: string[]): number | null => {
+            const j = toks.join(' ');
+            if (/^\d{1,2}$/.test(j)) return parseInt(j, 10);
+            return j in NUMEROS_VOZ ? NUMEROS_VOZ[j] : null;
+        };
+        const conNumero = (n: number, resto: string) => {
+            const p = filteredPlayers.find(pl => pl.numero === n);
+            return p ? { jugador: p, resto } : { noEncontrado: `no encontré al jugador #${n}`, resto };
+        };
+        const conNombre = (palabra: string, resto: string, explicito: boolean) => {
+            const partes = (p: Player) => sinAcentoVoz(p.nombre).trim().split(/\s+/);
+            let hallados = filteredPlayers.filter(p => partes(p).some(x => x === palabra));
+            if (hallados.length === 0 && explicito) hallados = filteredPlayers.filter(p => partes(p).some(x => x.startsWith(palabra)));
+            if (hallados.length === 1) return { jugador: hallados[0], resto };
+            if (hallados.length > 1) {
+                const lista = hallados.map(p => `#${p.numero}`).join(' o ');
+                return { duda: `hay ${hallados.length} jugadores "${palabra}": ${lista} — di el número`, resto };
+            }
+            return explicito ? { noEncontrado: `no encontré al jugador "${palabra}"`, resto } : null;
+        };
+        // 1) "jugador X" (con o sin "número")
+        const i = tokens.indexOf('jugador');
+        if (i >= 0) {
+            const antes = tokens.slice(0, i).join(' ');
+            let despues = tokens.slice(i + 1);
+            if (despues[0] === 'numero') despues = despues.slice(1);
+            for (const k of [3, 2, 1]) {
+                if (despues.length >= k) {
+                    const n = numeroDe(despues.slice(0, k));
+                    if (n !== null) return conNumero(n, antes);
+                }
+            }
+            if (despues[0]) return conNombre(despues[0], antes, true) || { resto: antes };
+            return { resto: antes };
+        }
+        // 2) número al final ("... logrado catorce", "... 14", "treinta y dos")
+        for (const k of [3, 2, 1]) {
+            if (tokens.length >= k) {
+                const n = numeroDe(tokens.slice(-k));
+                if (n === null) continue;
+                const previo = tokens[tokens.length - k - 1];
+                // "uno contra uno", "1 vs 1": ese número es parte de la acción, no un jugador
+                if (k === 1 && previo && ['contra', 'vs', 'versus', 'con', 'a', 'x', 'por', 'y'].includes(previo)) continue;
+                return conNumero(n, tokens.slice(0, -k).join(' '));
+            }
+        }
+        // 3) nombre al final ("... fallado luis", "pérdida de balón perdida")
+        const ultima = tokens[tokens.length - 1];
+        if (ultima && ultima.length >= 3) {
+            const r = conNombre(ultima, tokens.slice(0, -1).join(' '), false);
+            if (r) return r;
+        }
+        return { resto: texto };
+    };
+    // Misma normalización que la VÍA 2 de abajo, para leer la acción en el resto de la frase.
+    const normalizarAccionVoz = (s: string) => s
+        .replace(/\bcontra\b/g, 'vs')
+        .replace(/\b1 vs 1\b|\buno vs uno\b|\buno contra uno\b/g, '1 vs 1')
+        .replace(/\báreo\b|\bhereo\b|\baereo\b/g, 'aéreo')
+        .replace(/\bperdida\b/g, 'pérdida')
+        .replace(/\btransicion\b/g, 'transición')
+        .replace(/\bdefensiva\b/g, 'defensivo')
+        .replace(/\bofensiva\b(?! lograda| no lograda)/g, 'ofensivo')
+        .replace(/\bfayado\b/g, 'fallado')
+        .replace(/\bfalado\b/g, 'fallado')
+        .replace(/\bfallada\b/g, 'fallado')
+        .replace(/\blograda\b(?! no)/g, 'logrado')
+        .replace(/\bno lograda\b/g, 'no lograda');
+    const accionEnFrase = (frase: string): { accion: string | null; duda?: string } => {
+        const f = frase.toLowerCase().trim();
+        if (!f) return { accion: null };
+        const n = normalizarAccionVoz(f);
+        const exacta = METRICS.find(m => n.includes(normalizarAccionVoz(m.toLowerCase())));
+        if (exacta) return { accion: exacta };
+        return accionDesdeVoz(f);
+    };
+
     // Keep the processVoiceCommand ref updated on every render so it
     // always closes over the latest state (avoids stale-closure bugs).
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1499,6 +1617,9 @@ const VideoTaggerPage: React.FC = () => {
         const show = (msg: string) => {
             setVoiceStatus(msg);
             setTimeout(() => setVoiceStatus(''), 2500);
+            // Registro de voz: lo que oyó el micrófono y lo que entendió la plataforma (para corregir palabras mal oídas).
+            const hora = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+            setRegistroVoz(prev => [{ hora, oido: transcript, entendido: msg, ok: !/^[❓⚠]/.test(msg) }, ...prev].slice(0, 80));
         };
 
         // ── Video controls ────────────────────────────────────────────────
@@ -1548,7 +1669,12 @@ const VideoTaggerPage: React.FC = () => {
         const accionAbpDicha = accionAbpDesdeVoz(text);
         if (accionAbpDicha) {
             setSelectedAction(accionAbpDicha);
-            show(`🎯 Acción: ${accionAbpDicha}`);
+            setVozParcial(''); setVozParcialDuda('');
+            // "córner a favor siete": también puede traer el jugador en la misma frase.
+            const extAbp = jugadorDesdeFrase(text);
+            if (extAbp.jugador) { setSelectedPlayerId(extAbp.jugador.id); setDudaJugador(''); }
+            else if (extAbp.duda) setDudaJugador(extAbp.duda);
+            show(extAbp.jugador ? `✅ ${accionAbpDicha} · ${etiquetaJugador(extAbp.jugador)} — di "etiquetar"` : extAbp.duda ? `🟠 ${accionAbpDicha} · ${extAbp.duda}` : `🎯 Acción: ${accionAbpDicha}`);
             return;
         }
         // Detalle de balón parado o penal: "primer palo remate en zona", "abajo izquierda gol", "listo".
@@ -1609,6 +1735,43 @@ const VideoTaggerPage: React.FC = () => {
             const zonaDicha = zonaDesdeVoz(text);
             if (zonaDicha) {
                 aplicarZona(zonaDicha).then(show);
+                return;
+            }
+        }
+
+        // ── Frase completa: acción + jugador en una sola frase ───────────────
+        // "aéreo ofensivo logrado catorce", "pase corto defensivo fallado luis",
+        // "pérdida de balón jugador perdida". También frases sueltas para completar:
+        // solo el jugador ("veintidós") o solo lo que faltaba de la acción ("logrado").
+        // Si no reconoce ni acción ni jugador, sigue con los comandos de siempre (tecla, etiquetar, guardar...).
+        const esAtajoTecla = /\b(tecla|letra|key|número|numero)\s+/.test(text) && !/\bjugador\b/.test(text);
+        if (!esAtajoTecla) {
+            const ext = jugadorDesdeFrase(text);
+            const resto = ext.resto.trim();
+            let acc = accionEnFrase(resto);
+            let base = resto;
+            if (!acc.accion && vozParcial && resto) {
+                const junto = accionEnFrase(vozParcial + ' ' + resto);
+                if (junto.accion || junto.duda) { acc = junto; base = vozParcial + ' ' + resto; }
+            }
+            const hayAlgo = !!(acc.accion || acc.duda || ext.jugador || ext.duda || ext.noEncontrado);
+            if (hayAlgo) {
+                if (acc.accion) {
+                    setSelectedAction(acc.accion);
+                    setVozParcial(''); setVozParcialDuda('');
+                } else if (acc.duda) {
+                    setVozParcial(base.trim()); setVozParcialDuda(acc.duda);
+                }
+                if (ext.jugador) { setSelectedPlayerId(ext.jugador.id); setDudaJugador(''); }
+                else if (ext.duda) setDudaJugador(ext.duda);
+                const faltaAccion = acc.duda || (!acc.accion && vozParcial ? vozParcialDuda : '');
+                const partes: string[] = [];
+                if (acc.accion) partes.push(acc.accion);
+                if (ext.jugador) partes.push(etiquetaJugador(ext.jugador));
+                if (faltaAccion) show(`🟠 Falta una parte: ${faltaAccion}${ext.jugador ? ` · ${etiquetaJugador(ext.jugador)}` : ''}`);
+                else if (ext.duda) show(`🟠 ${acc.accion ? acc.accion + ' · ' : ''}${ext.duda}`);
+                else if (ext.noEncontrado) show(`⚠ ${acc.accion ? acc.accion + ' · ' : ''}${ext.noEncontrado}`);
+                else show(`✅ ${partes.join(' · ')} — di "etiquetar"`);
                 return;
             }
         }
@@ -1791,7 +1954,14 @@ const VideoTaggerPage: React.FC = () => {
         // - language=es: español
         // - punctuate=false: evita puntuación que interfiere con los comandos
         // - interim_results=false: solo resultados finales
-        const url = `wss://api.deepgram.com/v1/listen?model=nova-2&language=es&punctuate=false&interim_results=false`;
+        // - endpointing=400: espera 0.4 s de silencio para dar la frase por terminada
+        // - keywords: nombres de los jugadores y palabras de las acciones, para que las reconozca mejor
+        const palabrasClave = Array.from(new Set([
+            ...filteredPlayers.flatMap(p => p.nombre.trim().split(/\s+/)).filter(w => w.length >= 3),
+            'aéreo', 'logrado', 'fallado', 'ofensivo', 'defensivo', 'recuperación', 'pérdida', 'transición', 'etiquetar', 'jugador',
+        ])).slice(0, 60);
+        const kw = palabrasClave.map(w => `&keywords=${encodeURIComponent(w)}:2`).join('');
+        const url = `wss://api.deepgram.com/v1/listen?model=nova-2&language=es&punctuate=false&interim_results=false&endpointing=400${kw}`;
         const socket = new WebSocket(url, ['token', DEEPGRAM_API_KEY]);
 
         socket.onopen = () => {
@@ -1820,9 +1990,22 @@ const VideoTaggerPage: React.FC = () => {
                 const data = JSON.parse(event.data);
                 // Solo procesar resultados finales con contenido
                 const transcript = data?.channel?.alternatives?.[0]?.transcript;
-                if (transcript && transcript.trim().length > 0 && data?.is_final) {
-                    setVoiceTranscript(transcript);
-                    processVoiceCommandRef.current(transcript);
+                if (!data?.is_final) return;
+                // Juntar los pedazos de una misma frase y procesarla completa al terminar de hablar.
+                if (transcript && transcript.trim().length > 0) {
+                    bufferVozRef.current = (bufferVozRef.current + ' ' + transcript.trim()).trim();
+                    setVoiceTranscript(bufferVozRef.current);
+                }
+                const procesar = () => {
+                    if (timerVozRef.current) { clearTimeout(timerVozRef.current); timerVozRef.current = null; }
+                    const frase = bufferVozRef.current.trim();
+                    bufferVozRef.current = '';
+                    if (frase) processVoiceCommandRef.current(frase);
+                };
+                if (data?.speech_final) procesar();
+                else if (bufferVozRef.current) {
+                    if (timerVozRef.current) clearTimeout(timerVozRef.current);
+                    timerVozRef.current = setTimeout(procesar, 900);
                 }
             } catch (_) {
                 // ignorar mensajes malformados
@@ -1857,6 +2040,8 @@ const VideoTaggerPage: React.FC = () => {
 
     const stopVoice = () => {
         isVoiceActiveRef.current = false;
+        if (timerVozRef.current) { clearTimeout(timerVozRef.current); timerVozRef.current = null; }
+        bufferVozRef.current = '';
 
         // Detener MediaRecorder
         if (recognitionRef.current) {
@@ -1895,7 +2080,7 @@ const VideoTaggerPage: React.FC = () => {
     if (isLoading) return <div className="flex items-center justify-center h-full"><Spinner /></div>;
 
     return (
-        <div className="flex h-full gap-4 p-4">
+        <div className="relative flex h-full gap-3">
             <canvas ref={canvasRef} style={{ display: 'none' }}></canvas>
             {isSuggestionsModalOpen && (
                 <AISuggestionsModal
@@ -1907,9 +2092,11 @@ const VideoTaggerPage: React.FC = () => {
                 />
             )}
 
-            {/* Left Column: Video and Tagged Plays */}
-            <div className="flex-1 flex flex-col gap-4 overflow-y-auto">
-                <div className="bg-gray-800 rounded-lg p-4 flex flex-col">
+            {/* COLUMNA A: video (grande en la laptop; franja si el video está en otra ventana) + frase/Etiquetar.
+                El video SIEMPRE es el primer hijo de esta columna para que no se vuelva a montar al cambiar de modo. */}
+            <div className={videoCompacto
+                ? "w-[460px] shrink-0 flex flex-col gap-2 bg-gray-800 rounded-lg p-3 overflow-y-auto"
+                : "flex-1 min-w-0 flex flex-col gap-2 bg-gray-800 rounded-lg p-3 overflow-hidden"}>
                     {/* VIDEO, altura fija */}
                     {videoCompacto && (
                         <div className="flex items-center gap-3 bg-black border border-dashed border-gray-600 rounded-md px-3 py-2 text-sm">
@@ -1926,14 +2113,14 @@ const VideoTaggerPage: React.FC = () => {
                         </div>
                     )}
                     {/* El video sigue montado aunque esté encogido (la voz, la IA y la sincronía lo necesitan) */}
-                    <div className={videoCompacto ? "h-0 min-h-0 overflow-hidden relative" : "min-h-[300px] max-h-[450px] flex items-center justify-center bg-black rounded-md relative group"}>
+                    <div className={videoCompacto ? "h-0 min-h-0 overflow-hidden relative" : "flex-1 min-h-[220px] flex items-center justify-center bg-black rounded-md relative group overflow-hidden"}>
                         {activeVideoUrl ? (
                             <>
                                 <video
                                     ref={videoRef}
                                     src={activeVideoUrl}
                                     controls
-                                    className="max-h-full w-full"
+                                    className="max-h-full max-w-full w-full h-full object-contain"
                                     onTimeUpdate={e => setCurrentTime(e.currentTarget.currentTime)}
                                 ></video>
                                 {/* Barra superior: botones de salto + pantalla completa, visible al hacer hover */}
@@ -2161,132 +2348,191 @@ const VideoTaggerPage: React.FC = () => {
                             <p className="text-gray-400">Seleccione un partido y cargue videos para empezar</p>
                         )}
                     </div>
-                    {!videoCompacto && (activeVideoUrl || selectedVideo) && (
+                    <div className="shrink-0 flex justify-end items-center gap-4">
+                        {/* Abrir el archivo del video en otra pestaña */}
                         <button
-                            onClick={() => setVideoCompacto(true)}
-                            className="self-end mt-1 text-xs text-gray-400 hover:text-cyan-300 underline"
-                            title="Encoge el cuadro del video cuando lo ves en otra pantalla"
+                            onClick={() => {
+                                if (!activeVideoUrl) return;
+                                window.open(activeVideoUrl, '_blank');
+                            }}
+                            disabled={!activeVideoUrl}
+                            className="text-xs text-gray-400 hover:text-cyan-300 underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed"
                         >
-                            Encoger video
+                            Abrir video en ventana nueva
                         </button>
-                    )}
-                    
-                    {/* PANEL DE ETIQUETADO RAPIDO - Siempre visible debajo del video */}
-                    <div className="mt-3 bg-gradient-to-r from-gray-700 to-gray-800 rounded-lg p-3 border border-cyan-600/30">
-                        {/* Botón de Comandos de Voz */}
-                        <div className="flex items-center gap-2 mb-2">
+                        {!videoCompacto && (activeVideoUrl || selectedVideo) && (
                             <button
-                                onClick={isVoiceActive ? stopVoice : startVoice}
-                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all border-2 ${
-                                    isVoiceActive
-                                        ? 'bg-red-600 border-red-400 text-white animate-pulse'
-                                        : 'bg-gray-600 border-gray-500 text-gray-200 hover:bg-gray-500'
-                                }`}
-                                title={isVoiceActive ? 'Desactivar voz' : 'Activar comandos de voz'}
+                                onClick={() => setVideoCompacto(true)}
+                                className="text-xs text-gray-400 hover:text-cyan-300 underline"
+                                title="Encoge el cuadro del video cuando lo ves en otra pantalla"
                             >
-                                🎤 {isVoiceActive ? 'Voz activa' : 'Activar voz'}
+                                Encoger video
                             </button>
-                            {isVoiceActive && voiceTranscript && (
-                                <span className="text-xs text-gray-300 italic truncate max-w-[180px]">
-                                    "{voiceTranscript}"
-                                </span>
-                            )}
-                        </div>
-                        {voiceStatus && (
-                            <div className="mb-2 px-2 py-1 bg-gray-900/70 rounded text-xs text-cyan-300 font-semibold">
-                                {voiceStatus}
-                            </div>
-                        )}
-                        {/* Grilla de Jugadores */}
-                        {filteredPlayers.length > 0 ? (
-                            <>
-                                <p className="text-xs text-cyan-400 mb-1 font-semibold">
-                                    {(() => {
-                                        const p = filteredPlayers.find(pl => pl.id === selectedPlayerId);
-                                        if (!p) return 'Selecciona un jugador';
-                                        const parts = p.nombre.trim().split(/\s+/);
-                                        const firstName = parts[0] || '';
-                                        const lastName = parts.length > 1 ? parts[parts.length - 1] : '';
-                                        return `Etiquetando: #${p.numero} ${firstName} ${lastName}`;
-                                    })()}
-                                </p>
-                                <div className="grid grid-cols-3 gap-1 mb-2">
-                                    {filteredPlayers.map(p => {
-                                        const parts = p.nombre.trim().split(/\s+/);
-                                        const firstName = parts[0] || '';
-                                        const lastName = parts.length > 1 ? parts[parts.length - 1] : '';
-                                        const label = `#${p.numero} ${firstName} ${lastName ? lastName[0] + '.' : ''}`;
-                                        const isActive = p.id === selectedPlayerId;
-                                        return (
-                                            <button
-                                                key={p.id}
-                                                onClick={() => setSelectedPlayerId(p.id)}
-                                                className={`px-1 py-1.5 rounded text-xs font-semibold border-2 transition-all truncate ${
-                                                    isActive
-                                                        ? 'bg-cyan-600 border-cyan-300 text-white scale-105'
-                                                        : 'bg-gray-600 hover:bg-gray-500 border-transparent text-gray-200'
-                                                }`}
-                                                title={p.nombre}
-                                            >
-                                                {label}
-                                            </button>
-                                        );
-                                    })}
-                                </div>
-                            </>
-                        ) : (
-                            <p className="text-xs text-gray-400 mb-2">Sin jugadores cargados para este partido.</p>
-                        )}
-                        {/* Fila de acción: select + Etiquetar + Guardar */}
-                        <div className="flex items-center gap-2 flex-wrap">
-                            <select 
-                                value={selectedAction} 
-                                onChange={e => setSelectedAction(e.target.value)} 
-                                className="flex-1 min-w-[150px] bg-gray-600 p-2 rounded text-sm"
-                            >
-                                {METRICS.map(m => <option key={m} value={m}>{m}</option>)}
-                                <optgroup label="Balón parado y penales (solo se cuentan)">
-                                    {ACCIONES_ABP.map(m => <option key={m} value={m}>{m}</option>)}
-                                </optgroup>
-                                <optgroup label="Cambios">
-                                    <option value={ACCION_CAMBIO}>{ACCION_CAMBIO}</option>
-                                </optgroup>
-                            </select>
-                            <button 
-                                onClick={addTag} 
-                                disabled={!selectedPlayerId || !selectedAction || (!activeVideoUrl && !selectedVideo)} 
-                                className="bg-green-600 hover:bg-green-500 px-4 py-2 rounded font-semibold text-sm disabled:bg-gray-600 disabled:cursor-not-allowed whitespace-nowrap"
-                            >
-                                Etiquetar
-                            </button>
-                            <button 
-                                onClick={saveTags} 
-                                disabled={isSaving || tags.filter(t => String(t.id).startsWith('temp-')).length === 0} 
-                                className="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded font-semibold text-sm disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center gap-1 whitespace-nowrap"
-                            >
-                                Guardar
-                                {isSaving && <Spinner size="h-3 w-3" />}
-                            </button>
-                        </div>
-                        
-                        {/* Los atajos de teclado se muestran una sola vez, en el panel de la derecha */}
-                        
-                        {/* Indicador de accion seleccionada */}
-                        {selectedAction && (
-                            <div className="mt-2 text-center">
-                                <span className="text-xs text-gray-400">Accion seleccionada: </span>
-                                <span className="text-sm font-semibold text-cyan-400">{selectedAction}</span>
-                            </div>
-                        )}
-                        
-                        {/* Status de guardado */}
-                        {saveStatus && (
-                            <div className={`mt-2 p-1.5 rounded text-center text-xs ${saveStatus.type === 'success' ? 'bg-green-800/50 text-green-200' : 'bg-red-800/50 text-red-200'}`}>
-                                {saveStatus.message}
-                            </div>
                         )}
                     </div>
-                    
+                    {/* FRASE ENTENDIDA (voz) + Etiquetar / Guardar: siempre a la vista, debajo del video */}
+                    {(() => {
+                        const jugSel = filteredPlayers.find(pl => pl.id === selectedPlayerId);
+                        const accionTexto = vozParcial ? `${vozParcial.charAt(0).toUpperCase()}${vozParcial.slice(1)} … ${vozParcialDuda}` : selectedAction;
+                        const accionClase = vozParcial ? 'bg-amber-900 text-amber-200' : 'bg-green-900 text-green-200';
+                        const jugadorTexto = dudaJugador ? dudaJugador : jugSel ? `#${jugSel.numero} ${jugSel.nombre}` : 'Selecciona un jugador';
+                        const jugadorClase = dudaJugador ? 'bg-amber-900 text-amber-200' : jugSel ? 'bg-green-900 text-green-200' : 'bg-gray-800 text-gray-400';
+                        const mensaje = voiceStatus || saveStatus?.message || (isVoiceActive && voiceTranscript ? `Oí: "${voiceTranscript}"` : '');
+                        const mensajeClase = !voiceStatus && saveStatus ? (saveStatus.type === 'success' ? 'text-green-300' : 'text-red-300') : 'text-cyan-300';
+                        const marco = vozParcial || dudaJugador ? 'border-amber-500' : (voiceStatus.startsWith('❓') || voiceStatus.startsWith('⚠') || saveStatus?.type === 'error') ? 'border-red-500' : 'border-gray-700';
+                        return (
+                            <div className="shrink-0 bg-gradient-to-r from-gray-700 to-gray-800 rounded-lg p-2 border border-cyan-600/30">
+                                <div className="flex items-stretch gap-2">
+                                    <div className="flex flex-col gap-1 justify-center shrink-0">
+                                        <div className="flex items-center gap-2">
+                                            <button
+                                                onClick={isVoiceActive ? stopVoice : startVoice}
+                                                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold transition-all border-2 ${
+                                                    isVoiceActive
+                                                        ? 'bg-red-600 border-red-400 text-white animate-pulse'
+                                                        : 'bg-gray-600 border-gray-500 text-gray-200 hover:bg-gray-500'
+                                                }`}
+                                                title={isVoiceActive ? 'Desactivar voz' : 'Activar comandos de voz'}
+                                            >
+                                                🎤 {isVoiceActive ? 'Voz activa' : 'Activar voz'}
+                                            </button>
+                                            {/* Lo que se oyó se muestra en el recuadro de la frase */}
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={() => setRegistroAbierto(!registroAbierto)}
+                                            className="text-[11px] text-gray-400 hover:text-cyan-300 underline text-left"
+                                            title="Lo que oyó el micrófono y lo que entendió la plataforma"
+                                        >
+                                            📋 Registro de voz ({registroVoz.length})
+                                        </button>
+                                    </div>
+                                    <div className={`flex-1 min-w-0 bg-gray-900 rounded border-2 ${marco} px-2 py-1 flex flex-col gap-1`}>
+                                        <div className="flex gap-2 items-center min-w-0">
+                                            <span className="text-[11px] text-gray-400 w-12 shrink-0">Acción</span>
+                                            <span className={`flex-1 min-w-0 truncate rounded px-2 py-0.5 text-xs font-semibold ${accionClase}`} title={accionTexto}>{accionTexto}</span>
+                                        </div>
+                                        <div className="flex gap-2 items-center min-w-0">
+                                            <span className="text-[11px] text-gray-400 w-12 shrink-0">Jugador</span>
+                                            <span className={`flex-1 min-w-0 truncate rounded px-2 py-0.5 text-xs font-semibold ${jugadorClase}`} title={jugadorTexto}>{jugadorTexto}</span>
+                                            {(vozParcial || dudaJugador) && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => { setVozParcial(''); setVozParcialDuda(''); setDudaJugador(''); }}
+                                                    className="shrink-0 text-[11px] px-2 py-0.5 rounded border border-gray-600 bg-gray-800 text-gray-200 hover:bg-gray-700"
+                                                    title="Olvidar la parte pendiente de la frase"
+                                                >
+                                                    Borrar pendiente
+                                                </button>
+                                            )}
+                                        </div>
+                                        <p className={`text-[11px] font-semibold truncate min-h-[16px] ${mensajeClase}`} title={mensaje}>{mensaje}</p>
+                                    </div>
+                                    <div className="flex flex-col gap-1 justify-center shrink-0">
+                                        <button 
+                                            onClick={addTag} 
+                                            disabled={!selectedPlayerId || !selectedAction || (!activeVideoUrl && !selectedVideo)} 
+                                            className="bg-green-600 hover:bg-green-500 px-3 py-1.5 rounded font-semibold text-sm disabled:bg-gray-600 disabled:cursor-not-allowed whitespace-nowrap"
+                                        >
+                                            Etiquetar
+                                        </button>
+                                        <button 
+                                            onClick={saveTags} 
+                                            disabled={isSaving || tags.filter(t => String(t.id).startsWith('temp-')).length === 0} 
+                                            className="bg-blue-600 hover:bg-blue-500 px-3 py-1.5 rounded font-semibold text-sm disabled:bg-gray-600 disabled:cursor-not-allowed flex items-center gap-1 whitespace-nowrap"
+                                        >
+                                            Guardar
+                                            {isSaving && <Spinner size="h-3 w-3" />}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })()}
+                    {/* Con segundo monitor: botonera de jugadores y acción aquí, como siempre */}
+                    {videoCompacto && (
+                        <div className="shrink-0">
+                            {/* Grilla de Jugadores */}
+                            {filteredPlayers.length > 0 ? (
+                                <>
+                                    <p className="text-xs text-cyan-400 mb-1 font-semibold">
+                                        {(() => {
+                                            const p = filteredPlayers.find(pl => pl.id === selectedPlayerId);
+                                            if (!p) return 'Selecciona un jugador';
+                                            const parts = p.nombre.trim().split(/\s+/);
+                                            const firstName = parts[0] || '';
+                                            const lastName = parts.length > 1 ? parts[parts.length - 1] : '';
+                                            return `Etiquetando: #${p.numero} ${firstName} ${lastName}`;
+                                        })()}
+                                    </p>
+                                    <div className={`grid ${videoCompacto ? 'grid-cols-3' : 'grid-cols-4'} gap-1 mb-2`}>
+                                        {filteredPlayers.map(p => {
+                                            const parts = p.nombre.trim().split(/\s+/);
+                                            const firstName = parts[0] || '';
+                                            const lastName = parts.length > 1 ? parts[parts.length - 1] : '';
+                                            const label = `#${p.numero} ${firstName} ${lastName ? lastName[0] + '.' : ''}`;
+                                            const isActive = p.id === selectedPlayerId;
+                                            return (
+                                                <button
+                                                    key={p.id}
+                                                    onClick={() => { setSelectedPlayerId(p.id); setDudaJugador(''); }}
+                                                    className={`px-1 py-1.5 rounded text-xs font-semibold border-2 transition-all truncate ${
+                                                        isActive
+                                                            ? 'bg-cyan-600 border-cyan-300 text-white scale-105'
+                                                            : 'bg-gray-600 hover:bg-gray-500 border-transparent text-gray-200'
+                                                    }`}
+                                                    title={p.nombre}
+                                                >
+                                                    {label}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </>
+                            ) : (
+                                <p className="text-xs text-gray-400 mb-2">Sin jugadores cargados para este partido.</p>
+                            )}
+                            <div className="flex items-center gap-2">
+                                    <select 
+                                        value={selectedAction} 
+                                        onChange={e => { setSelectedAction(e.target.value); setVozParcial(''); setVozParcialDuda(''); }} 
+                                        className="flex-1 min-w-0 bg-gray-600 p-2 rounded text-sm"
+                                    >
+                                        {METRICS.map(m => <option key={m} value={m}>{m}</option>)}
+                                        <optgroup label="Balón parado y penales (solo se cuentan)">
+                                            {ACCIONES_ABP.map(m => <option key={m} value={m}>{m}</option>)}
+                                        </optgroup>
+                                        <optgroup label="Cambios">
+                                            <option value={ACCION_CAMBIO}>{ACCION_CAMBIO}</option>
+                                        </optgroup>
+                                    </select>
+                            </div>
+                        </div>
+                    )}
+            </div>
+
+            {/* COLUMNA B: preparación (botón), respaldo, lista de jugadas y (en laptop) la botonera de jugadores */}
+            <div className={videoCompacto
+                ? "flex-1 min-w-0 flex flex-col gap-2 min-h-0"
+                : "w-[360px] shrink-0 flex flex-col gap-2 overflow-y-auto pr-1"}>
+                    {/* Paneles de preparación del partido: ahora en un panel flotante */}
+                    {(() => {
+                        const m = matches.find(mm => mm.id === selectedMatchId);
+                        return (
+                            <button
+                                type="button"
+                                onClick={() => setConfigAbierto(true)}
+                                className="shrink-0 w-full flex items-center justify-between gap-2 text-left bg-gray-800 hover:bg-gray-700 rounded-lg px-3 py-2 border border-gray-700"
+                                title="Gestión del partido, carga de archivos, alineación y análisis con IA"
+                            >
+                                <span className="min-w-0">
+                                    <span className="block text-sm font-semibold text-white">⚙ Partido, archivos, alineación e IA</span>
+                                    <span className="block text-xs text-gray-400 truncate">{m ? `${m.nombre_equipo} vs ${m.rival} · J${m.jornada} · ${m.torneo}` : 'Elige o crea el partido'}</span>
+                                </span>
+                                <span className="text-cyan-400">▸</span>
+                            </button>
+                        );
+                    })()}
                     {/* Respaldo de jugadas sin guardar de la última vez */}
                     {borradorPrevio && borradorPrevio.matchId === selectedMatchId && (
                         <div className="mt-2 p-2 rounded border border-yellow-500 bg-yellow-900/40 text-yellow-100 text-sm">
@@ -2305,183 +2551,292 @@ const VideoTaggerPage: React.FC = () => {
                             {tags.filter(t => String(t.id).startsWith('temp-')).length} jugadas sin guardar · respaldadas en este navegador
                         </p>
                     )}
-
-                    {/* BOTÓN seguro */}
-                    <button
-                        onClick={() => {
-                            if (!activeVideoUrl) return;
-                            window.open(activeVideoUrl, '_blank');
-                        }}
-                        disabled={!activeVideoUrl}
-                        className="mt-2 w-full bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white font-bold py-2 px-4 rounded text-sm"
-                    >
-                        Abrir video en ventana nueva
-                    </button>
-                    {/* LISTA DE JUGADAS debajo, scroll propio */}
-                    <div className="h-[200px] overflow-y-auto mt-4 bg-gray-900 rounded p-2">
-                        {/* Encabezado fijo: título + filtro (solo cambia lo que se ve en la lista) */}
-                        <div className="sticky top-0 z-10 -mx-2 -mt-2 px-2 pt-2 pb-2 mb-1 bg-gray-900 flex flex-wrap items-center gap-2">
-                            <h3 className="text-lg font-semibold text-white mr-auto">Jugadas Etiquetadas</h3>
-                            {tags.length > 0 && (
-                                <>
-                                    <span className="text-xs text-gray-400">
-                                        {hayFiltro ? `${tagsVisibles.length} de ${tags.length}` : `${tags.length}`}
-                                    </span>
-                                    <select
-                                        value={filtroAccion}
-                                        onChange={e => { setFiltroAccion(e.target.value); e.currentTarget.blur(); }}
-                                        className="max-w-[240px] bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white"
-                                        title="Ver solo un tipo de jugada"
-                                        aria-label="Filtrar por jugada"
-                                    >
-                                        <option value="">Todas las jugadas ({opcionesFiltroAccion.total})</option>
-                                        {opcionesFiltroAccion.acciones.map(([accion, n]) => (
-                                            <option key={accion} value={accion}>{accion} ({n})</option>
-                                        ))}
-                                    </select>
-                                    <button
-                                        type="button"
-                                        onClick={() => setFiltroResultado(filtroResultado === 'logrado' ? '' : 'logrado')}
-                                        className={`px-2 py-1 rounded border text-xs ${filtroResultado === 'logrado' ? 'bg-green-700 border-green-400 text-white' : 'bg-gray-700 border-gray-600 text-green-300 hover:bg-gray-600'}`}
-                                        title="Ver solo las logradas"
-                                        aria-pressed={filtroResultado === 'logrado'}
-                                    >
-                                        Logrado ({conteoFiltroResultado.logrado})
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => setFiltroResultado(filtroResultado === 'fallado' ? '' : 'fallado')}
-                                        className={`px-2 py-1 rounded border text-xs ${filtroResultado === 'fallado' ? 'bg-red-700 border-red-400 text-white' : 'bg-gray-700 border-gray-600 text-red-300 hover:bg-gray-600'}`}
-                                        title="Ver solo las falladas"
-                                        aria-pressed={filtroResultado === 'fallado'}
-                                    >
-                                        Fallado ({conteoFiltroResultado.fallado})
-                                    </button>
-                                    {hayFiltro && (
+                    {!videoCompacto && listaMinimizada ? (
+                        <div className="shrink-0 bg-gray-900 rounded p-2 flex items-center gap-2">
+                            <h3 className="text-base font-semibold text-white shrink-0">Jugadas Etiquetadas</h3>
+                            <span className="text-xs text-gray-400 shrink-0">{tags.length}</span>
+                            <span className="flex-1 min-w-0 truncate text-xs text-gray-300">
+                                {(() => {
+                                    const u = tags[tags.length - 1];
+                                    if (!u) return '';
+                                    const nom = players.find(p => p.id === u.player_id)?.nombre || 'Jugador';
+                                    return `Última: ${formatTime(u.timestamp)} · ${u.accion}${u.resultado ? ' ' + u.resultado : ''} · ${nom}`;
+                                })()}
+                            </span>
+                            <button
+                                type="button"
+                                onClick={() => setListaMinimizada(false)}
+                                className="shrink-0 px-2 py-1 rounded border border-cyan-500 bg-cyan-900/60 text-xs text-white hover:bg-cyan-700"
+                            >
+                                ▴ Ver lista
+                            </button>
+                        </div>
+                    ) : (
+                        <>
+                            {/* LISTA DE JUGADAS debajo, scroll propio */}
+                            <div className={videoCompacto ? "flex-1 min-h-0 overflow-y-auto bg-gray-900 rounded p-2" : "flex-1 min-h-[220px] overflow-y-auto bg-gray-900 rounded p-2"}>
+                                {/* Encabezado fijo: título + filtro (solo cambia lo que se ve en la lista) */}
+                                <div className="sticky top-0 z-10 -mx-2 -mt-2 px-2 pt-2 pb-2 mb-1 bg-gray-900 flex flex-wrap items-center gap-2">
+                                    <h3 className="text-base font-semibold text-white mr-auto">Jugadas Etiquetadas</h3>
+                                    {!videoCompacto && (
                                         <button
                                             type="button"
-                                            onClick={() => { setFiltroAccion(''); setFiltroResultado(''); }}
-                                            className="px-2 py-1 rounded text-xs text-gray-300 underline hover:text-white"
-                                            title="Ver todas las jugadas"
+                                            onClick={() => setListaMinimizada(true)}
+                                            className="order-last px-2 py-1 rounded border border-cyan-500 bg-cyan-900/60 text-xs text-white hover:bg-cyan-700"
+                                            title="Encoger la lista para ver más espacio"
                                         >
-                                            Quitar filtro
+                                            ▾ Minimizar
                                         </button>
                                     )}
-                                </>
-                            )}
-                        </div>
-                        {avisoVideo && (
-                            <div className="mb-2 p-2 rounded bg-yellow-900/60 border border-yellow-600 text-xs text-yellow-200 flex justify-between gap-2">
-                                <span>{avisoVideo}</span>
-                                <button type="button" onClick={() => setAvisoVideo(null)} className="text-yellow-300 hover:text-white" aria-label="Cerrar aviso">✕</button>
-                            </div>
-                        )}
-                        {tags.length > 0 && tagsVisibles.length === 0 && (
-                            <p className="text-gray-400 text-center mt-4 text-sm">No hay jugadas con este filtro.</p>
-                        )}
-                        {tags.length > 0 ? tagsVisibles.map(tag => {
-                            const isSuccess = tag.resultado === 'logrado';
-                            const isFailure = tag.resultado === 'fallado';
-                            const isSaved = !String(tag.id).startsWith('temp-');
-                            const borderColor = isSuccess ? 'border-green-500' : isFailure ? 'border-red-500' : 'border-gray-500';
-                            return (
-                                <div
-                                    key={tag.id}
-                                    className={`flex items-center justify-between mb-2 p-2 border-l-4 ${borderColor} bg-gray-700 rounded`}
-                                >
-                                    <div className="flex-1">
-                                        <span className="font-semibold">{players.find(p => p.id === tag.player_id)?.nombre || "Jugador"}</span>
-                                        <button
-                                            type="button"
-                                            onClick={() => saltarAJugada(tag)}
-                                            className="ml-2 px-1.5 py-0.5 rounded bg-cyan-900/60 border border-cyan-500 text-xs text-white hover:bg-cyan-700"
-                                            title="Ir a esta jugada en el video (3 segundos antes)"
-                                        >
-                                            ▶ {formatTime(tag.timestamp)}
-                                        </button>
-                                        <div className="text-xs text-gray-300">{tag.accion} {tag.accion !== ACCION_TIRO && tag.resultado && <span className={isSuccess ? 'text-green-300' : 'text-red-300'}>{tag.resultado}</span>}</div>
-                                        {tag.accion === ACCION_TIRO && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (
-                                            <button
-                                                onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
-                                                className={`block text-xs mt-1 underline text-left ${isSuccess ? 'text-green-300' : isFailure ? 'text-red-300' : 'text-gray-400'}`}
-                                                title="Marcar o cambiar si fue a portería o desviado"
+                                    {tags.length > 0 && (
+                                        <>
+                                            <span className="text-xs text-gray-400">
+                                                {hayFiltro ? `${tagsVisibles.length} de ${tags.length}` : `${tags.length}`}
+                                            </span>
+                                            <select
+                                                value={filtroAccion}
+                                                onChange={e => { setFiltroAccion(e.target.value); e.currentTarget.blur(); }}
+                                                className="max-w-[240px] bg-gray-700 border border-gray-600 rounded px-2 py-1 text-xs text-white"
+                                                title="Ver solo un tipo de jugada"
+                                                aria-label="Filtrar por jugada"
                                             >
-                                                {isSuccess ? '🎯 A portería' : isFailure ? '↗ Desviado' : '+ ¿a portería o desviado?'}
-                                            </button>
-                                        )}
-                                        {ACCIONES_CON_ZONA.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (
+                                                <option value="">Todas las jugadas ({opcionesFiltroAccion.total})</option>
+                                                {opcionesFiltroAccion.acciones.map(([accion, n]) => (
+                                                    <option key={accion} value={accion}>{accion} ({n})</option>
+                                                ))}
+                                            </select>
                                             <button
-                                                onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
-                                                className={`text-xs mt-1 underline ${tag.zona ? 'text-cyan-300' : 'text-gray-400'}`}
-                                                title="Marcar o cambiar la zona de esta jugada"
+                                                type="button"
+                                                onClick={() => setFiltroResultado(filtroResultado === 'logrado' ? '' : 'logrado')}
+                                                className={`px-2 py-1 rounded border text-xs ${filtroResultado === 'logrado' ? 'bg-green-700 border-green-400 text-white' : 'bg-gray-700 border-gray-600 text-green-300 hover:bg-gray-600'}`}
+                                                title="Ver solo las logradas"
+                                                aria-pressed={filtroResultado === 'logrado'}
                                             >
-                                                {tag.zona ? `Zona: ${etiquetaZona(tag.zona)}` : '+ zona'}
+                                                Logrado ({conteoFiltroResultado.logrado})
                                             </button>
-                                        )}
-                                        {ACCIONES_GOL.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (() => {
-                                            const dGol = detalleGolDe(tag);
-                                            const asistente = dGol.asistencia ? players.find(p => p.id === dGol.asistencia) : undefined;
-                                            const resumen = [resumenGol(dGol), asistente ? `asistencia de ${asistente.nombre.trim().split(/\s+/)[0]}` : null].filter(Boolean).join(' · ') || null;
-                                            return (
+                                            <button
+                                                type="button"
+                                                onClick={() => setFiltroResultado(filtroResultado === 'fallado' ? '' : 'fallado')}
+                                                className={`px-2 py-1 rounded border text-xs ${filtroResultado === 'fallado' ? 'bg-red-700 border-red-400 text-white' : 'bg-gray-700 border-gray-600 text-red-300 hover:bg-gray-600'}`}
+                                                title="Ver solo las falladas"
+                                                aria-pressed={filtroResultado === 'fallado'}
+                                            >
+                                                Fallado ({conteoFiltroResultado.fallado})
+                                            </button>
+                                            {hayFiltro && (
                                                 <button
-                                                    onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
-                                                    className={`block text-xs mt-1 underline text-left ${resumen ? 'text-cyan-300' : 'text-gray-400'}`}
-                                                    title="Marcar o cambiar el detalle de este gol"
+                                                    type="button"
+                                                    onClick={() => { setFiltroAccion(''); setFiltroResultado(''); }}
+                                                    className="px-2 py-1 rounded text-xs text-gray-300 underline hover:text-white"
+                                                    title="Ver todas las jugadas"
                                                 >
-                                                    {resumen ? `Gol: ${resumen}` : '+ detalle del gol'}
+                                                    Quitar filtro
                                                 </button>
-                                            );
-                                        })()}
-                                        {ACCIONES_ABP_SET.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (() => {
-                                            const resumen = resumenAbp(tag.accion, detalleAbpDe(tag));
-                                            return (
-                                                <button
-                                                    onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
-                                                    className={`block text-xs mt-1 underline text-left ${resumen ? 'text-cyan-300' : 'text-gray-400'}`}
-                                                    title="Marcar o cambiar el detalle de esta jugada"
-                                                >
-                                                    {resumen ? `Detalle: ${resumen}` : '+ detalle'}
-                                                </button>
-                                            );
-                                        })()}
-                                        {tag.accion === ACCION_CAMBIO && (() => {
-                                            const d = detalleCambioDe(tag);
-                                            const entraNombre = players.find(p => p.id === tag.player_id)?.nombre;
-                                            const saleNombre = d.sale ? players.find(p => p.id === d.sale)?.nombre : undefined;
-                                            const resumen = resumenCambio(entraNombre, saleNombre);
-                                            return (
-                                                <button
-                                                    onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
-                                                    className={`block text-xs mt-1 underline text-left ${d.sale ? 'text-cyan-300' : 'text-gray-400'}`}
-                                                    title="Marcar o cambiar quién sale"
-                                                >
-                                                    {resumen ? resumen : '+ ¿quién sale?'}
-                                                </button>
-                                            );
-                                        })()}
-                                        {tag.video_file && <div className="text-xs text-gray-400 mt-1">Video: {tag.video_file} — ts_abs: {tag.timestamp_absolute ?? 'N/A'}</div>}
-                                    </div>
-                                    <div className="flex items-center gap-2">
-                                        <button
-                                            onClick={() => deleteTag(tag)}
-                                            disabled={isSaving}
-                                            className="p-1 text-red-300 hover:text-red-500"
-                                            title="Eliminar"
-                                        >
-                                            <TrashIcon />
-                                        </button>
-                                    </div>
+                                            )}
+                                        </>
+                                    )}
                                 </div>
-                            );
-                        }) : (
-                            <p className="text-gray-400 text-center mt-4">Aún no se han etiquetado jugadas para este partido.</p>
-                        )}
-                    </div>
-                </div>
+                                {avisoVideo && (
+                                    <div className="mb-2 p-2 rounded bg-yellow-900/60 border border-yellow-600 text-xs text-yellow-200 flex justify-between gap-2">
+                                        <span>{avisoVideo}</span>
+                                        <button type="button" onClick={() => setAvisoVideo(null)} className="text-yellow-300 hover:text-white" aria-label="Cerrar aviso">✕</button>
+                                    </div>
+                                )}
+                                {tags.length > 0 && tagsVisibles.length === 0 && (
+                                    <p className="text-gray-400 text-center mt-4 text-sm">No hay jugadas con este filtro.</p>
+                                )}
+                                {tags.length > 0 ? [...tagsVisibles].reverse().map(tag => {
+                                    const isSuccess = tag.resultado === 'logrado';
+                                    const isFailure = tag.resultado === 'fallado';
+                                    const isSaved = !String(tag.id).startsWith('temp-');
+                                    const borderColor = isSuccess ? 'border-green-500' : isFailure ? 'border-red-500' : 'border-gray-500';
+                                    return (
+                                        <div
+                                            key={tag.id}
+                                            className={`flex items-start justify-between mb-1 px-2 py-1 border-l-4 ${borderColor} bg-gray-700 rounded`}
+                                            title={tag.video_file ? `Video: ${tag.video_file} — ts_abs: ${tag.timestamp_absolute ?? 'N/A'}` : undefined}
+                                        >
+                                            <div className="flex-1 min-w-0">
+                                                <span className="font-semibold text-sm">{players.find(p => p.id === tag.player_id)?.nombre || "Jugador"}</span>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => saltarAJugada(tag)}
+                                                    className="ml-2 px-1.5 py-0.5 rounded bg-cyan-900/60 border border-cyan-500 text-xs text-white hover:bg-cyan-700"
+                                                    title="Ir a esta jugada en el video (3 segundos antes)"
+                                                >
+                                                    ▶ {formatTime(tag.timestamp)}
+                                                </button>
+                                                <div className="flex flex-wrap items-baseline gap-x-2">
+                                                <span className="text-xs text-gray-300">{tag.accion} {tag.accion !== ACCION_TIRO && tag.resultado && <span className={isSuccess ? 'text-green-300' : 'text-red-300'}>{tag.resultado}</span>}</span>
+                                                {tag.accion === ACCION_TIRO && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (
+                                                    <button
+                                                        onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
+                                                        className={`text-xs underline text-left ${isSuccess ? 'text-green-300' : isFailure ? 'text-red-300' : 'text-gray-400'}`}
+                                                        title="Marcar o cambiar si fue a portería o desviado"
+                                                    >
+                                                        {isSuccess ? '🎯 A portería' : isFailure ? '↗ Desviado' : '+ ¿a portería o desviado?'}
+                                                    </button>
+                                                )}
+                                                {ACCIONES_CON_ZONA.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (
+                                                    <button
+                                                        onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
+                                                        className={`text-xs underline ${tag.zona ? 'text-cyan-300' : 'text-gray-400'}`}
+                                                        title="Marcar o cambiar la zona de esta jugada"
+                                                    >
+                                                        {tag.zona ? `Zona: ${etiquetaZona(tag.zona)}` : '+ zona'}
+                                                    </button>
+                                                )}
+                                                {ACCIONES_GOL.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (() => {
+                                                    const dGol = detalleGolDe(tag);
+                                                    const asistente = dGol.asistencia ? players.find(p => p.id === dGol.asistencia) : undefined;
+                                                    const resumen = [resumenGol(dGol), asistente ? `asistencia de ${asistente.nombre.trim().split(/\s+/)[0]}` : null].filter(Boolean).join(' · ') || null;
+                                                    return (
+                                                        <button
+                                                            onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
+                                                            className={`text-xs underline text-left ${resumen ? 'text-cyan-300' : 'text-gray-400'}`}
+                                                            title="Marcar o cambiar el detalle de este gol"
+                                                        >
+                                                            {resumen ? `Gol: ${resumen}` : '+ detalle del gol'}
+                                                        </button>
+                                                    );
+                                                })()}
+                                                {ACCIONES_ABP_SET.has(tag.accion) && !esJugadorFicticio(players.find(p => p.id === tag.player_id)?.nombre) && (() => {
+                                                    const resumen = resumenAbp(tag.accion, detalleAbpDe(tag));
+                                                    return (
+                                                        <button
+                                                            onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
+                                                            className={`text-xs underline text-left ${resumen ? 'text-cyan-300' : 'text-gray-400'}`}
+                                                            title="Marcar o cambiar el detalle de esta jugada"
+                                                        >
+                                                            {resumen ? `Detalle: ${resumen}` : '+ detalle'}
+                                                        </button>
+                                                    );
+                                                })()}
+                                                {tag.accion === ACCION_CAMBIO && (() => {
+                                                    const d = detalleCambioDe(tag);
+                                                    const entraNombre = players.find(p => p.id === tag.player_id)?.nombre;
+                                                    const saleNombre = d.sale ? players.find(p => p.id === d.sale)?.nombre : undefined;
+                                                    const resumen = resumenCambio(entraNombre, saleNombre);
+                                                    return (
+                                                        <button
+                                                            onClick={() => setDetallePendiente({ id: tag.id, match_id: tag.match_id, player_id: tag.player_id, accion: tag.accion, timestamp: tag.timestamp })}
+                                                            className={`text-xs underline text-left ${d.sale ? 'text-cyan-300' : 'text-gray-400'}`}
+                                                            title="Marcar o cambiar quién sale"
+                                                        >
+                                                            {resumen ? resumen : '+ ¿quién sale?'}
+                                                        </button>
+                                                    );
+                                                })()}
+                                                </div>
+                                            </div>
+                                            <div className="flex items-center gap-2">
+                                                <button
+                                                    onClick={() => deleteTag(tag)}
+                                                    disabled={isSaving}
+                                                    className="p-1 text-red-300 hover:text-red-500"
+                                                    title="Eliminar"
+                                                >
+                                                    <TrashIcon />
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                }) : (
+                                    <p className="text-gray-400 text-center mt-4">Aún no se han etiquetado jugadas para este partido.</p>
+                                )}
+                            </div>
+                        </>
+                    )}
+                    {!videoCompacto && (
+                        <>
+                            {/* Botonera de jugadores (respaldo manual) + acción */}
+                            <div className="shrink-0 bg-gray-800 rounded-lg p-2">
+                                <div className="flex items-center gap-2 mb-1">
+                                    <span className="text-sm font-semibold text-white mr-auto">Jugadores (respaldo manual)</span>
+                                    <button
+                                        type="button"
+                                        onClick={() => setJugadoresVisibles(!jugadoresVisibles)}
+                                        className="px-2 py-1 rounded border border-gray-600 bg-gray-700 text-xs text-gray-200 hover:bg-gray-600"
+                                    >
+                                        {jugadoresVisibles ? '▾ Ocultar' : '▴ Mostrar'}
+                                    </button>
+                                </div>
+                                {jugadoresVisibles && (
+                                    <>
+                                        {/* Grilla de Jugadores */}
+                                        {filteredPlayers.length > 0 ? (
+                                            <>
+                                                <p className="text-xs text-cyan-400 mb-1 font-semibold">
+                                                    {(() => {
+                                                        const p = filteredPlayers.find(pl => pl.id === selectedPlayerId);
+                                                        if (!p) return 'Selecciona un jugador';
+                                                        const parts = p.nombre.trim().split(/\s+/);
+                                                        const firstName = parts[0] || '';
+                                                        const lastName = parts.length > 1 ? parts[parts.length - 1] : '';
+                                                        return `Etiquetando: #${p.numero} ${firstName} ${lastName}`;
+                                                    })()}
+                                                </p>
+                                                <div className={`grid ${videoCompacto ? 'grid-cols-3' : 'grid-cols-4'} gap-1 mb-2`}>
+                                                    {filteredPlayers.map(p => {
+                                                        const parts = p.nombre.trim().split(/\s+/);
+                                                        const firstName = parts[0] || '';
+                                                        const lastName = parts.length > 1 ? parts[parts.length - 1] : '';
+                                                        const label = `#${p.numero} ${firstName} ${lastName ? lastName[0] + '.' : ''}`;
+                                                        const isActive = p.id === selectedPlayerId;
+                                                        return (
+                                                            <button
+                                                                key={p.id}
+                                                                onClick={() => { setSelectedPlayerId(p.id); setDudaJugador(''); }}
+                                                                className={`px-1 py-1.5 rounded text-xs font-semibold border-2 transition-all truncate ${
+                                                                    isActive
+                                                                        ? 'bg-cyan-600 border-cyan-300 text-white scale-105'
+                                                                        : 'bg-gray-600 hover:bg-gray-500 border-transparent text-gray-200'
+                                                                }`}
+                                                                title={p.nombre}
+                                                            >
+                                                                {label}
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </>
+                                        ) : (
+                                            <p className="text-xs text-gray-400 mb-2">Sin jugadores cargados para este partido.</p>
+                                        )}
+                                        <div className="flex items-center gap-2">
+                                                <select 
+                                                    value={selectedAction} 
+                                                    onChange={e => { setSelectedAction(e.target.value); setVozParcial(''); setVozParcialDuda(''); }} 
+                                                    className="flex-1 min-w-0 bg-gray-600 p-2 rounded text-sm"
+                                                >
+                                                    {METRICS.map(m => <option key={m} value={m}>{m}</option>)}
+                                                    <optgroup label="Balón parado y penales (solo se cuentan)">
+                                                        {ACCIONES_ABP.map(m => <option key={m} value={m}>{m}</option>)}
+                                                    </optgroup>
+                                                    <optgroup label="Cambios">
+                                                        <option value={ACCION_CAMBIO}>{ACCION_CAMBIO}</option>
+                                                    </optgroup>
+                                                </select>
+                                        </div>
+                                    </>
+                                )}
+                            </div>
+                        </>
+                    )}
             </div>
 
-            {/* Right Column: Management Panels */}
-            <div className="w-1/3 flex flex-col gap-4 overflow-y-auto pr-2">
+            {/* PANEL FLOTANTE: Partido, archivos, alineación e IA (los mismos paneles de antes) */}
+            <div className={configAbierto && !detallePendiente ? "absolute top-0 right-0 w-[360px] max-w-full max-h-full overflow-y-auto rounded-xl shadow-2xl z-30 bg-gray-900 border-2 border-gray-600 p-3 flex flex-col gap-3" : "hidden"}>
+                <div className="flex items-center gap-2">
+                    <span className="text-base font-semibold text-white mr-auto">Partido, archivos, alineación e IA</span>
+                    <button
+                        type="button"
+                        onClick={() => setConfigAbierto(false)}
+                        className="px-3 py-1.5 rounded bg-cyan-700 hover:bg-cyan-600 text-sm font-semibold text-white"
+                    >
+                        Listo
+                    </button>
+                </div>
                 {/* 1. Gestión del Partido */}
                 <div className="bg-gray-800 rounded-lg p-4">
                     {(() => {
@@ -2675,10 +3030,128 @@ const VideoTaggerPage: React.FC = () => {
                     )}
                 </div>
 
-                {/* "3. Etiquetar Jugada" se quitó en la entrega 2: repetía lo que ya está en el panel central. */}
-                {/* Detalle de la jugada (mejora 1: zona de recuperaciones y pérdidas) */}
-                <div className={`bg-gray-800 rounded-lg p-4 ${detallePendiente ? 'border-2 border-cyan-500' : ''}`}>
-                    <h3 className="text-lg font-semibold mb-2 text-white">Detalle de la jugada</h3>
+                {/* 4. Analisis Asistido por IA */}
+                <div className="bg-gray-800 rounded-lg p-4">
+                    <button
+                        onClick={() => setIaAbierta(!(iaAbierta || isAnyAnalysisRunning))}
+                        className="w-full flex items-center justify-between text-lg font-semibold text-white"
+                    >
+                        <span>Análisis Asistido por IA (Beta)</span>
+                        <span className="text-cyan-400">{(iaAbierta || isAnyAnalysisRunning) ? '▼' : '▶'}</span>
+                    </button>
+                    <div className={(iaAbierta || isAnyAnalysisRunning) ? 'mt-2' : 'hidden'}>
+                    <p className="text-xs text-gray-400 mb-4">La IA puede sugerir jugadas. Puedes aceptar o rechazar las sugerencias.</p>
+                    
+                    {/* Segment Analysis Button (Gemini) - RECOMMENDED */}
+                    <button 
+                        onClick={() => setShowSegmentModal(true)} 
+                        disabled={(!activeVideoUrl && !selectedVideo) || isAnyAnalysisRunning || !selectedMatchId} 
+                        className="w-full bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 p-3 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed mb-3"
+                    >
+                        <SparklesIcon />Analizar Segmento (Gemini) ⚡
+                    </button>
+                    <p className="text-xs text-emerald-400 mb-4 text-center">Recomendado: Selecciona un rango de 5-10 min para análisis preciso</p>
+                    
+                    {/* Batch Analysis Button */}
+                    <button 
+                        onClick={handleBatchAnalysis} 
+                        disabled={!activeVideoUrl || isAnyAnalysisRunning || !selectedMatchId} 
+                        className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 p-3 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed mb-3"
+                    >
+                        {isBatchAnalyzing ? <><Spinner /> Analizando partido...</> : <><SparklesIcon />Analizar Partido Completo 🚀</>}
+                    </button>
+                    
+                    {/* Progress Bar */}
+                    {isBatchAnalyzing && batchProgress.total > 0 && (
+                        <div className="mb-3">
+                            <div className="flex justify-between text-xs text-gray-400 mb-1">
+                                <span>Progreso: {batchProgress.current} / {batchProgress.total} frames</span>
+                                <span>{Math.round((batchProgress.current / batchProgress.total) * 100)}%</span>
+                            </div>
+                            <div className="w-full bg-gray-700 rounded-full h-2">
+                                <div 
+                                    className="bg-gradient-to-r from-purple-600 to-pink-600 h-2 rounded-full transition-all duration-300"
+                                    style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
+                                ></div>
+                            </div>
+                        </div>
+                    )}
+                    
+                    <button onClick={handleAIAssistedAnalysis} disabled={(!activeVideoUrl && !selectedVideo) || isAnyAnalysisRunning || !selectedMatchId} className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
+                        {isGeminiAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Sugerir Acciones</>}
+                    </button>
+                    <button 
+                        onClick={handleCustomModelAnalysis} 
+                        disabled={(!activeVideoUrl && !selectedVideo) || isAnyAnalysisRunning || !selectedMatchId} 
+                        className="w-full mt-2 bg-indigo-600 hover:bg-indigo-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed"
+                    >
+                        {isCustomAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Modelo Personalizado (74% Top-3)</>}
+                    </button>
+                    </div>
+                </div>
+
+                {/* Atajos de teclado: oculto (Mauricio etiqueta por voz). Los atajos siguen funcionando. */}
+                {MOSTRAR_ATAJOS && (<>
+                {/* 5. Atajos de Teclado */}
+                <div className="bg-gray-800 rounded-lg p-4">
+                    <button 
+                        onClick={() => setShowShortcutsGuide(!showShortcutsGuide)}
+                        className="w-full flex items-center justify-between text-lg font-semibold text-white"
+                    >
+                        <span>Atajos de Teclado</span>
+                        <span className="text-cyan-400">{showShortcutsGuide ? '▼' : '▶'}</span>
+                    </button>
+                    {showShortcutsGuide && (
+                        <div className="mt-3 space-y-2 text-sm">
+                            <p className="text-gray-400 mb-2">Presiona una tecla para pre-seleccionar la accion (requiere video cargado). Luego selecciona el jugador y guarda:</p>
+                            <div className="grid grid-cols-2 gap-1 text-xs">
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">1</span> Pase corto def. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">2</span> Pase corto def. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">3</span> Pase corto of. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">4</span> Pase corto of. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">5</span> Pase largo def. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">6</span> Pase largo def. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">7</span> Pase largo of. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">8</span> Pase largo of. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">9</span> 1vs1 def. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">0</span> 1vs1 def. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">Q</span> 1vs1 of. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">W</span> 1vs1 of. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">E</span> Aereo def. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">R</span> Aereo def. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">T</span> Aereo of. logrado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">Y</span> Aereo of. fallado</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">U</span> Trans. of. lograda</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">I</span> Trans. of. no lograda</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">A</span> Atajadas</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">S</span> Goles a favor</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">D</span> Goles recibidos</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">F</span> Perdida de balon</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">G</span> Tiros a porteria</div>
+                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">H</span> Recuperacion de balon</div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+                </>)}
+            </div>
+
+            {/* PANEL FLOTANTE: Detalle de la jugada. Se abre al etiquetar (o al tocar el detalle en la lista)
+                y se cierra con Listo / Saltar. Va a la derecha: nunca tapa el video. */}
+            {detallePendiente && (
+                <div className="absolute top-0 right-0 w-[360px] max-w-full max-h-full overflow-y-auto rounded-xl shadow-2xl z-40 bg-gray-800 border-2 border-cyan-500 p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                        <h3 className="text-lg font-semibold text-white mr-auto">Detalle de la jugada</h3>
+                        <button
+                            type="button"
+                            onClick={() => setDetallePendiente(null)}
+                            className="px-2 py-1 rounded text-gray-300 hover:text-white hover:bg-gray-700 text-sm"
+                            aria-label="Cerrar detalle"
+                            title="Cerrar (lo que ya marcaste se queda guardado)"
+                        >
+                            ✕
+                        </button>
+                    </div>
                     {detallePendiente && ACCIONES_ABP_SET.has(detallePendiente.accion) ? (() => {
                         const jug = players.find(p => p.id === detallePendiente.player_id);
                         const tagActual = tags.find(t => t.id === detallePendiente.id)
@@ -2897,109 +3370,35 @@ const VideoTaggerPage: React.FC = () => {
                         <p className="text-sm text-gray-400">Aparece al etiquetar una recuperación o una pérdida (zona), un tiro (a portería o desviado), un gol (tipo, área y portería) o un balón parado o penal.</p>
                     )}
                 </div>
+            )}
 
-                {/* 4. Analisis Asistido por IA */}
-                <div className="bg-gray-800 rounded-lg p-4">
-                    <button
-                        onClick={() => setIaAbierta(!(iaAbierta || isAnyAnalysisRunning))}
-                        className="w-full flex items-center justify-between text-lg font-semibold text-white"
-                    >
-                        <span>Análisis Asistido por IA (Beta)</span>
-                        <span className="text-cyan-400">{(iaAbierta || isAnyAnalysisRunning) ? '▼' : '▶'}</span>
-                    </button>
-                    <div className={(iaAbierta || isAnyAnalysisRunning) ? 'mt-2' : 'hidden'}>
-                    <p className="text-xs text-gray-400 mb-4">La IA puede sugerir jugadas. Puedes aceptar o rechazar las sugerencias.</p>
-                    
-                    {/* Segment Analysis Button (Gemini) - RECOMMENDED */}
-                    <button 
-                        onClick={() => setShowSegmentModal(true)} 
-                        disabled={(!activeVideoUrl && !selectedVideo) || isAnyAnalysisRunning || !selectedMatchId} 
-                        className="w-full bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 p-3 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed mb-3"
-                    >
-                        <SparklesIcon />Analizar Segmento (Gemini) ⚡
-                    </button>
-                    <p className="text-xs text-emerald-400 mb-4 text-center">Recomendado: Selecciona un rango de 5-10 min para análisis preciso</p>
-                    
-                    {/* Batch Analysis Button */}
-                    <button 
-                        onClick={handleBatchAnalysis} 
-                        disabled={!activeVideoUrl || isAnyAnalysisRunning || !selectedMatchId} 
-                        className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 p-3 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed mb-3"
-                    >
-                        {isBatchAnalyzing ? <><Spinner /> Analizando partido...</> : <><SparklesIcon />Analizar Partido Completo 🚀</>}
-                    </button>
-                    
-                    {/* Progress Bar */}
-                    {isBatchAnalyzing && batchProgress.total > 0 && (
-                        <div className="mb-3">
-                            <div className="flex justify-between text-xs text-gray-400 mb-1">
-                                <span>Progreso: {batchProgress.current} / {batchProgress.total} frames</span>
-                                <span>{Math.round((batchProgress.current / batchProgress.total) * 100)}%</span>
-                            </div>
-                            <div className="w-full bg-gray-700 rounded-full h-2">
-                                <div 
-                                    className="bg-gradient-to-r from-purple-600 to-pink-600 h-2 rounded-full transition-all duration-300"
-                                    style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
-                                ></div>
-                            </div>
-                        </div>
-                    )}
-                    
-                    <button onClick={handleAIAssistedAnalysis} disabled={(!activeVideoUrl && !selectedVideo) || isAnyAnalysisRunning || !selectedMatchId} className="w-full bg-purple-600 hover:bg-purple-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed">
-                        {isGeminiAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Sugerir Acciones</>}
-                    </button>
-                    <button 
-                        onClick={handleCustomModelAnalysis} 
-                        disabled={(!activeVideoUrl && !selectedVideo) || isAnyAnalysisRunning || !selectedMatchId} 
-                        className="w-full mt-2 bg-indigo-600 hover:bg-indigo-500 p-2 rounded font-semibold flex items-center justify-center gap-2 disabled:bg-gray-600 disabled:cursor-not-allowed"
-                    >
-                        {isCustomAnalyzing ? <><Spinner /> Analizando...</> : <><SparklesIcon />Modelo Personalizado (74% Top-3)</>}
-                    </button>
+            {/* PANEL FLOTANTE: Registro de voz */}
+            {registroAbierto && (
+                <div className="absolute top-0 right-0 w-[360px] max-w-full max-h-full overflow-y-auto rounded-xl shadow-2xl z-50 bg-gray-900 border-2 border-gray-600 p-3 flex flex-col gap-2">
+                    <div className="flex items-center gap-2">
+                        <span className="text-base font-semibold text-white mr-auto">Registro de voz</span>
+                        <button
+                            type="button"
+                            onClick={() => {
+                                const texto = registroVoz.slice().reverse().map(r => `${r.hora} | Oí: ${r.oido} | Entendí: ${r.entendido}`).join('\n');
+                                navigator.clipboard?.writeText(texto).catch(() => {});
+                            }}
+                            className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs text-white"
+                        >
+                            Copiar registro
+                        </button>
+                        <button type="button" onClick={() => setRegistroAbierto(false)} className="px-2 py-1 rounded bg-cyan-700 hover:bg-cyan-600 text-xs text-white">Cerrar</button>
                     </div>
-                </div>
-
-                {/* 5. Atajos de Teclado */}
-                <div className="bg-gray-800 rounded-lg p-4">
-                    <button 
-                        onClick={() => setShowShortcutsGuide(!showShortcutsGuide)}
-                        className="w-full flex items-center justify-between text-lg font-semibold text-white"
-                    >
-                        <span>Atajos de Teclado</span>
-                        <span className="text-cyan-400">{showShortcutsGuide ? '▼' : '▶'}</span>
-                    </button>
-                    {showShortcutsGuide && (
-                        <div className="mt-3 space-y-2 text-sm">
-                            <p className="text-gray-400 mb-2">Presiona una tecla para pre-seleccionar la accion (requiere video cargado). Luego selecciona el jugador y guarda:</p>
-                            <div className="grid grid-cols-2 gap-1 text-xs">
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">1</span> Pase corto def. logrado</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">2</span> Pase corto def. fallado</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">3</span> Pase corto of. logrado</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">4</span> Pase corto of. fallado</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">5</span> Pase largo def. logrado</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">6</span> Pase largo def. fallado</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">7</span> Pase largo of. logrado</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">8</span> Pase largo of. fallado</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">9</span> 1vs1 def. logrado</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">0</span> 1vs1 def. fallado</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">Q</span> 1vs1 of. logrado</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">W</span> 1vs1 of. fallado</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">E</span> Aereo def. logrado</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">R</span> Aereo def. fallado</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">T</span> Aereo of. logrado</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">Y</span> Aereo of. fallado</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">U</span> Trans. of. lograda</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">I</span> Trans. of. no lograda</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">A</span> Atajadas</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">S</span> Goles a favor</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">D</span> Goles recibidos</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">F</span> Perdida de balon</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">G</span> Tiros a porteria</div>
-                                <div className="bg-gray-700 p-2 rounded"><span className="text-cyan-400 font-mono">H</span> Recuperacion de balon</div>
-                            </div>
+                    <p className="text-xs text-gray-400">Lo que oyó el micrófono y lo que entendió la plataforma. Si algo sale mal, copia el registro y compártelo para corregir esas palabras.</p>
+                    {registroVoz.length === 0 && <p className="text-sm text-gray-400">Todavía no hay frases.</p>}
+                    {registroVoz.map((r, i) => (
+                        <div key={i} className={`text-xs rounded px-2 py-1 border-l-4 ${r.ok ? 'border-green-500' : 'border-red-500'} bg-gray-800`}>
+                            <span className="text-cyan-300">{r.hora}</span> · Oí: <span className="text-white">"{r.oido}"</span>
+                            <div className="text-gray-300">{r.entendido}</div>
                         </div>
-                    )}
+                    ))}
                 </div>
-            </div>
+            )}
 
             {/* Batch Results Modal */}
             {showBatchResultsModal && (
