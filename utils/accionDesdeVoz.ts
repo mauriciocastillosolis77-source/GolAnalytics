@@ -105,6 +105,13 @@ export const accionDesdeVoz = (texto: string): AccionVoz => {
         if (!p.parecida) soloParecidas.delete(clave);
         claves.add(clave);
     });
+    // "pase aéreo" no es una acción: los aéreos se dicen sin "pase" ("aéreo ofensivo logrado").
+    // Si se oyó "pase" + "aéreo" sin corto/largo, es un pase largo (el reconocedor a veces oye
+    // "aéreo" cuando se dice "largo"). La frase entendida se ve en pantalla antes de "etiquetar".
+    if (claves.has('aereo') && !claves.has('corto') && !claves.has('largo') && tokens.some(x => x === 'pase' || x === 'pases')) {
+        claves.delete('aereo');
+        claves.add('largo');
+    }
     const tiene = (c: string) => claves.has(c);
 
     const tipos = ['corto', 'largo', 'unovsuno', 'aereo'].filter(tiene);

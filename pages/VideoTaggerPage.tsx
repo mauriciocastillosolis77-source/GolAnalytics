@@ -1601,10 +1601,13 @@ const VideoTaggerPage: React.FC = () => {
     const accionEnFrase = (frase: string): { accion: string | null; duda?: string } => {
         const f = frase.toLowerCase().trim();
         if (!f) return { accion: null };
+        // Primero el autocorrector (lee palabra por palabra, p. ej. "pase aéreo..." = pase largo);
+        // si no reconoce nada, se busca el nombre exacto de la acción dentro de la frase.
+        const auto = accionDesdeVoz(f);
+        if (auto.accion || auto.duda) return auto;
         const n = normalizarAccionVoz(f);
         const exacta = METRICS.find(m => n.includes(normalizarAccionVoz(m.toLowerCase())));
-        if (exacta) return { accion: exacta };
-        return accionDesdeVoz(f);
+        return exacta ? { accion: exacta } : auto;
     };
 
     // Keep the processVoiceCommand ref updated on every render so it
@@ -1958,7 +1961,11 @@ const VideoTaggerPage: React.FC = () => {
         // - keywords: nombres de los jugadores y palabras de las acciones, para que las reconozca mejor
         const palabrasClave = Array.from(new Set([
             ...filteredPlayers.flatMap(p => p.nombre.trim().split(/\s+/)).filter(w => w.length >= 3),
-            'aéreo', 'logrado', 'fallado', 'ofensivo', 'defensivo', 'recuperación', 'pérdida', 'transición', 'etiquetar', 'jugador',
+            // Todas las palabras de las acciones con el mismo refuerzo, para no inclinar al reconocedor hacia
+            // una sola (con "aéreo" reforzado y "largo" sin reforzar, "pase largo" se oía "pase aéreo").
+            'pase', 'corto', 'largo', 'aéreo', 'uno', 'contra', 'logrado', 'fallado', 'ofensivo', 'defensivo',
+            'recuperación', 'pérdida', 'balón', 'transición', 'tiro', 'portería', 'gol', 'favor', 'recibido', 'atajada',
+            'etiquetar', 'jugador',
         ])).slice(0, 60);
         const kw = palabrasClave.map(w => `&keywords=${encodeURIComponent(w)}:2`).join('');
         const url = `wss://api.deepgram.com/v1/listen?model=nova-2&language=es&punctuate=false&interim_results=false&endpointing=400${kw}`;
