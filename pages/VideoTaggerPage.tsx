@@ -193,7 +193,9 @@ const VideoTaggerPage: React.FC = () => {
     const [registroAbierto, setRegistroAbierto] = useState(false);
     // Diseño: paneles de preparación (partido, archivos, alineación, IA) en un panel flotante;
     // lista de jugadas minimizable y botonera de jugadores ocultable (se recuerdan en este navegador).
-    const [configAbierto, setConfigAbierto] = useState(true);
+    // Cerrado por defecto (pedido de Mauricio 20-nov): abierto tapaba las jugadas de arriba de la lista.
+    // Se abre con el botón ⚙; el Detalle de la jugada sí se abre solo cuando hace falta.
+    const [configAbierto, setConfigAbierto] = useState(false);
     const leerPref = (clave: string, def: boolean) => { try { const v = localStorage.getItem(clave); return v === null ? def : v === '1'; } catch { return def; } };
     const [listaMinimizada, setListaMinimizada] = useState(() => leerPref('gol_etiquetador_lista_min', false));
     const [jugadoresVisibles, setJugadoresVisibles] = useState(() => leerPref('gol_etiquetador_jugadores', false));
@@ -1601,10 +1603,13 @@ const VideoTaggerPage: React.FC = () => {
     const accionEnFrase = (frase: string): { accion: string | null; duda?: string } => {
         const f = frase.toLowerCase().trim();
         if (!f) return { accion: null };
+        // Primero el autocorrector (lee palabra por palabra, p. ej. "pase aéreo..." = pase largo);
+        // si no reconoce nada, se busca el nombre exacto de la acción dentro de la frase.
+        const auto = accionDesdeVoz(f);
+        if (auto.accion || auto.duda) return auto;
         const n = normalizarAccionVoz(f);
         const exacta = METRICS.find(m => n.includes(normalizarAccionVoz(m.toLowerCase())));
-        if (exacta) return { accion: exacta };
-        return accionDesdeVoz(f);
+        return exacta ? { accion: exacta } : auto;
     };
 
     // Keep the processVoiceCommand ref updated on every render so it
@@ -1958,7 +1963,11 @@ const VideoTaggerPage: React.FC = () => {
         // - keywords: nombres de los jugadores y palabras de las acciones, para que las reconozca mejor
         const palabrasClave = Array.from(new Set([
             ...filteredPlayers.flatMap(p => p.nombre.trim().split(/\s+/)).filter(w => w.length >= 3),
-            'aéreo', 'logrado', 'fallado', 'ofensivo', 'defensivo', 'recuperación', 'pérdida', 'transición', 'etiquetar', 'jugador',
+            // Todas las palabras de las acciones con el mismo refuerzo, para no inclinar al reconocedor hacia
+            // una sola (con "aéreo" reforzado y "largo" sin reforzar, "pase largo" se oía "pase aéreo").
+            'pase', 'corto', 'largo', 'aéreo', 'uno', 'contra', 'logrado', 'fallado', 'ofensivo', 'defensivo',
+            'recuperación', 'pérdida', 'balón', 'transición', 'tiro', 'portería', 'gol', 'favor', 'recibido', 'atajada',
+            'etiquetar', 'jugador',
         ])).slice(0, 60);
         const kw = palabrasClave.map(w => `&keywords=${encodeURIComponent(w)}:2`).join('');
         const url = `wss://api.deepgram.com/v1/listen?model=nova-2&language=es&punctuate=false&interim_results=false&endpointing=400${kw}`;
@@ -2528,6 +2537,11 @@ const VideoTaggerPage: React.FC = () => {
                                 <span className="min-w-0">
                                     <span className="block text-sm font-semibold text-white">⚙ Partido, archivos, alineación e IA</span>
                                     <span className="block text-xs text-gray-400 truncate">{m ? `${m.nombre_equipo} vs ${m.rival} · J${m.jornada} · ${m.torneo}` : 'Elige o crea el partido'}</span>
+                                    {m && (filteredPlayers.length === 0 || (!activeVideoUrl && !selectedVideo)) && (
+                                        <span className="block text-xs text-amber-300 truncate">
+                                            {filteredPlayers.length === 0 ? 'Faltan los jugadores: ábrelo para cargarlos' : 'Falta el video: ábrelo para cargarlo'}
+                                        </span>
+                                    )}
                                 </span>
                                 <span className="text-cyan-400">▸</span>
                             </button>
