@@ -201,6 +201,8 @@ const VideoTaggerPage: React.FC = () => {
     const [jugadoresVisibles, setJugadoresVisibles] = useState(() => leerPref('gol_etiquetador_jugadores', false));
     useEffect(() => { try { localStorage.setItem('gol_etiquetador_lista_min', listaMinimizada ? '1' : '0'); } catch { /* sin almacenamiento */ } }, [listaMinimizada]);
     useEffect(() => { try { localStorage.setItem('gol_etiquetador_jugadores', jugadoresVisibles ? '1' : '0'); } catch { /* sin almacenamiento */ } }, [jugadoresVisibles]);
+    const [accionesVisibles, setAccionesVisibles] = useState(() => leerPref('gol_etiquetador_acciones', true));
+    useEffect(() => { try { localStorage.setItem('gol_etiquetador_acciones', accionesVisibles ? '1' : '0'); } catch { /* sin almacenamiento */ } }, [accionesVisibles]);
     const processVoiceCommandRef = useRef<(t: string) => void>(() => {});
     // Referencia a la ventana secundaria del video — se guarda al abrirla
     const secondaryWindowRef = useRef<Window | null>(null);
@@ -1534,7 +1536,13 @@ const VideoTaggerPage: React.FC = () => {
         const tokens = sinAcentoVoz(texto).replace(/[^a-z0-9ñ ]/g, ' ').split(/\s+/).filter(Boolean);
         const numeroDe = (toks: string[]): number | null => {
             const j = toks.join(' ');
-            if (/^\d{1,2}$/.test(j)) return parseInt(j, 10);
+            if (/^\d{1,3}$/.test(j)) return parseInt(j, 10);
+            if (j === 'cien') return 100;
+            // "ciento diez", "ciento dieciseis", "ciento treinta y dos"
+            if (toks[0] === 'ciento' && toks.length > 1) {
+                const r = toks.slice(1).join(' ');
+                return r in NUMEROS_VOZ && NUMEROS_VOZ[r] > 0 ? 100 + NUMEROS_VOZ[r] : null;
+            }
             return j in NUMEROS_VOZ ? NUMEROS_VOZ[j] : null;
         };
         const conNumero = (n: number, resto: string) => {
@@ -1545,6 +1553,24 @@ const VideoTaggerPage: React.FC = () => {
             const partes = (p: Player) => sinAcentoVoz(p.nombre).trim().split(/\s+/);
             let hallados = filteredPlayers.filter(p => partes(p).some(x => x === palabra));
             if (hallados.length === 0 && explicito) hallados = filteredPlayers.filter(p => partes(p).some(x => x.startsWith(palabra)));
+            // La "h" no suena: "híker" = "Iker", "héctor" = "Ector".
+            const sinH = (x: string) => x.replace(/h/g, '');
+            if (hallados.length === 0 && palabra.length >= 3) hallados = filteredPlayers.filter(p => partes(p).some(x => sinH(x) === sinH(palabra)));
+            // Una letra cambiada en nombres de 4 letras o más ("elliot" / "eliot"), solo si queda uno.
+            if (hallados.length === 0 && palabra.length >= 4) {
+                const unaLetra = (a: string, b: string) => {
+                    if (Math.abs(a.length - b.length) > 1) return false;
+                    let i = 0, j = 0, dif = 0;
+                    while (i < a.length && j < b.length) {
+                        if (a[i] === b[j]) { i++; j++; continue; }
+                        if (++dif > 1) return false;
+                        if (a.length > b.length) i++; else if (b.length > a.length) j++; else { i++; j++; }
+                    }
+                    return dif + (a.length - i) + (b.length - j) <= 1;
+                };
+                const parecidos = filteredPlayers.filter(p => partes(p).some(x => x.length >= 4 && unaLetra(sinH(x), sinH(palabra))));
+                if (parecidos.length === 1) hallados = parecidos;
+            }
             if (hallados.length === 1) return { jugador: hallados[0], resto };
             if (hallados.length > 1) {
                 const lista = hallados.map(p => `#${p.numero}`).join(' o ');
@@ -1558,7 +1584,7 @@ const VideoTaggerPage: React.FC = () => {
             const antes = tokens.slice(0, i).join(' ');
             let despues = tokens.slice(i + 1);
             if (despues[0] === 'numero') despues = despues.slice(1);
-            for (const k of [3, 2, 1]) {
+            for (const k of [4, 3, 2, 1]) {
                 if (despues.length >= k) {
                     const n = numeroDe(despues.slice(0, k));
                     if (n !== null) return conNumero(n, antes);
@@ -1568,7 +1594,7 @@ const VideoTaggerPage: React.FC = () => {
             return { resto: antes };
         }
         // 2) número al final ("... logrado catorce", "... 14", "treinta y dos")
-        for (const k of [3, 2, 1]) {
+        for (const k of [4, 3, 2, 1]) {
             if (tokens.length >= k) {
                 const n = numeroDe(tokens.slice(-k));
                 if (n === null) continue;
@@ -1603,6 +1629,8 @@ const VideoTaggerPage: React.FC = () => {
     const accionEnFrase = (frase: string): { accion: string | null; duda?: string } => {
         const f = frase.toLowerCase().trim();
         if (!f) return { accion: null };
+        // "cambio" (sustitución): el jugador dicho es el que ENTRA; quién sale se pide en el detalle.
+        if (/\bcambios?\b/.test(sinAcentoVoz(f))) return { accion: ACCION_CAMBIO };
         // Primero el autocorrector (lee palabra por palabra, p. ej. "pase aéreo..." = pase largo);
         // si no reconoce nada, se busca el nombre exacto de la acción dentro de la frase.
         const auto = accionDesdeVoz(f);
@@ -1626,6 +1654,22 @@ const VideoTaggerPage: React.FC = () => {
             const hora = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
             setRegistroVoz(prev => [{ hora, oido: transcript, entendido: msg, ok: !/^[❓⚠]/.test(msg) }, ...prev].slice(0, 80));
         };
+
+        // "… etiquetar" o "etiquetar …" en la misma frase (pasa cuando se habla seguido):
+        // se procesa lo de antes, luego se etiqueta y luego lo de después, en ese orden.
+        if (/\betiquetar?\b/.test(text) && !/^(etiquetar|etiqueta)$/.test(text) && !/agregar jugada/.test(text)) {
+            const [antes, ...resto] = text.split(/\betiquetar?\b/);
+            const despues = resto.join(' ').trim();
+            const siguiente = () => { if (despues) setTimeout(() => processVoiceCommandRef.current(despues), 200); };
+            if (antes.trim()) {
+                processVoiceCommandRef.current(antes.trim());
+                setTimeout(() => { processVoiceCommandRef.current('etiquetar'); siguiente(); }, 250);
+            } else {
+                processVoiceCommandRef.current('etiquetar');
+                siguiente();
+            }
+            return;
+        }
 
         // ── Video controls ────────────────────────────────────────────────
         // Si hay ventana secundaria abierta, los comandos de video se envían
@@ -1742,6 +1786,27 @@ const VideoTaggerPage: React.FC = () => {
                 aplicarZona(zonaDicha).then(show);
                 return;
             }
+        }
+
+        // ── Detalle del cambio por voz: quién sale ("sale jacobo", "jugador catorce") ──
+        if (detallePendiente && detallePendiente.accion === ACCION_CAMBIO) {
+            if (/\blisto\b|\bsaltar\b|\bterminar\b/.test(text)) {
+                setDetallePendiente(null);
+                show('✅ Detalle del cambio cerrado');
+                return;
+            }
+            const extSale = jugadorDesdeFrase(text.replace(/\b(sale|salio|salió|por)\b/g, ' '));
+            if (extSale.jugador && extSale.jugador.id !== detallePendiente.player_id && !extSale.resto.trim()) {
+                aplicarDetalleCambio(extSale.jugador.id).then(show);
+                return;
+            }
+            if (extSale.duda && !extSale.resto.trim()) { show(`🟠 ${extSale.duda}`); return; }
+        }
+
+        // "uno" suelto casi siempre es el principio de "uno contra uno" cortado: no se elige al jugador #1.
+        if (/^(uno|un|una)$/.test(text.trim())) {
+            show('🟠 Oí solo "uno": di la frase completa o "jugador uno"');
+            return;
         }
 
         // ── Frase completa: acción + jugador en una sola frase ───────────────
@@ -2763,7 +2828,7 @@ const VideoTaggerPage: React.FC = () => {
                     )}
                     {!videoCompacto && (
                         <>
-                            {/* Botonera de jugadores (respaldo manual) + acción */}
+                            {/* Botonera de jugadores (respaldo manual) */}
                             <div className="shrink-0 bg-gray-800 rounded-lg p-2">
                                 <div className="flex items-center gap-2 mb-1">
                                     <span className="text-sm font-semibold text-white mr-auto">Jugadores (respaldo manual)</span>
@@ -2817,7 +2882,23 @@ const VideoTaggerPage: React.FC = () => {
                                         ) : (
                                             <p className="text-xs text-gray-400 mb-2">Sin jugadores cargados para este partido.</p>
                                         )}
-                                        <div className="flex items-center gap-2">
+                                    </>
+                                )}
+                            </div>
+                            {/* Acción (respaldo manual): misma lista de acciones que antes */}
+                            <div className="shrink-0 bg-gray-800 rounded-lg p-2">
+                                <div className="flex items-center gap-2 mb-1">
+                                    <span className="text-sm font-semibold text-white mr-auto">Acción (respaldo manual)</span>
+                                    <button
+                                        type="button"
+                                        onClick={() => setAccionesVisibles(!accionesVisibles)}
+                                        className="px-2 py-1 rounded border border-gray-600 bg-gray-700 text-xs text-gray-200 hover:bg-gray-600"
+                                    >
+                                        {accionesVisibles ? '▾ Ocultar' : '▴ Mostrar'}
+                                    </button>
+                                </div>
+                                {accionesVisibles && (
+                                    <div className="flex items-center gap-2">
                                                 <select 
                                                     value={selectedAction} 
                                                     onChange={e => { setSelectedAction(e.target.value); setVozParcial(''); setVozParcialDuda(''); }} 
@@ -2832,7 +2913,6 @@ const VideoTaggerPage: React.FC = () => {
                                                     </optgroup>
                                                 </select>
                                         </div>
-                                    </>
                                 )}
                             </div>
                         </>
